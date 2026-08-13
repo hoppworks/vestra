@@ -54,7 +54,10 @@ enum Command {
         overlap: usize,
         #[arg(long, default_value_t = 1.0)]
         minimum_confidence: f32,
-        #[arg(long, default_value_t = 1)]
+        /// One retained depth pixel per stride-square source pixels. The
+        /// local JSON/WebGL v1 default intentionally caps a 120-frame job to
+        /// a practical surfel volume; use 1 only for small diagnostics.
+        #[arg(long, default_value_t = 8)]
         pixel_stride: usize,
     },
     /// Rebuild the derived world from a bundle's immutable measured windows.

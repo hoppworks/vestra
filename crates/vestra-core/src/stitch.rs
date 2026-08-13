@@ -189,6 +189,7 @@ fn fit_similarity(
         ty[d] /= weight_sum;
     }
     let mut s = [[0.0; 3]; 3];
+    let mut covariance = [[0.0; 3]; 3];
     let mut source_energy = 0.0;
     for &i in selected {
         let m = matches[i];
@@ -206,10 +207,23 @@ fn fit_similarity(
         for r in 0..3 {
             for c in 0..3 {
                 s[r][c] += m.weight * x[r] * y[c];
+                covariance[r][c] += m.weight * x[r] * x[c];
             }
         }
     }
     if source_energy <= 1e-14 {
+        return Err(StitchError::DegenerateGeometry);
+    }
+    // A rank-one source overlap cannot determine a 3D rotation. Planar
+    // overlap is allowed; it has two non-zero covariance eigenvalues.
+    let trace = covariance[0][0] + covariance[1][1] + covariance[2][2];
+    let second_invariant = covariance[0][0] * covariance[1][1]
+        + covariance[0][0] * covariance[2][2]
+        + covariance[1][1] * covariance[2][2]
+        - covariance[0][1] * covariance[0][1]
+        - covariance[0][2] * covariance[0][2]
+        - covariance[1][2] * covariance[1][2];
+    if !second_invariant.is_finite() || second_invariant <= trace * trace * 1e-10 {
         return Err(StitchError::DegenerateGeometry);
     }
     let n = [
@@ -238,15 +252,7 @@ fn fit_similarity(
             -s[0][0] - s[1][1] + s[2][2],
         ],
     ];
-    let mut q = [1.0, 0.0, 0.0, 0.0];
-    for _ in 0..64 {
-        let next = mul4(n, q);
-        let norm = dot4(next, next).sqrt();
-        if norm <= 1e-20 {
-            return Err(StitchError::DegenerateGeometry);
-        }
-        q = next.map(|v| v / norm);
-    }
+    let q = largest_symmetric_eigenvector(n)?;
     let r = rotation_from_quaternion(q);
     let mut numerator = 0.0;
     for &i in selected {
@@ -282,11 +288,62 @@ fn fit_similarity(
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-fn dot4(a: [f64; 4], b: [f64; 4]) -> f64 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
-}
-fn mul4(a: [[f64; 4]; 4], x: [f64; 4]) -> [f64; 4] {
-    std::array::from_fn(|r| a[r].iter().zip(x).map(|(u, v)| u * v).sum())
+fn largest_symmetric_eigenvector(mut matrix: [[f64; 4]; 4]) -> Result<[f64; 4], StitchError> {
+    let mut vectors = [[0.0; 4]; 4];
+    for i in 0..4 {
+        vectors[i][i] = 1.0;
+    }
+    for _ in 0..48 {
+        let mut p = 0;
+        let mut q = 1;
+        let mut largest = 0.0_f64;
+        for row in 0..4 {
+            for column in row + 1..4 {
+                if matrix[row][column].abs() > largest {
+                    largest = matrix[row][column].abs();
+                    p = row;
+                    q = column;
+                }
+            }
+        }
+        if largest < 1e-14 {
+            break;
+        }
+        let angle = 0.5 * (2.0 * matrix[p][q]).atan2(matrix[q][q] - matrix[p][p]);
+        let (sin, cos) = angle.sin_cos();
+        for row in 0..4 {
+            if row != p && row != q {
+                let rp = matrix[row][p];
+                let rq = matrix[row][q];
+                matrix[row][p] = cos * rp - sin * rq;
+                matrix[p][row] = matrix[row][p];
+                matrix[row][q] = sin * rp + cos * rq;
+                matrix[q][row] = matrix[row][q];
+            }
+        }
+        let pp = matrix[p][p];
+        let qq = matrix[q][q];
+        let pq = matrix[p][q];
+        matrix[p][p] = cos * cos * pp - 2.0 * sin * cos * pq + sin * sin * qq;
+        matrix[q][q] = sin * sin * pp + 2.0 * sin * cos * pq + cos * cos * qq;
+        matrix[p][q] = 0.0;
+        matrix[q][p] = 0.0;
+        for row in 0..4 {
+            let vp = vectors[row][p];
+            let vq = vectors[row][q];
+            vectors[row][p] = cos * vp - sin * vq;
+            vectors[row][q] = sin * vp + cos * vq;
+        }
+    }
+    let index = (0..4)
+        .max_by(|&left, &right| matrix[left][left].total_cmp(&matrix[right][right]))
+        .expect("four eigenvalues exist");
+    let vector = std::array::from_fn(|row| vectors[row][index]);
+    let norm = vector.iter().map(|value| value * value).sum::<f64>().sqrt();
+    if !norm.is_finite() || norm <= 1e-20 {
+        return Err(StitchError::DegenerateGeometry);
+    }
+    Ok(vector.map(|value| value / norm))
 }
 fn mat_vec(r: [f64; 9], x: [f64; 3]) -> [f64; 3] {
     [
@@ -321,6 +378,7 @@ pub fn transform_points(
         .iter()
         .map(|p| MeasuredPoint {
             position: transform.apply(p.position),
+            radius: p.radius * transform.scale,
             ..*p
         })
         .collect()
@@ -364,6 +422,14 @@ pub fn stitch_measured_windows(
     for window in &global {
         for frame in &window.views {
             for point in &frame.points {
+                if !point.position.iter().all(|value| value.is_finite())
+                    || !point.radius.is_finite()
+                    || point.radius <= 0.0
+                    || !point.confidence.is_finite()
+                    || point.confidence <= 0.0
+                {
+                    continue;
+                }
                 let key = (
                     // Alignment residuals around an exact boundary must not
                     // turn one physical surfel into two adjacent voxels.
@@ -469,5 +535,42 @@ mod tests {
         let report = align_overlapping_windows(&source, &target).unwrap();
         assert!((report.transform.scale - 2.).abs() < 1e-4);
         assert!(distance(report.transform.apply([1., 0., 0.]), [5., -1., 1.]) < 1e-4);
+    }
+
+    #[test]
+    fn similarity_scales_surfel_radius_with_position() {
+        let transformed = transform_points(
+            &[MeasuredPoint {
+                position: [1.0, 0.0, 0.0],
+                color_srgb: [1, 2, 3],
+                confidence: 1.0,
+                radius: 0.25,
+                source_pixel: [0, 0],
+            }],
+            SimilarityTransform {
+                scale: 2.0,
+                ..SimilarityTransform::IDENTITY
+            },
+        );
+        assert_eq!(transformed[0].position, [2.0, 0.0, 0.0]);
+        assert_eq!(transformed[0].radius, 0.5);
+    }
+
+    #[test]
+    fn rejects_collinear_overlap_that_cannot_determine_rotation() {
+        let source = chunk(vec![
+            p(0, [0.0, 0.0, 0.0]),
+            p(1, [1.0, 0.0, 0.0]),
+            p(2, [2.0, 0.0, 0.0]),
+        ]);
+        let target = chunk(vec![
+            p(0, [3.0, 2.0, 1.0]),
+            p(1, [5.0, 2.0, 1.0]),
+            p(2, [7.0, 2.0, 1.0]),
+        ]);
+        assert_eq!(
+            align_overlapping_windows(&source, &target),
+            Err(StitchError::DegenerateGeometry)
+        );
     }
 }

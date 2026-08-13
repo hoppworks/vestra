@@ -91,6 +91,12 @@ V1 scenes are explicitly relative-scale. A point's position is evidence from
 the depth map and camera calibration; it is not a claim in metres. Metric-scale
 anchors are a future opt-in phase.
 
+Fused windows use shared source-frame pixels as direct correspondence evidence
+for a robust Sim(3). Degenerate (rank-one) overlaps are rejected rather than
+being assigned an invented rotation. The current fusion stores global points;
+the window cameras remain raw diagnostic evidence and are not yet exposed as
+global camera-path geometry.
+
 There is no claim yet that the complete Vestra world pipeline is faster than
 the C++ PR. The existing qualified speed result covers single-image CPU F32.
 
@@ -112,10 +118,12 @@ cargo run -p vestra-cli -- reconstruct \
   --output room.vestra
 ```
 
-Vestra samples up to 120 frames at 504×336 by default, reconstructs each
+Vestra samples up to 120 frames at 504×336 by default, retains one measured
+surfel per 8×8 depth pixels for the local JSON/WebGL v1, reconstructs each
 12/3 overlapping window, checkpoints measured evidence, then automatically
-publishes a derived fused world. To rebuild that derived layer without another
-model inference run:
+publishes a derived fused world. Use `--pixel-stride 1` only for small
+diagnostic captures. To rebuild that derived layer without another model
+inference run:
 
 ```bash
 cargo run -p vestra-cli -- fuse --scene room.vestra
