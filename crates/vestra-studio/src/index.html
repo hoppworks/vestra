@@ -24,7 +24,7 @@
 <body>
   <canvas id="world"></canvas>
   <div class="loading" id="loading"><p>assembling coherent world</p></div>
-  <header><div><div class="brand">ves<span>t</span>ra</div><div class="sub" id="layer">Coherent World / Measured Layer</div></div><aside class="hud"><h2>Scene ledger</h2><div class="badge"><i class="dot"></i> <span id="kind">measured evidence</span></div><div class="row"><span>points</span><b id="points">—</b></div><div class="row"><span>windows</span><b id="windows">—</b></div><div class="row"><span>scale</span><b id="scale">relative</b></div><div class="row"><span>capture</span><b id="capture">—</b></div><div class="row"><span>controls</span><b>drag · scroll</b></div></aside></header>
+  <header><div><div class="brand">ves<span>t</span>ra</div><div class="sub" id="layer">Coherent World / Measured Layer</div></div><aside class="hud"><h2>Scene ledger</h2><div class="badge"><i class="dot"></i> <span id="kind">measured evidence</span></div><div class="row"><span>points</span><b id="points">—</b></div><div class="row"><span>windows</span><b id="windows">—</b></div><div class="row"><span>segments</span><b id="segments">—</b></div><div class="row"><span>scale</span><b id="scale">relative</b></div><div class="row"><span>capture</span><b id="capture">—</b></div><div class="row"><span>controls</span><b>drag · scroll</b></div></aside></header>
   <footer><span>Vestra Studio / Local only</span><span id="status">loading chunks</span></footer>
   <script>
   const canvas=document.querySelector('#world'), gl=canvas.getContext('webgl',{antialias:true,alpha:false});
@@ -46,7 +46,7 @@
     const manifest=await (await fetch('/manifest.json')).json();
     const hasFused=Boolean(manifest.fused_chunk_hash),progressive=hasFused&&manifest.fused_point_chunk_hashes?.length;
     const urls=progressive?manifest.fused_point_chunk_hashes.map(h=>'/chunks/points-'+h+'.json'):hasFused?['/chunks/fused-'+manifest.fused_chunk_hash+'.json']:manifest.measured_chunk_hashes.map(h=>'/chunks/'+h+'.json');
-    document.querySelector('#windows').textContent=manifest.measured_chunk_hashes.length;document.querySelector('#scale').textContent=manifest.scale;document.querySelector('#capture').textContent=manifest.capture_quality?.disposition||'unknown';
+    document.querySelector('#windows').textContent=manifest.measured_chunk_hashes.length;document.querySelector('#segments').textContent=urls.length;document.querySelector('#scale').textContent=manifest.scale;document.querySelector('#capture').textContent=manifest.capture_quality?.disposition||'unknown';
     if(hasFused){document.querySelector('#kind').textContent='fused relative world';document.querySelector('#layer').textContent='Coherent World / Fused Layer'}
     for(let index=0;index<urls.length;index++){const chunk=await (await fetch(urls[index])).json();upload(chunk.points||chunk.views.flatMap(v=>v.points));center=lo.map((v,i)=>(v+hi[i])/2);extent=Math.max(...hi.map((v,i)=>v-lo[i]),.1);distance=extent*1.8;document.querySelector('#points').textContent=pointCount.toLocaleString();document.querySelector('#status').textContent='revealing '+(index+1)+' / '+urls.length+' chunks';if(!rendering){rendering=true;render()}await new Promise(requestAnimationFrame)}
     document.querySelector('#status').textContent='drag to orbit';document.querySelector('#loading').style.opacity=0;setTimeout(()=>document.querySelector('#loading').remove(),600)}
