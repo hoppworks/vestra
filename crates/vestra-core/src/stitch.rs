@@ -228,14 +228,19 @@ impl Default for StitchSettings {
     }
 }
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error, PartialEq)]
 pub enum StitchError {
     #[error("windows have fewer than three pixel correspondences")]
     InsufficientCorrespondences,
     #[error("overlap correspondence geometry is degenerate")]
     DegenerateGeometry,
-    #[error("overlap seam does not meet the configured quality gate")]
-    QualityGate,
+    #[error("{stage} does not meet the configured quality gate; report={report:?}")]
+    QualityGate {
+        /// A sequential seam includes its measured evidence. Other geometric
+        /// checks may not have a fitted seam to report.
+        stage: &'static str,
+        report: Option<AlignmentReport>,
+    },
     #[error("relative pose graph optimization failed: {0}")]
     PoseGraph(#[from] PoseGraphError),
 }
@@ -257,7 +262,10 @@ pub fn measure_loop_closure(
         || !settings.information.is_finite()
         || settings.information <= 0.0
     {
-        return Err(StitchError::QualityGate);
+        return Err(StitchError::QualityGate {
+            stage: "loop measurement settings",
+            report: None,
+        });
     }
     let mut cells: HashMap<(i32, i32, i32), Vec<&MeasuredPoint>> = HashMap::new();
     for point in earlier.views.iter().flat_map(|view| &view.points) {
@@ -304,7 +312,10 @@ pub fn measure_loop_closure(
     let inlier_ratio = inliers.len() as f32 / correspondence_count as f32;
     if inlier_ratio < settings.minimum_inlier_ratio || rms_residual > settings.maximum_rms_residual
     {
-        return Err(StitchError::QualityGate);
+        return Err(StitchError::QualityGate {
+            stage: "loop measurement",
+            report: None,
+        });
     }
     // Revisits are weak scale observations, especially across planar walls.
     // Preserve the chained relative scale and optimize only rigid loop closure.
@@ -859,7 +870,10 @@ pub fn stitch_measured_windows_with_loop_closures(
             || report.transform.scale < settings.minimum_scale
             || report.transform.scale > settings.maximum_scale
         {
-            return Err(StitchError::QualityGate);
+            return Err(StitchError::QualityGate {
+                stage: "sequential overlap seam",
+                report: Some(report),
+            });
         }
         let previous_pose = *poses.last().expect("first pose exists");
         let relative = previous_pose
@@ -1169,10 +1183,17 @@ mod tests {
         ]);
         let mut source = target.clone();
         source.window.index = 1;
-        assert_eq!(
-            stitch_measured_windows(&[target, source]),
-            Err(StitchError::QualityGate)
-        );
+        let error = stitch_measured_windows(&[target, source]).unwrap_err();
+        assert!(matches!(
+            error,
+            StitchError::QualityGate {
+                stage: "sequential overlap seam",
+                report: Some(AlignmentReport {
+                    correspondence_count: 4,
+                    ..
+                })
+            }
+        ));
     }
 
     #[test]
