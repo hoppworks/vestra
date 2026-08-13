@@ -12,5 +12,9 @@
   function cameraBasis(orientation) { const backward = normalize(rotate(orientation, [0, 0, 1])), rotatedUp = normalize(rotate(orientation, [0, 1, 0])), right = normalize(cross(rotatedUp, backward)), up = normalize(cross(backward, right)); return { right, up, backward, forward: backward.map(value => -value) }; }
   function move(center, orientation, distance, command, ratio = .06) { const basis = cameraBasis(orientation), step = Math.max(distance * ratio, .01), direction = {forward:basis.forward, backward:basis.backward, left:basis.right.map(value => -value), right:basis.right, up:[0,1,0], down:[0,-1,0]}[command]; return direction ? center.map((value, axis) => value + direction[axis] * step) : center.slice(); }
   function commandForKey(key) { return {ArrowUp:'forward',ArrowDown:'backward',ArrowLeft:'left',ArrowRight:'right',e:'up',E:'up',d:'down',D:'down'}[key] || null; }
-  root.VestraCameraControls = { axisAngle, cameraBasis, commandForKey, move, normalizeQuaternion, orbit, quaternionMultiply, rotate };
+  // DA3 camera coordinates are +X right, +Y down, +Z forward. WebGL's scene
+  // presentation uses +X right, +Y up, -Z forward. This proper 180° X rotation
+  // keeps positions, normals, and camera rays coherent.
+  function cameraToViewer(vector) { return [vector[0], -vector[1], -vector[2]]; }
+  root.VestraCameraControls = { axisAngle, cameraBasis, cameraToViewer, commandForKey, move, normalizeQuaternion, orbit, quaternionMultiply, rotate };
 }(typeof window === 'undefined' ? globalThis : window));
