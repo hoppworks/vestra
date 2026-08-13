@@ -50,7 +50,7 @@ DA3-BASE shape parity fixture before it is used by inference.
 
 ## Engine integration evidence
 
-Vestra Engine revision `c07e08dbf03b17d19bd0b341d21da228283ec156` enables
+Vestra Engine revision `df6f8038e8bd1e44fcb904be0a07775c551a4439` enables
 `cuda-residual-oracle`. Its integration test loads the same BASE-F32 GGUF
 twice, executes CPU inference once and an inference whose 24 transformer
 residual additions run through native CUDA once, then compares depth and
@@ -72,3 +72,8 @@ The test took 19.79 seconds in a debug test build. That is expected and is
 not a timing study: each residual currently crosses PCIe in both directions.
 The next CUDA slice must keep adjacent activations and weights resident on
 device before a GPU performance benchmark is meaningful.
+
+The same fixture also covers `infer_multi_view_ordered` with distinct
+`canyon.jpg` and `desk.jpg` views. It compares every returned depth and
+confidence map under the same numerical bounds, exercising PR #2's real
+local/global multi-view backbone control flow with CUDA residual execution.

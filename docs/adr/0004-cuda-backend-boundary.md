@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted. The native driver foundation is implemented in Vestra Kernels; no
-Engine inference operator is routed to CUDA yet.
+Accepted. The native driver foundation and a transfer-bound Engine residual
+parity slice are implemented; no full Engine inference backend is routed to
+CUDA yet.
 
 ## Context
 
@@ -16,10 +17,9 @@ Vestra Kernels revision `688e2905f7bb8e4c9130e3d6faf5f8c4b1723508` provides
 an opt-in `cuda` feature backed by dynamically loaded CUDA Driver API calls.
 It owns a selected device context, its default ordered stream, and explicit
 F32 host-to-device/device-to-host transfers. This was exercised on the
-Workhorse GPU. It also carries a device-resident F32 residual-add kernel, but
-the Engine does not yet route inference through it.
+Workhorse GPU. It also carries a device-resident F32 residual-add kernel.
 
-Engine revision `c07e08dbf03b17d19bd0b341d21da228283ec156` adds an opt-in
+Engine revision `df6f8038e8bd1e44fcb904be0a07775c551a4439` adds an opt-in
 `cuda-residual-oracle` feature. It executes both residual additions in every
 transformer block through that native CUDA kernel, with explicit activation
 uploads/downloads. The mode exists to establish Engine integration and F32
