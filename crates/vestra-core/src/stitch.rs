@@ -671,11 +671,15 @@ pub fn stitch_measured_windows_with_settings(
             points: Vec::new(),
         });
     };
-    let mut global = vec![transform_window(first, SimilarityTransform::IDENTITY)];
+    // Keep the local source chunks immutable until every pose constraint has
+    // been established. `previous_global` is temporary sequential evidence for
+    // the next direct overlap only; final fusion below reapplies the collected
+    // local-to-global poses in one deferred pass.
+    let mut poses = vec![SimilarityTransform::IDENTITY];
+    let mut previous_global = transform_window(first, SimilarityTransform::IDENTITY);
     let mut alignments = Vec::new();
     for window in &windows[1..] {
-        let report =
-            align_overlapping_windows(window, global.last().expect("first window exists"))?;
+        let report = align_overlapping_windows(window, &previous_global)?;
         let inlier_ratio = report.inlier_count as f32 / report.correspondence_count as f32;
         if report.correspondence_count < settings.minimum_correspondences
             || inlier_ratio < settings.minimum_inlier_ratio
@@ -684,9 +688,15 @@ pub fn stitch_measured_windows_with_settings(
         {
             return Err(StitchError::QualityGate);
         }
-        global.push(transform_window(window, report.transform));
+        previous_global = transform_window(window, report.transform);
+        poses.push(report.transform);
         alignments.push(report);
     }
+    let global = windows
+        .iter()
+        .zip(poses)
+        .map(|(window, pose)| transform_window(window, pose))
+        .collect::<Vec<_>>();
     let mut radii = global
         .iter()
         .flat_map(|w| w.views.iter())
@@ -937,5 +947,49 @@ mod tests {
             "{:?}",
             refined.translation
         );
+    }
+
+    #[test]
+    fn sequential_stitching_defers_transforming_immutable_raw_windows() {
+        let base = vec![
+            p(0, [0.0, 0.0, 0.0]),
+            p(1, [1.0, 0.0, 0.0]),
+            p(2, [0.0, 1.0, 0.0]),
+            p(3, [0.0, 0.0, 1.0]),
+        ];
+        let first = chunk(base.clone());
+        let mut second = chunk(
+            base.iter()
+                .copied()
+                .map(|mut point| {
+                    point.position[0] -= 5.0;
+                    point
+                })
+                .collect(),
+        );
+        second.window.index = 1;
+        let mut third = chunk(
+            base.iter()
+                .copied()
+                .map(|mut point| {
+                    point.position[0] -= 10.0;
+                    point
+                })
+                .collect(),
+        );
+        third.window.index = 2;
+        let raw = vec![first, second, third];
+        let fused = stitch_measured_windows_with_settings(
+            &raw,
+            StitchSettings {
+                minimum_correspondences: 3,
+                minimum_inlier_ratio: 0.5,
+                ..StitchSettings::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(raw[2].views[0].points[0].position, [-10.0, 0.0, 0.0]);
+        assert_eq!(fused.alignments.len(), 2);
+        assert!(fused.points.iter().all(|point| point.contributors == 3));
     }
 }
