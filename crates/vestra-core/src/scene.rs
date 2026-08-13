@@ -46,10 +46,25 @@ pub struct SceneManifest {
     /// The full fused chunk remains canonical for export and compatibility.
     #[serde(default)]
     pub fused_point_chunk_hashes: Vec<String>,
+    /// Small, manifest-resident diagnostics for the browser. Keeping this
+    /// summary out of the progressive point payload means inspection does not
+    /// require downloading the canonical fused chunk.
+    #[serde(default)]
+    pub fused_summary: Option<FusedSceneSummary>,
     /// Input-motion indicator recorded before reconstruction. It warns about
     /// capture risk without changing the relative geometry claim.
     #[serde(default)]
     pub capture_quality: Option<crate::CaptureQuality>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FusedSceneSummary {
+    pub point_count: usize,
+    pub sequential_alignment_count: usize,
+    pub minimum_sequential_inlier_ratio: Option<f32>,
+    pub maximum_sequential_rms_residual: Option<f32>,
+    pub loop_closure_count: usize,
+    pub pose_graph_final_cost: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -112,6 +127,7 @@ impl SceneBundle {
             measured_chunk_hashes: Vec::new(),
             fused_chunk_hash: None,
             fused_point_chunk_hashes: Vec::new(),
+            fused_summary: None,
             capture_quality: None,
         })?;
         Ok(bundle)
@@ -206,6 +222,7 @@ impl SceneBundle {
         if manifest.fused_point_chunk_hashes != point_chunk_hashes {
             manifest.fused_point_chunk_hashes = point_chunk_hashes;
         }
+        manifest.fused_summary = Some(FusedSceneSummary::from(chunk));
         self.write_manifest(&manifest)?;
         Ok(hash)
     }
@@ -258,6 +275,38 @@ impl SceneBundle {
             &self.root.join(MANIFEST_FILE),
             &serde_json::to_vec_pretty(manifest)?,
         )?)
+    }
+}
+
+impl From<&FusedSceneChunk> for FusedSceneSummary {
+    fn from(chunk: &FusedSceneChunk) -> Self {
+        let minimum_sequential_inlier_ratio = chunk
+            .alignments
+            .iter()
+            .filter_map(|alignment| {
+                (alignment.correspondence_count > 0).then_some(
+                    alignment.inlier_count as f32 / alignment.correspondence_count as f32,
+                )
+            })
+            .filter(|value| value.is_finite())
+            .min_by(f32::total_cmp);
+        let maximum_sequential_rms_residual = chunk
+            .alignments
+            .iter()
+            .map(|alignment| alignment.rms_residual)
+            .filter(|value| value.is_finite())
+            .max_by(f32::total_cmp);
+        Self {
+            point_count: chunk.points.len(),
+            sequential_alignment_count: chunk.alignments.len(),
+            minimum_sequential_inlier_ratio,
+            maximum_sequential_rms_residual,
+            loop_closure_count: chunk
+                .pose_graph
+                .as_ref()
+                .map_or(0, |report| report.loop_edges),
+            pose_graph_final_cost: chunk.pose_graph.as_ref().map(|report| report.final_cost),
+        }
     }
 }
 
@@ -398,6 +447,7 @@ mod tests {
             Some(fused_hash.as_str())
         );
         assert_eq!(manifest.fused_point_chunk_hashes.len(), 1);
+        assert_eq!(manifest.fused_summary.as_ref().unwrap().point_count, 1);
         assert_eq!(
             bundle
                 .read_fused_point_chunk(&manifest.fused_point_chunk_hashes[0])
