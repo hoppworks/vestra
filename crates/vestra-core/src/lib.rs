@@ -8,6 +8,7 @@ use vestra_engine::{Engine, EngineError, MultiViewInferOut, ViewInput};
 
 pub mod export;
 pub mod geometry;
+pub mod pose_graph;
 pub mod reconstruction;
 pub mod scene;
 pub mod stitch;
@@ -17,6 +18,10 @@ pub use export::{ExportError, export_fused_ply};
 pub use geometry::{
     BackprojectionError, BackprojectionSettings, CameraCalibration, MeasuredPoint, MeasuredView,
     backproject_measured_view,
+};
+pub use pose_graph::{
+    PoseGraphEdge, PoseGraphError, PoseGraphReport, PoseGraphSettings, RelativePoseGraph,
+    optimize_relative_pose_graph, pose_edge_residual,
 };
 pub use reconstruction::{
     FusionProgress, ReconstructionError, ReconstructionProgress, ReconstructionSettings,
