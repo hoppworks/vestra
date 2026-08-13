@@ -1,0 +1,9 @@
+{
+  "schema": "vestra.scene-quality/v1",
+  "name": "room-relative-v1",
+  "minimum_measured_windows": 14,
+  "minimum_fused_points": 250000,
+  "minimum_sequential_inlier_ratio": 0.85,
+  "maximum_sequential_rms_residual": 0.15,
+  "require_loop_closure": false
+}

@@ -5,6 +5,7 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vestra_core::{
     BackprojectionSettings, ReconstructionSettings, SceneBundle, SceneProvenance,
@@ -102,6 +103,14 @@ enum Command {
     Inspect {
         #[arg(long)]
         scene: PathBuf,
+    },
+    /// Check a fused scene against a versioned relative-scale regression profile.
+    Verify {
+        #[arg(long)]
+        scene: PathBuf,
+        /// JSON quality profile. It records only evidence thresholds, never metres.
+        #[arg(long)]
+        profile: PathBuf,
     },
     /// Serve a local interactive browser studio for a `.vestra` bundle.
     Serve {
@@ -320,6 +329,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let bundle = SceneBundle::open(scene)?;
             println!("{}", serde_json::to_string_pretty(&scene_report(&bundle)?)?);
         }
+        Command::Verify { scene, profile } => {
+            let bundle = SceneBundle::open(scene)?;
+            let profile: SceneQualityProfile = serde_json::from_reader(File::open(profile)?)?;
+            let result = verify_scene(&bundle, &profile)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            if !result.passed {
+                return Err("scene does not satisfy the supplied regression profile".into());
+            }
+        }
         Command::Serve { scene, port } => {
             let _bundle = SceneBundle::open(&scene)?;
             eprintln!("Vestra Studio is listening at http://127.0.0.1:{port}");
@@ -340,6 +358,135 @@ fn install_reconstruction_interrupt_handler() -> Result<(), ctrlc::Error> {
             "reconstruction canceled; durable checkpoints remain available for `vestra reconstruct --resume`"
         );
         std::process::exit(130);
+    })
+}
+
+/// A versioned evidence contract for one fixture class. All values are counts,
+/// ratios, or residuals in the scene's own relative units; the profile never
+/// infers physical room dimensions.
+#[derive(Debug, Clone, Deserialize)]
+struct SceneQualityProfile {
+    schema: String,
+    name: String,
+    minimum_measured_windows: usize,
+    minimum_fused_points: usize,
+    minimum_sequential_inlier_ratio: f32,
+    maximum_sequential_rms_residual: f32,
+    require_loop_closure: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SceneVerification {
+    schema: &'static str,
+    profile: String,
+    passed: bool,
+    violations: Vec<String>,
+    evidence: SceneVerificationEvidence,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SceneVerificationEvidence {
+    measured_windows: usize,
+    fused_points: usize,
+    finite_points: bool,
+    minimum_inlier_ratio: Option<f32>,
+    maximum_rms_residual: Option<f32>,
+    loop_closures: usize,
+}
+
+fn verify_scene(
+    bundle: &SceneBundle,
+    profile: &SceneQualityProfile,
+) -> Result<SceneVerification, Box<dyn std::error::Error>> {
+    if profile.schema != "vestra.scene-quality/v1" {
+        return Err(format!(
+            "unsupported scene quality profile schema `{}`",
+            profile.schema
+        )
+        .into());
+    }
+    if !profile.minimum_sequential_inlier_ratio.is_finite()
+        || !(0.0..=1.0).contains(&profile.minimum_sequential_inlier_ratio)
+        || !profile.maximum_sequential_rms_residual.is_finite()
+        || profile.maximum_sequential_rms_residual < 0.0
+    {
+        return Err("scene quality profile contains invalid thresholds".into());
+    }
+    let manifest = bundle.manifest()?;
+    let Some(hash) = manifest.fused_chunk_hash.as_deref() else {
+        return Err("scene has no fused relative world".into());
+    };
+    let fused = bundle.read_fused_scene(hash)?;
+    let minimum_inlier_ratio = fused
+        .alignments
+        .iter()
+        .filter_map(|alignment| {
+            (alignment.correspondence_count > 0)
+                .then_some(alignment.inlier_count as f32 / alignment.correspondence_count as f32)
+        })
+        .filter(|value| value.is_finite())
+        .min_by(f32::total_cmp);
+    let maximum_rms_residual = fused
+        .alignments
+        .iter()
+        .map(|alignment| alignment.rms_residual)
+        .filter(|value| value.is_finite())
+        .max_by(f32::total_cmp);
+    let finite_points = fused.points.iter().all(|point| {
+        point.position.iter().all(|value| value.is_finite())
+            && point.normal.iter().all(|value| value.is_finite())
+            && point.radius.is_finite()
+            && point.radius > 0.0
+    });
+    let loop_closures = fused
+        .pose_graph
+        .as_ref()
+        .map_or(0, |graph| graph.loop_edges);
+    let evidence = SceneVerificationEvidence {
+        measured_windows: manifest.measured_chunk_hashes.len(),
+        fused_points: fused.points.len(),
+        finite_points,
+        minimum_inlier_ratio,
+        maximum_rms_residual,
+        loop_closures,
+    };
+    let mut violations = Vec::new();
+    if evidence.measured_windows < profile.minimum_measured_windows {
+        violations.push(format!(
+            "measured_windows {} < {}",
+            evidence.measured_windows, profile.minimum_measured_windows
+        ));
+    }
+    if evidence.fused_points < profile.minimum_fused_points {
+        violations.push(format!(
+            "fused_points {} < {}",
+            evidence.fused_points, profile.minimum_fused_points
+        ));
+    }
+    if !evidence.finite_points {
+        violations.push("fused geometry contains non-finite or invalid-radius surfels".into());
+    }
+    if evidence.minimum_inlier_ratio < Some(profile.minimum_sequential_inlier_ratio) {
+        violations.push(format!(
+            "minimum_inlier_ratio {:?} < {}",
+            evidence.minimum_inlier_ratio, profile.minimum_sequential_inlier_ratio
+        ));
+    }
+    if evidence.maximum_rms_residual > Some(profile.maximum_sequential_rms_residual) {
+        violations.push(format!(
+            "maximum_rms_residual {:?} > {}",
+            evidence.maximum_rms_residual, profile.maximum_sequential_rms_residual
+        ));
+    }
+    if profile.require_loop_closure && evidence.loop_closures == 0 {
+        violations.push("profile requires an accepted loop closure".into());
+    }
+    Ok(SceneVerification {
+        schema: "vestra.scene-verification/v1",
+        profile: profile.name.clone(),
+        passed: violations.is_empty(),
+        violations,
+        evidence,
     })
 }
 
