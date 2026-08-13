@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted for the next backend milestone; not implemented.
+Accepted. The native driver foundation is implemented in Vestra Kernels; no
+Engine inference operator is routed to CUDA yet.
 
 ## Context
 
@@ -10,6 +11,12 @@ The locked Workhorse has an NVIDIA GeForce RTX 5080 with CUDA 12.0 support.
 Vestra Engine currently owns a `CpuBackend` directly and the graph executor,
 weights, activation layout, and fixed-shape kernels are CPU-resident. Vestra
 Studio and `vestra-core` consume Engine outputs only.
+
+Vestra Kernels revision `2e4c31faf43991523ca378ff30785cdce17b20ac` provides
+an opt-in `cuda` feature backed by dynamically loaded CUDA Driver API calls.
+It owns a selected device context, its default ordered stream, and explicit
+F32 host-to-device/device-to-host transfers. This was exercised on the
+Workhorse GPU; it is a transport foundation, not an inference backend.
 
 Calling the C++ PR implementation, a Python CLI, or a GPU viewer from Rust
 would make a useful demo but would not establish a native Vestra CUDA backend
@@ -22,8 +29,9 @@ Implement CUDA below the Engine public inference API, with no CUDA types in
 
 The implementation order is:
 
-1. Introduce an Engine-owned backend selection API and a typed device-resident
-   tensor/weight store while retaining the CPU F32 output API.
+1. Introduce an Engine-owned backend selection API and promote the typed
+   device-resident tensor/weight store from the Kernels foundation while
+   retaining the CPU F32 output API.
 2. Port and oracle-test preprocessing, patch embedding, linear/QKV, LayerNorm,
    RoPE, attention, GELU, convolution/Winograd, resize, depth/confidence, and
    pose heads for the locked DA3-BASE shapes.
