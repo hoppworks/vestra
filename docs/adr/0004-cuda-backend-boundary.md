@@ -12,11 +12,12 @@ Vestra Engine currently owns a `CpuBackend` directly and the graph executor,
 weights, activation layout, and fixed-shape kernels are CPU-resident. Vestra
 Studio and `vestra-core` consume Engine outputs only.
 
-Vestra Kernels revision `2e4c31faf43991523ca378ff30785cdce17b20ac` provides
+Vestra Kernels revision `688e2905f7bb8e4c9130e3d6faf5f8c4b1723508` provides
 an opt-in `cuda` feature backed by dynamically loaded CUDA Driver API calls.
 It owns a selected device context, its default ordered stream, and explicit
 F32 host-to-device/device-to-host transfers. This was exercised on the
-Workhorse GPU; it is a transport foundation, not an inference backend.
+Workhorse GPU. It also carries a device-resident F32 residual-add kernel, but
+the Engine does not yet route inference through it.
 
 Calling the C++ PR implementation, a Python CLI, or a GPU viewer from Rust
 would make a useful demo but would not establish a native Vestra CUDA backend
