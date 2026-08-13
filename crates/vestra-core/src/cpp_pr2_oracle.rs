@@ -10,7 +10,8 @@ use crate::WindowSettings;
 
 const FIXTURE_MAGIC: [u8; 4] = *b"VPS1";
 const OUTPUT_MAGIC: [u8; 4] = *b"VPO1";
-const VERSION: u32 = 2;
+const FIXTURE_VERSION: u32 = 2;
+const OUTPUT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CppPr2Frame {
@@ -79,7 +80,7 @@ impl CppPr2Fixture {
         self.validate()?;
         writer
             .write_all(&FIXTURE_MAGIC)
-            .and_then(|()| write_u32(writer, VERSION))
+            .and_then(|()| write_u32(writer, FIXTURE_VERSION))
             .and_then(|()| write_u32(writer, self.frame_count as u32))
             .and_then(|()| write_u32(writer, self.height as u32))
             .and_then(|()| write_u32(writer, self.width as u32))
@@ -177,7 +178,7 @@ impl CppPr2StreamOutput {
             return Err(CppPr2OracleError::Magic);
         }
         let version = read_u32(reader)?;
-        if version != VERSION {
+        if version != OUTPUT_VERSION {
             return Err(CppPr2OracleError::Version(version));
         }
         let frame_count = read_u32(reader)? as usize;
@@ -333,7 +334,7 @@ mod tests {
         let mut bytes = Vec::new();
         fixture().write_vps1(&mut bytes).unwrap();
         assert_eq!(&bytes[..4], b"VPS1");
-        assert_eq!(&bytes[4..8], &2_u32.to_le_bytes());
+        assert_eq!(&bytes[4..8], &FIXTURE_VERSION.to_le_bytes());
         let mut invalid = fixture();
         invalid.window_views[0][0].depth.pop();
         assert_eq!(
@@ -346,7 +347,7 @@ mod tests {
     fn vpo1_reader_rejects_trailing_bytes() {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"VPO1");
-        for value in [VERSION, 1, 1, 1, 0, 0] {
+        for value in [OUTPUT_VERSION, 1, 1, 1, 0, 0] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         bytes.extend_from_slice(&0_i32.to_le_bytes());
