@@ -79,7 +79,7 @@ world pipeline that do not depend on an unverified model claim:
     weak candidates are ignored; they never create an identity fallback.
 11. A full 120-frame real-phone-video run is evidenced on the Ryzen 9
     Workhorse in [the real-video validation record](docs/validation/REAL_VIDEO_IMG_2269_2026-08-13.md).
-    It completed 14 persisted windows and fused 390,182 finite relative-scale
+    It completed 14 persisted windows and fused 300,906 finite relative-scale
     surfels; its stated limitations remain part of the result. The earlier
     [end-to-end](docs/validation/END_TO_END_SMOKE_2026-08-13.md) and
     [motion-video](docs/validation/MOTION_VIDEO_SMOKE_2026-08-13.md) smokes
