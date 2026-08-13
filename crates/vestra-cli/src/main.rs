@@ -72,6 +72,11 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Print provenance and evidence-backed quality signals for a scene bundle.
+    Inspect {
+        #[arg(long)]
+        scene: PathBuf,
+    },
     /// Serve a local interactive browser studio for a `.vestra` bundle.
     Serve {
         #[arg(long)]
@@ -220,6 +225,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             );
         }
+        Command::Inspect { scene } => {
+            let bundle = SceneBundle::open(scene)?;
+            println!("{}", serde_json::to_string_pretty(&scene_report(&bundle)?)?);
+        }
         Command::Serve { scene, port } => {
             let _bundle = SceneBundle::open(&scene)?;
             eprintln!("Vestra Studio is listening at http://127.0.0.1:{port}");
@@ -227,6 +236,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+/// Summarizes only persisted evidence. The report intentionally does not turn
+/// a relative-scale scene or a capture indicator into an accuracy claim.
+fn scene_report(bundle: &SceneBundle) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let manifest = bundle.manifest()?;
+    let fused = manifest
+        .fused_chunk_hash
+        .as_deref()
+        .map(|hash| bundle.read_fused_scene(hash))
+        .transpose()?;
+    let alignments = fused
+        .as_ref()
+        .map_or(&[][..], |chunk| chunk.alignments.as_slice());
+    let correspondence_count = alignments
+        .iter()
+        .map(|alignment| alignment.correspondence_count)
+        .sum::<usize>();
+    let inlier_count = alignments
+        .iter()
+        .map(|alignment| alignment.inlier_count)
+        .sum::<usize>();
+    let finite_points = fused.as_ref().is_none_or(|chunk| {
+        chunk.points.iter().all(|point| {
+            point.position.iter().all(|value| value.is_finite())
+                && point.normal.iter().all(|value| value.is_finite())
+                && point.confidence.is_finite()
+                && point.radius.is_finite()
+                && point.radius > 0.0
+        })
+    });
+    let scene_state = match (&fused, finite_points) {
+        (None, _) => "measured_only",
+        (Some(_), false) => "invalid_fused_geometry",
+        (Some(_), true) => "fused_relative_world",
+    };
+
+    Ok(serde_json::json!({
+        "schema": manifest.schema,
+        "scene": bundle.root(),
+        "state": scene_state,
+        "scale": manifest.scale,
+        "coordinate_convention": manifest.coordinate_convention,
+        "provenance": manifest.provenance,
+        "capture_quality": manifest.capture_quality,
+        "measured_window_count": manifest.measured_chunk_hashes.len(),
+        "fused": fused.as_ref().map(|chunk| serde_json::json!({
+            "points": chunk.points.len(),
+            "progressive_point_chunks": manifest.fused_point_chunk_hashes.len(),
+            "voxel_size": chunk.voxel_size,
+            "finite_points": finite_points,
+            "sequential_alignment_count": alignments.len(),
+            "sequential_correspondence_count": correspondence_count,
+            "sequential_inlier_count": inlier_count,
+            "pose_graph": chunk.pose_graph,
+        })),
+        "interpretation": {
+            "metric_accuracy": "not_claimed; v1 scenes use relative scale",
+            "capture_indicator": "risk signal only; it is not geometric validation",
+            "recommended_next_gate": "inspect the Studio result and validate a real room capture with known revisits"
+        }
+    }))
 }
 
 fn locked_revision(section: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -293,5 +364,25 @@ mod tests {
     fn lock_parser_extracts_pinned_component_revisions() {
         assert_eq!(locked_revision("engine").unwrap().len(), 40);
         assert_eq!(locked_revision("kernels").unwrap().len(), 40);
+    }
+
+    #[test]
+    fn report_marks_unfused_bundles_as_measured_only() {
+        let root = std::env::temp_dir().join(format!("vestra-cli-report-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bundle = SceneBundle::create(
+            &root,
+            SceneProvenance {
+                engine_revision: "engine".into(),
+                kernel_revision: "kernels".into(),
+                model_fingerprint: "model".into(),
+                settings_fingerprint: "settings".into(),
+            },
+        )
+        .unwrap();
+        let report = scene_report(&bundle).unwrap();
+        assert_eq!(report["state"], "measured_only");
+        assert!(report["fused"].is_null());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

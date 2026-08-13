@@ -145,6 +145,16 @@ correct.
 cargo run -p vestra-cli -- fuse --scene room.vestra
 ```
 
+Inspect the persisted provenance and evidence signals before making a quality
+claim or sharing a capture. The report distinguishes a measured-only bundle
+from a fused relative-scale world, checks that published surfels are finite,
+and records alignment, loop-graph, capture-risk, and progressive-delivery
+facts. It deliberately does not infer metric accuracy from these signals.
+
+```bash
+cargo run -p vestra-cli -- inspect --scene room.vestra
+```
+
 Export the same fused relative-scale layer for inspection in standard 3D
 software:
 
