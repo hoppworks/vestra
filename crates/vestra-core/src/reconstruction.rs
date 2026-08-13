@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use vestra_engine::Engine;
 
 use crate::{
-    BackprojectionError, BackprojectionSettings, CameraCalibration, FrameWindow,
-    MeasuredFrameChunk, MeasuredView, OwnedFrame, SceneBundle, SceneBundleError,
+    BackprojectionError, BackprojectionSettings, CameraCalibration, CppPr2Fixture, CppPr2Frame,
+    FrameWindow, MeasuredFrameChunk, MeasuredView, OwnedFrame, SceneBundle, SceneBundleError,
     WindowMeasuredChunk, WindowSettings, backproject_measured_view, infer_ordered_window,
     plan_windows, stitch_measured_windows_with_settings,
 };
@@ -50,6 +50,8 @@ pub enum ReconstructionError {
     Schedule(#[from] crate::ScheduleError),
     #[error("window stitching failed: {0}")]
     Stitch(#[from] crate::StitchError),
+    #[error("oracle capture produced inconsistent output dimensions")]
+    OracleOutputShape,
     #[error(
         "persisted checkpoint for window {window_index} is incompatible with this reconstruction schedule"
     )]
@@ -81,6 +83,62 @@ pub fn fuse_scene_bundle_with_settings(
         chunk_hash,
         aligned_windows: windows.len(),
         points: fused.points.len(),
+    })
+}
+
+/// Captures the window-scoped model outputs consumed by the pinned C++ PR #2
+/// streaming oracle. It deliberately bypasses scene persistence and fusion:
+/// this artifact is for an honest pre-voxel differential comparison only.
+pub fn capture_cpp_pr2_fixture(
+    engine: &mut Engine,
+    frames: &[OwnedFrame],
+    windows: WindowSettings,
+    confidence_percentile: f64,
+    point_size: f32,
+    minimum_overlap_points: usize,
+) -> Result<CppPr2Fixture, ReconstructionError> {
+    let schedule = plan_windows(frames.len(), windows)?;
+    let mut window_views = Vec::with_capacity(schedule.len());
+    let mut dimensions = None;
+    for window in schedule {
+        let frame_slice = &frames[window.start..window.end];
+        let inference = infer_ordered_window(engine, frame_slice)?;
+        if inference.views.len() != frame_slice.len() {
+            return Err(ReconstructionError::ViewCount {
+                expected: frame_slice.len(),
+                actual: inference.views.len(),
+            });
+        }
+        let expected_dimensions = dimensions.get_or_insert((inference.w, inference.h));
+        if *expected_dimensions != (inference.w, inference.h) {
+            return Err(ReconstructionError::OracleOutputShape);
+        }
+        window_views.push(
+            frame_slice
+                .iter()
+                .zip(inference.views)
+                .map(|(frame, output)| CppPr2Frame {
+                    intrinsics: output.intrinsics,
+                    world_to_camera: output.extrinsics,
+                    depth: output.depth,
+                    confidence: output.conf,
+                    rgb_hwc_u8: rgb_at_inference_resolution(frame, output.w, output.h),
+                })
+                .collect(),
+        );
+    }
+    let Some((width, height)) = dimensions else {
+        return Err(ReconstructionError::OracleOutputShape);
+    };
+    Ok(CppPr2Fixture {
+        frame_count: frames.len(),
+        width,
+        height,
+        windows,
+        confidence_percentile,
+        point_size,
+        minimum_overlap_points,
+        window_views,
     })
 }
 

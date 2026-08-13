@@ -30,7 +30,8 @@ pub use pose_graph::{
 };
 pub use reconstruction::{
     FusionProgress, ReconstructionError, ReconstructionProgress, ReconstructionSettings,
-    fuse_scene_bundle, fuse_scene_bundle_with_settings, reconstruct_frames,
+    capture_cpp_pr2_fixture, fuse_scene_bundle, fuse_scene_bundle_with_settings,
+    reconstruct_frames,
 };
 pub use revisit::{
     CameraCentreDirection, RevisitProposal, RevisitProposalSettings, WindowCameraPath,
