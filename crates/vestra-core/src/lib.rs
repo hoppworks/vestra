@@ -30,7 +30,7 @@ pub use reconstruction::{
 };
 pub use revisit::{
     CameraCentreDirection, RevisitProposal, RevisitProposalSettings, WindowCameraPath,
-    camera_centre_direction, propose_revisits,
+    camera_centre_direction, propose_revisits, window_camera_path,
 };
 pub use scene::{
     MeasuredFrameChunk, SceneBundle, SceneBundleError, SceneManifest, SceneProvenance,

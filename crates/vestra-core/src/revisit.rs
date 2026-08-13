@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{CameraCalibration, SimilarityTransform};
+use crate::{CameraCalibration, SimilarityTransform, WindowMeasuredChunk};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CameraCentreDirection {
@@ -43,6 +43,21 @@ pub struct RevisitProposal {
     pub later: usize,
     pub nearest_centre_distance: f32,
     pub best_forward_cosine: f32,
+}
+
+/// Collects valid camera trajectory evidence from one immutable measured
+/// window. Invalid camera matrices are omitted rather than converted into
+/// invented positions.
+#[must_use]
+pub fn window_camera_path(window: &WindowMeasuredChunk) -> WindowCameraPath {
+    WindowCameraPath {
+        window_index: window.window.index,
+        cameras: window
+            .views
+            .iter()
+            .filter_map(|view| camera_centre_direction(view.frame_index, view.camera))
+            .collect(),
+    }
 }
 
 /// Derives a local camera centre and forward direction from a W2C calibration.
@@ -219,5 +234,32 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn window_path_retains_only_valid_camera_evidence() {
+        let valid = crate::MeasuredFrameChunk {
+            frame_index: 7,
+            camera: CameraCalibration {
+                world_to_camera: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                intrinsics: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            },
+            points: Vec::new(),
+        };
+        let mut invalid = valid.clone();
+        invalid.frame_index = 8;
+        invalid.camera.world_to_camera[0] = f32::NAN;
+        let window = WindowMeasuredChunk {
+            window: crate::FrameWindow {
+                index: 3,
+                start: 0,
+                end: 2,
+            },
+            views: vec![valid, invalid],
+        };
+        let path = window_camera_path(&window);
+        assert_eq!(path.window_index, 3);
+        assert_eq!(path.cameras.len(), 1);
+        assert_eq!(path.cameras[0].frame_index, 7);
     }
 }
