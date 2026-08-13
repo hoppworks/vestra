@@ -508,6 +508,144 @@ pub fn align_overlapping_windows(
     })
 }
 
+/// Reference-only implementation of PR #2's base sequential seam estimator:
+/// weighted Horn/Umeyama followed by eight confidence-weighted Huber IRLS
+/// iterations. Production uses [`align_overlapping_windows`] instead, with its
+/// stricter outlier and point-to-plane policy.
+pub fn align_overlapping_windows_cpp_pr2(
+    source: &WindowMeasuredChunk,
+    target: &WindowMeasuredChunk,
+) -> Result<AlignmentReport, StitchError> {
+    let mut target_points = HashMap::new();
+    for frame in &target.views {
+        for point in &frame.points {
+            target_points.insert((frame.frame_index, point.source_pixel), point);
+        }
+    }
+    let mut matches = Vec::new();
+    for frame in &source.views {
+        for point in &frame.points {
+            if let Some(other) = target_points.get(&(frame.frame_index, point.source_pixel)) {
+                matches.push(Match {
+                    source: point.position.map(f64::from),
+                    target: other.position.map(f64::from),
+                    target_normal: other.normal.map(f64::from),
+                    // C++ clamps a non-positive confidence product only when
+                    // building its dense overlap cache.
+                    weight: f64::from(point.confidence.min(other.confidence).max(1e-6)),
+                });
+            }
+        }
+    }
+    if matches.len() < 3 {
+        return Err(StitchError::InsufficientCorrespondences);
+    }
+    let (transform, rms_residual) = cpp_pr2_huber_irls_similarity(&matches)?;
+    let inliers = (0..matches.len()).collect::<Vec<_>>();
+    Ok(AlignmentReport {
+        transform,
+        correspondence_count: matches.len(),
+        inlier_count: matches.len(),
+        rms_residual,
+        normalized_rms_residual: normalized_rms_residual(&matches, &inliers, rms_residual)?,
+    })
+}
+
+fn cpp_pr2_huber_irls_similarity(
+    matches: &[Match],
+) -> Result<(SimilarityTransform, f32), StitchError> {
+    let mut weights = matches.iter().map(|item| item.weight).collect::<Vec<_>>();
+    let mut previous: Option<SimilarityTransform> = None;
+    let mut residuals = vec![0.0; matches.len()];
+    let mut transform = SimilarityTransform::IDENTITY;
+    for iteration in 0..8 {
+        let weighted = matches
+            .iter()
+            .zip(&weights)
+            .map(|(item, &weight)| Match { weight, ..*item })
+            .collect::<Vec<_>>();
+        let selected = (0..weighted.len()).collect::<Vec<_>>();
+        transform = fit_similarity(&weighted, &selected)?;
+        let source_energy = weighted_source_energy(&weighted)?;
+        for (residual, item) in residuals.iter_mut().zip(matches) {
+            *residual = distance(
+                transform.apply(item.source.map(|value| value as f32)),
+                item.target.map(|value| value as f32),
+            ) as f64;
+        }
+        let mut sorted = residuals.clone();
+        sorted.sort_by(f64::total_cmp);
+        let median = sorted[sorted.len() / 2];
+        let scene = (source_energy / matches.len() as f64).sqrt();
+        let delta = (1.345 * median).max(1e-6 * scene + 1e-30);
+        for ((weight, item), residual) in weights.iter_mut().zip(matches).zip(&residuals) {
+            *weight = item.weight
+                * if *residual <= delta {
+                    1.0
+                } else {
+                    delta / *residual
+                };
+        }
+        if let Some(old) = previous {
+            let mut change = f64::from((transform.scale - old.scale).abs());
+            change += transform
+                .rotation
+                .iter()
+                .zip(old.rotation)
+                .map(|(a, b)| f64::from((a - b).abs()))
+                .sum::<f64>();
+            change += transform
+                .translation
+                .iter()
+                .zip(old.translation)
+                .map(|(a, b)| f64::from((a - b).abs()))
+                .sum::<f64>();
+            if change < 1e-12 {
+                break;
+            }
+        }
+        previous = Some(transform);
+        if iteration == 7 {
+            break;
+        }
+    }
+    let total_weight = weights.iter().sum::<f64>();
+    if !total_weight.is_finite() || total_weight <= 0.0 {
+        return Err(StitchError::DegenerateGeometry);
+    }
+    let weighted_squared = weights
+        .iter()
+        .zip(&residuals)
+        .map(|(w, r)| w * r * r)
+        .sum::<f64>();
+    Ok((transform, (weighted_squared / total_weight).sqrt() as f32))
+}
+
+fn weighted_source_energy(matches: &[Match]) -> Result<f64, StitchError> {
+    let total = matches.iter().map(|item| item.weight).sum::<f64>();
+    if !total.is_finite() || total <= 0.0 {
+        return Err(StitchError::DegenerateGeometry);
+    }
+    let mut mean = [0.0; 3];
+    for item in matches {
+        for (dimension, value) in mean.iter_mut().enumerate() {
+            *value += item.weight * item.source[dimension];
+        }
+    }
+    for value in &mut mean {
+        *value /= total;
+    }
+    Ok(matches
+        .iter()
+        .map(|item| {
+            item.weight
+                * (0..3)
+                    .map(|d| (item.source[d] - mean[d]).powi(2))
+                    .sum::<f64>()
+        })
+        .sum())
+}
+
 fn normalized_rms_residual(
     matches: &[Match],
     inliers: &[usize],
