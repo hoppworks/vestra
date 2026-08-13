@@ -100,10 +100,11 @@ impl OwnedFrame {
     }
 }
 
-/// Thin product-to-engine seam for the first parity tracer bullet.
+/// Thin product-to-engine seam for one PR #2-compatible multi-view pass.
 ///
-/// It performs one genuine ordered multi-view pass. Frame selection,
-/// reference selection, stitching, and fusion remain separate Vestra phases.
+/// The engine selects and restores a saddle-balanced reference view when the
+/// model enables alternating global attention. Frame selection, stitching,
+/// and fusion remain separate Vestra phases.
 pub fn infer_ordered_window(
     engine: &mut Engine,
     frames: &[OwnedFrame],
@@ -112,7 +113,7 @@ pub fn infer_ordered_window(
         .iter()
         .map(OwnedFrame::as_engine_input)
         .collect::<Vec<_>>();
-    engine.infer_multi_view_ordered(&inputs)
+    engine.infer_multi_view(&inputs)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

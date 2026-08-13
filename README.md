@@ -57,7 +57,8 @@ world pipeline that do not depend on an unverified model claim:
 2. Vestra imports Vestra Engine through the repository boundary.
 3. Vestra Engine implements genuine ordered multi-view local/global attention.
 4. `S=1` is bitwise equal to its established single-view path.
-5. The saddle-balanced reference scoring and reordering contract is ported.
+5. The automatic saddle-balanced reference-selection and restoration path is
+   implemented for eligible multi-view windows.
 6. Calibrated depth, confidence, RGB, and a W2C camera pose deterministically
    produce relative-scale measured surfel points. Invalid or low-confidence
    pixels never become geometry.
