@@ -77,10 +77,13 @@ world pipeline that do not depend on an unverified model claim:
     them with tight spatial geometry gates, and redistributes accepted loop
     constraints through a relative Sim(3) pose graph before fusion. Failed or
     weak candidates are ignored; they never create an identity fallback.
-11. The complete local MP4-to-Studio smoke path is evidenced on the Ryzen 9
-    Workhorse in [the end-to-end validation record](docs/validation/END_TO_END_SMOKE_2026-08-13.md).
-    A separate [motion-video smoke record](docs/validation/MOTION_VIDEO_SMOKE_2026-08-13.md)
-    covers three overlapping windows from changing footage.
+11. A full 120-frame real-phone-video run is evidenced on the Ryzen 9
+    Workhorse in [the real-video validation record](docs/validation/REAL_VIDEO_IMG_2269_2026-08-13.md).
+    It completed 14 persisted windows and fused 390,182 finite relative-scale
+    surfels; its stated limitations remain part of the result. The earlier
+    [end-to-end](docs/validation/END_TO_END_SMOKE_2026-08-13.md) and
+    [motion-video](docs/validation/MOTION_VIDEO_SMOKE_2026-08-13.md) smokes
+    remain narrower wiring evidence.
 12. Fused points are additionally persisted in ordered, content-addressed
     chunks (50,000 surfels each). Studio streams and renders these chunks in
     sequence; the canonical fused payload remains available for PLY export.
