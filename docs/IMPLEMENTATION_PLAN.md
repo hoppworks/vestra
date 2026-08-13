@@ -82,7 +82,9 @@ Remaining:
 
 ## Slice 5 — CUDA and product performance
 
-- native RTX 5080 inference kernels in Vestra Kernels
+- Engine-owned native RTX 5080 backend; the current Engine is CPU-bound and
+  has no GPU fallback or claim (see `docs/adr/0004-cuda-backend-boundary.md`)
+- native CUDA inference kernels in Vestra Kernels
 - GPU geometry phases where profiling justifies them
 - progressive time-to-first-world optimization
 - full randomized C++/Vestra CPU and GPU benchmark matrix
