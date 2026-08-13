@@ -131,6 +131,13 @@ inference run:
 cargo run -p vestra-cli -- fuse --scene room.vestra
 ```
 
+Export the same fused relative-scale layer for inspection in standard 3D
+software:
+
+```bash
+cargo run -p vestra-cli -- export --scene room.vestra --output room.ply
+```
+
 Open the result in the local browser studio:
 
 ```bash

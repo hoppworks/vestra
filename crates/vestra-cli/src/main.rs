@@ -8,8 +8,8 @@ use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 use vestra_core::{
     BackprojectionSettings, ReconstructionSettings, SceneBundle, SceneProvenance,
-    VideoExtractionSettings, WindowSettings, extract_video_frames, fuse_scene_bundle, plan_windows,
-    reconstruct_frames,
+    VideoExtractionSettings, WindowSettings, export_fused_ply, extract_video_frames,
+    fuse_scene_bundle, plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
 use vestra_studio::serve;
@@ -64,6 +64,13 @@ enum Command {
     Fuse {
         #[arg(long)]
         scene: PathBuf,
+    },
+    /// Export the fused relative-scale world as an open ASCII PLY file.
+    Export {
+        #[arg(long)]
+        scene: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
     },
     /// Serve a local interactive browser studio for a `.vestra` bundle.
     Serve {
@@ -189,6 +196,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "fused_chunk": fusion.chunk_hash,
                     "windows": fusion.aligned_windows,
                     "fused_points": fusion.points,
+                })
+            );
+        }
+        Command::Export { scene, output } => {
+            let bundle = SceneBundle::open(scene)?;
+            let points = export_fused_ply(&bundle, &output)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "bundle": bundle.root(),
+                    "format": "ply/ascii",
+                    "output": output,
+                    "points": points,
+                    "scale": "relative",
                 })
             );
         }

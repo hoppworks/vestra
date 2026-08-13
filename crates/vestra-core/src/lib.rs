@@ -6,12 +6,14 @@
 use serde::{Deserialize, Serialize};
 use vestra_engine::{Engine, EngineError, MultiViewInferOut, ViewInput};
 
+pub mod export;
 pub mod geometry;
 pub mod reconstruction;
 pub mod scene;
 pub mod stitch;
 pub mod video;
 
+pub use export::{ExportError, export_fused_ply};
 pub use geometry::{
     BackprojectionError, BackprojectionSettings, CameraCalibration, MeasuredPoint, MeasuredView,
     backproject_measured_view,
