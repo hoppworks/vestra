@@ -26,6 +26,25 @@
 - Record source revisions, dirty diff hashes, compiler flags, binary hashes,
   model/input hashes, driver/runtime versions, hardware state, and temperatures
 
+## Runner
+
+`scripts/run_benchmark.py` executes the randomized fresh-process trial order
+from an explicit JSON profile and writes every command, stdout, stderr, exit
+code, raw timing sample, trial median, and summary confidence interval. It
+does not invoke a shell or silently benchmark a fallback command.
+
+```bash
+python3 scripts/run_benchmark.py \
+  --profile docs/benchmarks/example-product-study.json \
+  --output docs/benchmarks/results/<study>.json
+```
+
+The example uses placeholders on purpose. A committed study must replace them
+with absolute, pinned runner paths and retain the complete profile alongside
+the resulting JSON. `wall_process_ms` is for independently launched product
+commands. For steady-state operator runners, use `stdout_samples_ms` and emit
+`{"samples_ms": [...]}` after the locked warm-up.
+
 ## Required comparisons
 
 | Workload | Required Vestra result |

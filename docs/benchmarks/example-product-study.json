@@ -1,0 +1,19 @@
+{
+  "schema": "vestra.benchmark/v1",
+  "name": "replace-with-pinned-product-study",
+  "seed": 20260813,
+  "trials": 10,
+  "warmup": 1,
+  "arms": [
+    {
+      "name": "reference",
+      "measurement": "wall_process_ms",
+      "command": ["/absolute/path/to/reference-runner", "--warmup", "{warmup}", "--repeat", "10"]
+    },
+    {
+      "name": "vestra",
+      "measurement": "wall_process_ms",
+      "command": ["/absolute/path/to/vestra-runner", "--warmup", "{warmup}", "--repeat", "10"]
+    }
+  ]
+}
