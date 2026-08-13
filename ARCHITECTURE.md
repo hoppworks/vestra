@@ -10,7 +10,7 @@ video
   -> Vestra Engine depth, confidence, intrinsics, extrinsics
   -> back-projection and confidence filtering
   -> robust weighted Sim3 window alignment
-  -> [next] point-to-plane ICP
+  -> bounded point-to-plane seam refinement
   -> [next] loop detection and Sim3 pose-graph optimization
   -> confidence-weighted voxel surfel fusion
   -> [next] TSDF de-ghosting

@@ -42,7 +42,8 @@ Remaining:
 
 ## Slice 3 — Reconstruction cleanup (next geometry milestones)
 
-- point-to-plane ICP with spatial hash
+- one bounded point-to-plane refinement over direct overlap matches, using
+  fused surfel normals (complete); spatial-hash ICP remains next
 - loop detection and Sim3 pose graph
 - TSDF de-ghosting and first-observer ownership
 - surfel normals, voxel mode, thinning, and confidence reveal ordering

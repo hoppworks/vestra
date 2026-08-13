@@ -129,6 +129,7 @@ pub enum StitchError {
 struct Match {
     source: [f64; 3],
     target: [f64; 3],
+    target_normal: [f64; 3],
     weight: f64,
 }
 
@@ -154,6 +155,7 @@ pub fn align_overlapping_windows(
                 matches.push(Match {
                     source: point.position.map(f64::from),
                     target: other.position.map(f64::from),
+                    target_normal: other.normal.map(f64::from),
                     weight: f64::from(point.confidence.min(other.confidence).max(0.0)),
                 });
             }
@@ -193,7 +195,7 @@ pub fn align_overlapping_windows(
         }
         inliers = next;
     }
-    let transform = fit_similarity(&matches, &inliers)?;
+    let transform = refine_point_to_plane(fit_similarity(&matches, &inliers)?, &matches, &inliers);
     let squared = inliers
         .iter()
         .map(|&i| {
@@ -327,6 +329,159 @@ fn fit_similarity(
             (ty[2] - scale * rsx[2]) as f32,
         ],
     })
+}
+
+/// One bounded point-to-plane ICP correction after the correspondence-derived
+/// Sim(3). It is intentionally local: it does not create new matches, so a
+/// poor revisit cannot be pulled into an unrelated surface. Missing legacy
+/// normals or a singular normal equation leave the Sim(3) unchanged.
+fn refine_point_to_plane(
+    transform: SimilarityTransform,
+    matches: &[Match],
+    selected: &[usize],
+) -> SimilarityTransform {
+    let mut normal = [[0.0_f64; 6]; 6];
+    let mut rhs = [0.0_f64; 6];
+    let mut usable = 0;
+    for &index in selected {
+        let entry = matches[index];
+        let n = entry.target_normal;
+        let length = dot(n, n).sqrt();
+        if !length.is_finite() || length < 0.5 {
+            continue;
+        }
+        let n = n.map(|value| value / length);
+        let p = transform
+            .apply(entry.source.map(|value| value as f32))
+            .map(f64::from);
+        let residual = dot(
+            n,
+            [
+                p[0] - entry.target[0],
+                p[1] - entry.target[1],
+                p[2] - entry.target[2],
+            ],
+        );
+        let cross = cross64(p, n);
+        let row = [n[0], n[1], n[2], cross[0], cross[1], cross[2]];
+        for r in 0..6 {
+            rhs[r] -= entry.weight * row[r] * residual;
+            for c in 0..6 {
+                normal[r][c] += entry.weight * row[r] * row[c];
+            }
+        }
+        usable += 1;
+    }
+    if usable < 6 {
+        return transform;
+    }
+    // The local correction is deliberately Tikhonov-regularized: planar or
+    // near-symmetric overlap often leaves some rotation axes unobservable.
+    // Those axes should stay near zero rather than making the whole seam fail.
+    for (index, row) in normal.iter_mut().enumerate() {
+        row[index] += 1e-6;
+    }
+    let Some(solution) = solve_6x6(normal, rhs) else {
+        return transform;
+    };
+    let translation = [solution[0] as f32, solution[1] as f32, solution[2] as f32];
+    let rotation_vector = [solution[3] as f32, solution[4] as f32, solution[5] as f32];
+    let angle = rotation_vector
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+    if !angle.is_finite() || angle > 0.1 || translation.iter().any(|value| !value.is_finite()) {
+        return transform;
+    }
+    let correction = axis_angle_rotation(rotation_vector);
+    let rotation = matrix_mul(correction, transform.rotation);
+    let rotated_translation = matrix_vec(correction, transform.translation);
+    SimilarityTransform {
+        scale: transform.scale,
+        rotation,
+        translation: [
+            rotated_translation[0] + translation[0],
+            rotated_translation[1] + translation[1],
+            rotated_translation[2] + translation[2],
+        ],
+    }
+}
+
+fn cross64(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+#[allow(clippy::needless_range_loop)] // Gaussian elimination updates rows in place from the pivot.
+fn solve_6x6(mut matrix: [[f64; 6]; 6], mut rhs: [f64; 6]) -> Option<[f64; 6]> {
+    for pivot in 0..6 {
+        let row = (pivot..6)
+            .max_by(|&a, &b| matrix[a][pivot].abs().total_cmp(&matrix[b][pivot].abs()))?;
+        if matrix[row][pivot].abs() < 1e-10 {
+            return None;
+        }
+        matrix.swap(pivot, row);
+        rhs.swap(pivot, row);
+        let divisor = matrix[pivot][pivot];
+        for column in pivot..6 {
+            matrix[pivot][column] /= divisor;
+        }
+        rhs[pivot] /= divisor;
+        for row in 0..6 {
+            if row == pivot {
+                continue;
+            }
+            let factor = matrix[row][pivot];
+            for column in pivot..6 {
+                matrix[row][column] -= factor * matrix[pivot][column];
+            }
+            rhs[row] -= factor * rhs[pivot];
+        }
+    }
+    Some(rhs)
+}
+
+fn axis_angle_rotation(vector: [f32; 3]) -> [f32; 9] {
+    let angle = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if angle < 1e-8 {
+        return SimilarityTransform::IDENTITY.rotation;
+    }
+    let [x, y, z] = vector.map(|value| value / angle);
+    let (sin, cos) = angle.sin_cos();
+    let one_minus_cos = 1.0 - cos;
+    [
+        cos + x * x * one_minus_cos,
+        x * y * one_minus_cos - z * sin,
+        x * z * one_minus_cos + y * sin,
+        y * x * one_minus_cos + z * sin,
+        cos + y * y * one_minus_cos,
+        y * z * one_minus_cos - x * sin,
+        z * x * one_minus_cos - y * sin,
+        z * y * one_minus_cos + x * sin,
+        cos + z * z * one_minus_cos,
+    ]
+}
+
+fn matrix_mul(left: [f32; 9], right: [f32; 9]) -> [f32; 9] {
+    std::array::from_fn(|index| {
+        let row = index / 3;
+        let column = index % 3;
+        (0..3)
+            .map(|k| left[row * 3 + k] * right[k * 3 + column])
+            .sum()
+    })
+}
+
+fn matrix_vec(matrix: [f32; 9], vector: [f32; 3]) -> [f32; 3] {
+    [
+        matrix[0] * vector[0] + matrix[1] * vector[1] + matrix[2] * vector[2],
+        matrix[3] * vector[0] + matrix[4] * vector[1] + matrix[5] * vector[2],
+        matrix[6] * vector[0] + matrix[7] * vector[1] + matrix[8] * vector[2],
+    ]
 }
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -661,6 +816,41 @@ mod tests {
         assert_eq!(
             stitch_measured_windows(&[target, source]),
             Err(StitchError::QualityGate)
+        );
+    }
+
+    #[test]
+    fn point_to_plane_refinement_corrects_small_dense_translation() {
+        let translation = [0.01_f64, -0.02, 0.03];
+        let source = [
+            [-1.0, -1.0, -1.0],
+            [-1.0, -1.0, 1.0],
+            [-1.0, 1.0, -1.0],
+            [-1.0, 1.0, 1.0],
+            [1.0, -1.0, -1.0],
+            [1.0, -1.0, 1.0],
+            [1.0, 1.0, -1.0],
+            [1.0, 1.0, 1.0],
+        ];
+        let matches = source
+            .into_iter()
+            .map(|point| Match {
+                source: point,
+                target: [
+                    point[0] + translation[0],
+                    point[1] + translation[1],
+                    point[2] + translation[2],
+                ],
+                target_normal: point.map(|value: f64| value / 3.0_f64.sqrt()),
+                weight: 1.0,
+            })
+            .collect::<Vec<_>>();
+        let selected = (0..matches.len()).collect::<Vec<_>>();
+        let refined = refine_point_to_plane(SimilarityTransform::IDENTITY, &matches, &selected);
+        assert!(
+            distance(refined.translation, translation.map(|value| value as f32)) < 1e-4,
+            "{:?}",
+            refined.translation
         );
     }
 }
