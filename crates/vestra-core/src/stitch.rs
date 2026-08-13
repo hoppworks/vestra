@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     MeasuredPoint, PoseGraphEdge, PoseGraphError, PoseGraphReport, PoseGraphSettings,
-    RelativePoseGraph, WindowMeasuredChunk, optimize_relative_pose_graph,
+    RelativePoseGraph, RevisitProposalSettings, WindowMeasuredChunk, optimize_relative_pose_graph,
+    propose_revisits, window_camera_path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -170,6 +171,21 @@ pub struct StitchSettings {
     pub minimum_inlier_ratio: f32,
     pub minimum_scale: f32,
     pub maximum_scale: f32,
+    pub loop_closure: Option<LoopClosureSettings>,
+}
+
+/// Conservative relative-scale gates for automatic revisit handling. Lengths
+/// are expressed as multipliers of the median measured surfel radius.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LoopClosureSettings {
+    pub minimum_window_gap: usize,
+    pub candidate_distance_radii: f32,
+    pub minimum_forward_cosine: f32,
+    pub match_distance_radii: f32,
+    pub minimum_correspondences: usize,
+    pub minimum_inlier_ratio: f32,
+    pub maximum_rms_radii: f32,
+    pub information: f32,
 }
 
 /// Gates for measuring a non-sequential revisit in local window coordinates.
@@ -198,6 +214,16 @@ impl Default for StitchSettings {
             minimum_inlier_ratio: 0.6,
             minimum_scale: 0.1,
             maximum_scale: 10.0,
+            loop_closure: Some(LoopClosureSettings {
+                minimum_window_gap: 3,
+                candidate_distance_radii: 80.0,
+                minimum_forward_cosine: 0.5,
+                match_distance_radii: 4.0,
+                minimum_correspondences: 50,
+                minimum_inlier_ratio: 0.7,
+                maximum_rms_radii: 2.0,
+                information: 1.0,
+            }),
         }
     }
 }
@@ -851,11 +877,15 @@ pub fn stitch_measured_windows_with_loop_closures(
         poses.push(report.transform);
         alignments.push(report);
     }
-    let pose_graph = if loop_closures.is_empty() {
+    let mut accepted_loops = loop_closures.to_vec();
+    if let Some(loop_settings) = settings.loop_closure {
+        accepted_loops.extend(discover_loop_closures(windows, &poses, loop_settings));
+    }
+    let pose_graph = if accepted_loops.is_empty() {
         None
     } else {
         let mut edges = sequential_edges;
-        edges.extend_from_slice(loop_closures);
+        edges.extend(accepted_loops);
         let mut graph = RelativePoseGraph {
             nodes: poses,
             edges,
@@ -947,6 +977,62 @@ pub fn stitch_measured_windows_with_loop_closures(
         voxel_size,
         points,
     })
+}
+
+fn discover_loop_closures(
+    windows: &[WindowMeasuredChunk],
+    sequential_poses: &[SimilarityTransform],
+    settings: LoopClosureSettings,
+) -> Vec<PoseGraphEdge> {
+    let mut radii = windows
+        .iter()
+        .flat_map(|window| window.views.iter())
+        .flat_map(|view| view.points.iter())
+        .map(|point| point.radius)
+        .filter(|radius| radius.is_finite() && *radius > 0.0)
+        .collect::<Vec<_>>();
+    if radii.is_empty() {
+        return Vec::new();
+    }
+    radii.sort_by(f32::total_cmp);
+    let radius = radii[radii.len() / 2];
+    let candidate_distance = radius * settings.candidate_distance_radii;
+    let match_distance = radius * settings.match_distance_radii;
+    let maximum_rms = radius * settings.maximum_rms_radii;
+    if !candidate_distance.is_finite() || !match_distance.is_finite() || !maximum_rms.is_finite() {
+        return Vec::new();
+    }
+    let paths = windows.iter().map(window_camera_path).collect::<Vec<_>>();
+    propose_revisits(
+        &paths,
+        sequential_poses,
+        RevisitProposalSettings {
+            minimum_window_gap: settings.minimum_window_gap,
+            maximum_centre_distance: candidate_distance,
+            minimum_forward_cosine: settings.minimum_forward_cosine,
+        },
+    )
+    .into_iter()
+    .filter_map(|proposal| {
+        let seed = sequential_poses[proposal.earlier]
+            .inverse()?
+            .compose(sequential_poses[proposal.later]);
+        measure_loop_closure(
+            &windows[proposal.earlier],
+            &windows[proposal.later],
+            seed,
+            LoopMeasurementSettings {
+                match_distance,
+                minimum_correspondences: settings.minimum_correspondences,
+                minimum_inlier_ratio: settings.minimum_inlier_ratio,
+                maximum_rms_residual: maximum_rms,
+                information: settings.information,
+            },
+        )
+        .ok()
+        .map(|measurement| measurement.edge)
+    })
+    .collect()
 }
 
 fn transform_window(
@@ -1290,5 +1376,42 @@ mod tests {
             ),
             Err(StitchError::InsufficientCorrespondences)
         );
+    }
+
+    #[test]
+    fn automatic_revisit_path_adds_only_verified_non_adjacent_loop_edges() {
+        let points = vec![
+            p(0, [0.0, 0.0, 0.0]),
+            p(1, [1.0, 0.0, 0.0]),
+            p(2, [0.0, 1.0, 0.0]),
+            p(3, [0.0, 0.0, 1.0]),
+        ];
+        let windows = (0..4)
+            .map(|index| {
+                let mut window = chunk(points.clone());
+                window.window.index = index;
+                window
+            })
+            .collect::<Vec<_>>();
+        let fused = stitch_measured_windows_with_settings(
+            &windows,
+            StitchSettings {
+                minimum_correspondences: 3,
+                minimum_inlier_ratio: 0.5,
+                loop_closure: Some(LoopClosureSettings {
+                    minimum_window_gap: 3,
+                    candidate_distance_radii: 2.0,
+                    minimum_forward_cosine: 0.9,
+                    match_distance_radii: 0.1,
+                    minimum_correspondences: 3,
+                    minimum_inlier_ratio: 0.75,
+                    maximum_rms_radii: 0.01,
+                    information: 1.0,
+                }),
+                ..StitchSettings::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(fused.pose_graph.expect("verified revisit").loop_edges, 1);
     }
 }
