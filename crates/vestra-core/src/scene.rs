@@ -21,6 +21,9 @@ use crate::{
 const MANIFEST_FILE: &str = "manifest.json";
 const CHUNKS_DIRECTORY: &str = "chunks";
 const FUSED_POINT_CHUNK_SIZE: usize = 50_000;
+const FUSED_POINT_BINARY_MAGIC: [u8; 4] = *b"VSPT";
+const FUSED_POINT_BINARY_VERSION: u16 = 1;
+const FUSED_POINT_BINARY_STRIDE: u16 = 40;
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +49,10 @@ pub struct SceneManifest {
     /// The full fused chunk remains canonical for export and compatibility.
     #[serde(default)]
     pub fused_point_chunk_hashes: Vec<String>,
+    /// Ordered binary surfel payloads for the production browser path. JSON
+    /// point chunks remain available as a transparent compatibility layer.
+    #[serde(default)]
+    pub fused_point_binary_chunk_hashes: Vec<String>,
     /// Small, manifest-resident diagnostics for the browser. Keeping this
     /// summary out of the progressive point payload means inspection does not
     /// require downloading the canonical fused chunk.
@@ -127,6 +134,7 @@ impl SceneBundle {
             measured_chunk_hashes: Vec::new(),
             fused_chunk_hash: None,
             fused_point_chunk_hashes: Vec::new(),
+            fused_point_binary_chunk_hashes: Vec::new(),
             fused_summary: None,
             capture_quality: None,
         })?;
@@ -206,6 +214,11 @@ impl SceneBundle {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let binary_point_chunk_hashes = chunk
+            .points
+            .chunks(FUSED_POINT_CHUNK_SIZE)
+            .map(|points| self.write_fused_point_binary_chunk(points))
+            .collect::<Result<Vec<_>, _>>()?;
         let payload = serde_json::to_vec(chunk)?;
         let hash = sha256_hex(&payload);
         let chunk_path = self
@@ -222,6 +235,9 @@ impl SceneBundle {
         if manifest.fused_point_chunk_hashes != point_chunk_hashes {
             manifest.fused_point_chunk_hashes = point_chunk_hashes;
         }
+        if manifest.fused_point_binary_chunk_hashes != binary_point_chunk_hashes {
+            manifest.fused_point_binary_chunk_hashes = binary_point_chunk_hashes;
+        }
         manifest.fused_summary = Some(FusedSceneSummary::from(chunk));
         self.write_manifest(&manifest)?;
         Ok(hash)
@@ -234,6 +250,45 @@ impl SceneBundle {
             .root
             .join(CHUNKS_DIRECTORY)
             .join(format!("points-{hash}.json"));
+        if !path.exists() {
+            atomic_write(&path, &payload)?;
+        }
+        Ok(hash)
+    }
+
+    fn write_fused_point_binary_chunk(
+        &self,
+        points: &[FusedPoint],
+    ) -> Result<String, SceneBundleError> {
+        let mut payload =
+            Vec::with_capacity(12 + points.len() * usize::from(FUSED_POINT_BINARY_STRIDE));
+        payload.extend_from_slice(&FUSED_POINT_BINARY_MAGIC);
+        payload.extend_from_slice(&FUSED_POINT_BINARY_VERSION.to_le_bytes());
+        payload.extend_from_slice(&FUSED_POINT_BINARY_STRIDE.to_le_bytes());
+        payload.extend_from_slice(
+            &(u32::try_from(points.len()).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "point chunk exceeds u32 count",
+                )
+            })?)
+            .to_le_bytes(),
+        );
+        for point in points {
+            for value in point.position.into_iter().chain(point.normal) {
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+            payload.extend_from_slice(&point.color_srgb);
+            payload.push(0);
+            payload.extend_from_slice(&point.confidence.to_le_bytes());
+            payload.extend_from_slice(&point.radius.to_le_bytes());
+            payload.extend_from_slice(&point.contributors.to_le_bytes());
+        }
+        let hash = sha256_hex(&payload);
+        let path = self
+            .root
+            .join(CHUNKS_DIRECTORY)
+            .join(format!("points-{hash}.bin"));
         if !path.exists() {
             atomic_write(&path, &payload)?;
         }
@@ -447,6 +502,15 @@ mod tests {
             Some(fused_hash.as_str())
         );
         assert_eq!(manifest.fused_point_chunk_hashes.len(), 1);
+        assert_eq!(manifest.fused_point_binary_chunk_hashes.len(), 1);
+        let binary = fs::read(root.join(CHUNKS_DIRECTORY).join(format!(
+            "points-{}.bin",
+            manifest.fused_point_binary_chunk_hashes[0]
+        )))
+        .unwrap();
+        assert_eq!(&binary[..4], b"VSPT");
+        assert_eq!(u16::from_le_bytes(binary[6..8].try_into().unwrap()), 40);
+        assert_eq!(u32::from_le_bytes(binary[8..12].try_into().unwrap()), 1);
         assert_eq!(manifest.fused_summary.as_ref().unwrap().point_count, 1);
         assert_eq!(
             bundle
@@ -484,6 +548,7 @@ mod tests {
         bundle.write_fused_scene(&fused).unwrap();
         let manifest = bundle.manifest().unwrap();
         assert_eq!(manifest.fused_point_chunk_hashes.len(), 2);
+        assert_eq!(manifest.fused_point_binary_chunk_hashes.len(), 2);
         assert_eq!(
             bundle
                 .read_fused_point_chunk(&manifest.fused_point_chunk_hashes[0])

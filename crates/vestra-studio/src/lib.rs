@@ -48,6 +48,9 @@ fn handle(mut stream: TcpStream, root: &Path) -> std::io::Result<()> {
         _ if path.starts_with("/chunks/") && path.ends_with(".json") && safe_chunk_path(path) => {
             read_file(root.join(&path[1..]), "application/json")
         }
+        _ if path.starts_with("/chunks/") && path.ends_with(".bin") && safe_chunk_path(path) => {
+            read_file(root.join(&path[1..]), "application/octet-stream")
+        }
         _ => (
             "404 Not Found",
             "text/plain; charset=utf-8",
@@ -74,10 +77,11 @@ fn read_file(path: PathBuf, content_type: &'static str) -> (&'static str, &'stat
 }
 
 fn safe_chunk_path(path: &str) -> bool {
-    let Some(name) = path
-        .strip_prefix("/chunks/")
-        .and_then(|value| value.strip_suffix(".json"))
-    else {
+    let Some(name) = path.strip_prefix("/chunks/").and_then(|value| {
+        value
+            .strip_suffix(".json")
+            .or_else(|| value.strip_suffix(".bin"))
+    }) else {
         return false;
     };
     let hash = name
@@ -101,6 +105,7 @@ mod tests {
         assert!(safe_chunk_path(&format!("/chunks/{hash}.json")));
         assert!(safe_chunk_path(&format!("/chunks/fused-{hash}.json")));
         assert!(safe_chunk_path(&format!("/chunks/points-{hash}.json")));
+        assert!(safe_chunk_path(&format!("/chunks/points-{hash}.bin")));
         assert!(!safe_chunk_path("/chunks/../../manifest.json"));
         assert!(!safe_chunk_path("/chunks/xyz.json"));
     }
