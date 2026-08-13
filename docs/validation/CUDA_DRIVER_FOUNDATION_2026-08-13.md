@@ -156,3 +156,26 @@ the strict CPU-order LayerNorm route:
 cargo test -p vestra-engine --features cuda-residual-oracle \
   cuda_mlp_slice_matches_cpu_ordered_multiview -- --nocapture
 ```
+
+## CUDA Q/K normalization and RoPE oracle
+
+Vestra Kernels revision `22cdd0e` adds the locked DA3-BASE-shape parity gate
+for the device-resident fused Q/K normalization and two-dimensional RoPE
+operator. The test uses head-major Q and K tensors at 12 heads × 865 tokens ×
+64 dimensions, the production 24 × 36 token-position layout, and the
+production CPU operator as its oracle. It verifies Q and K independently with
+MAE `<= 5e-5` and maximum absolute error `<= 5e-4`.
+
+On the Workhorse RTX 5080 it passed in 0.33 seconds in a debug test build:
+
+```sh
+LD_LIBRARY_PATH=/var/roothome/vestra-cuda-deps/nvidia/cuda_nvrtc/lib:/var/roothome/vestra-cuda-deps/nvidia/cublas/lib \
+VESTRA_CUDA_DA3_QK_ROPE_TEST=1 \
+cargo test --lib --features cuda \
+  cuda_qk_norm_rope_matches_production_da3_base_shape -- --nocapture
+```
+
+This closes the isolated numerical gate for the attention input preparation.
+It does not yet make CUDA attention an Engine execution path; that next slice
+must retain Q, K, V, Q/K normalization, RoPE, attention, and attention
+projection on the device before it can make an end-to-end speed claim.
