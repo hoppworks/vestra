@@ -150,7 +150,6 @@ pub fn stitch_cpp_pr2_fixture_as_vestra(
 ) -> Result<FusedSceneChunk, ReconstructionError> {
     let mut windows = Vec::with_capacity(fixture.window_views.len());
     for (window_index, views) in fixture.window_views.iter().enumerate() {
-        let threshold = confidence_percentile(views, fixture.confidence_percentile)?;
         let start = window_index * (fixture.windows.chunk_size - fixture.windows.overlap);
         let measured_views = views
             .iter()
@@ -169,7 +168,11 @@ pub fn stitch_cpp_pr2_fixture_as_vestra(
                         },
                     },
                     BackprojectionSettings {
-                        minimum_confidence: threshold,
+                        // PR #2 uses dense, finite positive-depth overlap
+                        // observations for Sim(3), with confidence as a weight.
+                        // Its percentile threshold applies only to final point
+                        // emission, not to seam correspondences.
+                        minimum_confidence: -f32::MAX,
                         pixel_stride: 1,
                         // Position and confidence are the only inputs to the
                         // sequential fit; C++ radius parity is a later raw tier.
@@ -204,28 +207,6 @@ pub fn stitch_cpp_pr2_fixture_as_vestra(
         loop_closure: None,
     };
     Ok(stitch_measured_windows_with_settings(&windows, settings)?)
-}
-
-fn confidence_percentile(
-    views: &[CppPr2Frame],
-    percentile: f64,
-) -> Result<f32, ReconstructionError> {
-    if !percentile.is_finite() || !(0.0..=100.0).contains(&percentile) {
-        return Err(ReconstructionError::OracleOutputShape);
-    }
-    let mut values = views
-        .iter()
-        .flat_map(|view| view.confidence.iter().copied())
-        .filter(|value| value.is_finite())
-        .collect::<Vec<_>>();
-    if values.is_empty() {
-        return Err(ReconstructionError::OracleOutputShape);
-    }
-    values.sort_by(f32::total_cmp);
-    let position = percentile / 100.0 * (values.len() - 1) as f64;
-    let lower = position.floor() as usize;
-    let upper = position.ceil() as usize;
-    Ok(values[lower] + (values[upper] - values[lower]) * (position - lower as f64) as f32)
 }
 
 /// Runs every deterministic window and immediately checkpoints direct evidence.
