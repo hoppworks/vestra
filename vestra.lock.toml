@@ -8,7 +8,7 @@ local_path = "../vestra-engine"
 
 [kernels]
 repository = "https://github.com/hoppworks/vestra-kernels"
-revision = "b35a91742ee03cb06d5686ef1ec74ff895151427"
+revision = "bde198958348fcb7a0a294e0d05cd8f2f7e93c5b"
 local_path = "../vestra-kernels"
 
 [cpp_oracle]

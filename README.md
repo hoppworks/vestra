@@ -67,8 +67,10 @@ world pipeline that do not depend on an unverified model claim:
    crash cannot publish a partial manifest as a completed scene.
 
 The next hard gate is real C++ oracle parity for multi-view windows of
-`S=2,3,12`. Only after that gate will Vestra stitch overlapping windows,
-perform fusion, and present the result in the browser studio.
+`S=2,3,12`. The first S=2 run is intentionally recorded as **not accepted**;
+see [the validation record](docs/validation/MULTIVIEW_S2_2026-08-13.md).
+Only after that gate will Vestra stitch overlapping windows, perform fusion,
+and present the result in the browser studio.
 
 ## Scene bundles
 
