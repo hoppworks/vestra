@@ -207,3 +207,30 @@ cargo test -p vestra-engine --features cuda-residual-oracle \
 The next integration step is a single device-resident transformer-block
 executor that combines the qualified attention and MLP branches with both
 residual additions, eliminating their current host hand-off.
+
+## Connected CUDA transformer tail
+
+Vestra Engine revision `05c8717` adds that connected parity slice for the
+blocks that have DA3 Q/K normalization and RoPE (the locked BASE model starts
+them at block 4). It performs QKV through output projection, the first
+residual, strict CPU-order LN2, FC1/GELU/FC2, and the second residual on one
+CUDA stream. Attention results, residual states, and FC1 activations never
+cross PCIe; the CPU-order LN1 input and the final token state remain explicit
+per-block host boundaries.
+
+It passed the locked single-view and `canyon.jpg:desk.jpg` ordered multiview
+depth/confidence gates on the Workhorse RTX 5080. The multiview gate completed
+in 32.12 seconds in a debug test build:
+
+```sh
+LD_LIBRARY_PATH=/var/roothome/vestra-cuda-deps/nvidia/cuda_nvrtc/lib:/var/roothome/vestra-cuda-deps/nvidia/cublas/lib \
+VESTRA_CUDA_MODEL=/var/roothome/da3-bench/models/depth-anything-base-f32.gguf \
+VESTRA_CUDA_IMAGES=/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/canyon.jpg:/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/desk.jpg \
+RUSTFLAGS='-C target-cpu=znver5' \
+cargo test -p vestra-engine --features cuda-residual-oracle \
+  cuda_transformer_tail_matches_cpu_ordered_multiview -- --nocapture
+```
+
+The next CUDA work is therefore not another attention variant: it is an
+entire device-resident backbone lifetime (LN1 and token ping-pong buffers)
+followed by qualified DPT/pose-head operators.
