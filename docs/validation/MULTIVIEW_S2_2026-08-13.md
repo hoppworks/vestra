@@ -18,7 +18,7 @@ marketing based on this result.
 - Inputs: PR fixtures `canyon.jpg` and `desk.jpg`, each 1024×680.
 - Model output: 504×336, two views.
 - Rust compilation: `RUSTFLAGS="-C target-cpu=znver5"`, release.
-- Vestra Engine revision: `d31e1c6a49e8607248c94b64a256d277a9fe40e3`.
+- Vestra Engine revision: `2f400888c4b825318947905385d86c02c0f4af93`.
 - Vestra Kernels safe revision: `bde198958348fcb7a0a294e0d05cd8f2f7e93c5b`.
 
 ## Commands
@@ -35,14 +35,15 @@ python3 scripts/compare_multiview_oracle.py \
 ```
 
 The acceptance gates are depth Pearson `r >= 0.9999`, depth MAE `<= 0.005`,
-and pose MAE `<= 0.005` for every view.
+W2C extrinsics MAE `<= 0.005`, and intrinsics max absolute error `<= 1.5`
+pixels for every view.
 
 ## Result
 
-| View | Depth r | Depth MAE | Pose MAE | Accepted |
-|---|---:|---:|---:|---|
-| 0 | 0.99999034 | 0.00965160 | 0.09872640 | No |
-| 1 | 0.99996033 | 0.00021448 | 0.61680396 | No |
+| View | Depth r | Depth MAE | W2C MAE | Intrinsics max error | Accepted |
+|---|---:|---:|---:|---:|---|
+| 0 | 0.99999034 | 0.00965160 | 0.00000327 | 1.05414 px | No |
+| 1 | 0.99996033 | 0.00021448 | 0.00428749 | 6.54682 px | No |
 
 The safe generic Flash path produces materially identical figures, so the
 remaining discrepancy is not caused by the packed-QT8 crash fix.
