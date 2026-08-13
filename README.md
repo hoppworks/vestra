@@ -88,9 +88,16 @@ world pipeline that do not depend on an unverified model claim:
     chunks (50,000 surfels each). Studio prefers compact 40-byte binary
     surfel chunks for progressive GPU upload, while JSON chunks and the
     canonical fused payload remain available for compatibility and export.
+13. The separately versioned Engine and Kernels repositories have a qualified
+    native CUDA transformer-tail parity slice for the DA3-BASE F32 model. It
+    has passed both single-image and ordered multi-view CPU-F32 oracle tests
+    on the RTX 5080. It is deliberately not exposed as a production speed
+    backend yet: preprocessing, token preparation, early blocks, feature
+    captures, and the DPT/pose heads still cross or remain on the CPU.
 
-The next hard gate is a real-video end-to-end run followed by validation of
-window alignment, revisit/loop handling, and dense fusion quality. Studio
+The next hard gate is a device-resident end-to-end backbone and DPT/pose-head
+path with the same oracle discipline. Only then can a CUDA throughput claim
+or a fair CUDA comparison with the C++ reference be made. Studio already
 prefers the fused world when a manifest references one, while retaining the
 measured-layer fallback for inspection and recovery.
 
