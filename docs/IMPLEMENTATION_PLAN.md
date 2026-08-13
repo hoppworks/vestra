@@ -74,8 +74,7 @@ Remaining:
 
 Remaining:
 
-- camera frustums, source-picture-in-picture, loop/seam overlays, and
-  measured/fused diagnostic controls in Studio
+- camera frustums and loop/seam overlays in Studio
 - WebGL2/WebGPU cinematic modes and a reproducible flythrough export
 - cancellation within one second, atomic finalization, and resumable job
   lifecycle integration across CLI and Studio

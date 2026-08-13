@@ -94,6 +94,10 @@ world pipeline that do not depend on an unverified model claim:
     on the RTX 5080. It is deliberately not exposed as a production speed
     backend yet: preprocessing, token preparation, early blocks, feature
     captures, and the DPT/pose heads still cross or remain on the CPU.
+14. Studio can show the decoded source frames already retained inside the
+    local bundle as a picture-in-picture diagnostic. It dynamically converts
+    only an indexed local RGB24 cache frame for the loopback browser request;
+    it exposes neither an upload endpoint nor arbitrary filesystem paths.
 
 The next hard gate is a device-resident end-to-end backbone and DPT/pose-head
 path with the same oracle discipline. Only then can a CUDA throughput claim
@@ -237,6 +241,12 @@ When a fused world is present, **Show measured evidence** switches between the
 derived voxel-fused surfels and the immutable per-window measurements. This is
 a local diagnostic control: it makes seam or ghost inspection possible without
 presenting the fused layer as new source evidence.
+
+When a bundle retains its decode cache, Studio also shows a local
+**Source frame** picture-in-picture. Use **Next frame** (or `F`) to step through
+the frames that contributed to the reconstruction. These are diagnostic source
+images served only through the existing loopback Studio process; they are not
+embedded in exported worlds or uploaded anywhere.
 
 See [VISION.md](VISION.md), [ARCHITECTURE.md](ARCHITECTURE.md), and the ADRs in
 `docs/adr/` for the locked decisions and implementation order.

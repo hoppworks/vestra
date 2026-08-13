@@ -32,6 +32,11 @@ The served fused layer reported:
 
 After both layer switches the browser reported the expected button states: `SHOW MEASURED EVIDENCE` and `HIDE CAMERA RAYS`. The final screenshot visually showed the fused world and its camera rays. This validates that camera-ray WebGL buffers are rebuilt from the current layer extent rather than retaining stale geometry or accumulating buffers across switches.
 
+The same browser run loaded the newly added local source picture-in-picture,
+then advanced from source frame `001 / 120` to `002 / 120`. The image was
+served from the bundle's existing decoded RGB24 cache through a numeric,
+loopback-only route; no source imagery was uploaded or committed.
+
 ## Commands
 
 ```sh

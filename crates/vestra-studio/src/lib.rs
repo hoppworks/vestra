@@ -1,6 +1,7 @@
 //! Local-only HTTP host for the dependency-free Vestra browser studio.
 
 use std::{
+    collections::BTreeSet,
     fs,
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
@@ -54,6 +55,9 @@ fn handle(mut stream: TcpStream, root: &Path) -> std::io::Result<()> {
         _ if path.starts_with("/chunks/") && path.ends_with(".bin") && safe_chunk_path(path) => {
             read_file(root.join(&path[1..]), "application/octet-stream")
         }
+        _ if path.starts_with("/sources/") && path.ends_with(".bmp") => {
+            source_thumbnail(root, path)
+        }
         _ => (
             "404 Not Found",
             "text/plain; charset=utf-8",
@@ -80,6 +84,7 @@ fn evidence(root: &Path) -> (&'static str, &'static str, Vec<u8>) {
         };
         let fused = bundle.read_fused_scene(&hash)?;
         let mut camera_rays = Vec::new();
+        let mut source_frames = BTreeSet::new();
         for measured_hash in manifest.measured_chunk_hashes {
             let window = bundle.read_measured_window(&measured_hash)?;
             let Some(pose) = fused
@@ -90,6 +95,9 @@ fn evidence(root: &Path) -> (&'static str, &'static str, Vec<u8>) {
                 continue;
             };
             for view in window.views {
+                if source_frame_path(root, view.frame_index).is_file() {
+                    source_frames.insert(view.frame_index);
+                }
                 let Some(camera) = camera_centre_direction(view.frame_index, view.camera) else {
                     continue;
                 };
@@ -108,6 +116,7 @@ fn evidence(root: &Path) -> (&'static str, &'static str, Vec<u8>) {
         Ok(serde_json::to_vec(&serde_json::json!({
             "scale": "relative",
             "camera_rays": camera_rays,
+            "source_frames": source_frames.into_iter().collect::<Vec<_>>(),
         }))?)
     })();
     match payload {
@@ -118,6 +127,130 @@ fn evidence(root: &Path) -> (&'static str, &'static str, Vec<u8>) {
             b"scene evidence unavailable".to_vec(),
         ),
     }
+}
+
+/// Converts one decoded RGB24 source frame into a browser-readable BMP only
+/// when the local Studio asks for an integer frame index. The decode cache is
+/// already part of a local reconstruction bundle; this endpoint neither lists
+/// files nor accepts arbitrary paths.
+fn source_thumbnail(root: &Path, request_path: &str) -> (&'static str, &'static str, Vec<u8>) {
+    let Some(index) = source_frame_index(request_path) else {
+        return not_found();
+    };
+    match ppm_to_bmp(&source_frame_path(root, index)) {
+        Ok(body) => ("200 OK", "image/bmp", body),
+        Err(_) => not_found(),
+    }
+}
+
+fn source_frame_index(request_path: &str) -> Option<usize> {
+    request_path
+        .strip_prefix("/sources/")?
+        .strip_suffix(".bmp")?
+        .parse::<usize>()
+        .ok()
+}
+
+fn source_frame_path(root: &Path, frame_index: usize) -> PathBuf {
+    root.join("decoded").join(format!(
+        "frame-{:06}.ppm",
+        frame_index.checked_add(1).unwrap_or(usize::MAX)
+    ))
+}
+
+fn ppm_to_bmp(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let payload = fs::read(path)?;
+    let mut offset = 0;
+    if ppm_token(&payload, &mut offset).as_deref() != Some(b"P6".as_slice()) {
+        return Err("source frame is not binary RGB PPM".into());
+    }
+    let width = ppm_usize(&payload, &mut offset, "width")?;
+    let height = ppm_usize(&payload, &mut offset, "height")?;
+    if ppm_usize(&payload, &mut offset, "maximum component")? != 255 {
+        return Err("source PPM must be RGB24".into());
+    }
+    if !payload.get(offset).is_some_and(u8::is_ascii_whitespace) {
+        return Err("source PPM header has no pixel delimiter".into());
+    }
+    offset += 1;
+    if payload.get(offset - 1) == Some(&b'\r') && payload.get(offset) == Some(&b'\n') {
+        offset += 1;
+    }
+    let pixel_bytes = width
+        .checked_mul(height)
+        .and_then(|value| value.checked_mul(3))
+        .ok_or("source PPM dimensions overflow")?;
+    let pixels = payload
+        .get(offset..)
+        .filter(|pixels| pixels.len() == pixel_bytes)
+        .ok_or("source PPM has an invalid RGB payload")?;
+    let row_bytes = width.checked_mul(3).ok_or("source BMP row overflows")?;
+    let row_stride = row_bytes.checked_add(3).ok_or("source BMP row overflows")? & !3;
+    let image_bytes = row_stride
+        .checked_mul(height)
+        .ok_or("source BMP dimensions overflow")?;
+    let file_size = 54usize
+        .checked_add(image_bytes)
+        .ok_or("source BMP dimensions overflow")?;
+    let width_u32 = u32::try_from(width)?;
+    let height_u32 = u32::try_from(height)?;
+    let file_size_u32 = u32::try_from(file_size)?;
+    let image_bytes_u32 = u32::try_from(image_bytes)?;
+
+    let mut bmp = Vec::with_capacity(file_size);
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&file_size_u32.to_le_bytes());
+    bmp.extend_from_slice(&[0; 4]);
+    bmp.extend_from_slice(&54_u32.to_le_bytes());
+    bmp.extend_from_slice(&40_u32.to_le_bytes());
+    bmp.extend_from_slice(&width_u32.to_le_bytes());
+    bmp.extend_from_slice(&height_u32.to_le_bytes());
+    bmp.extend_from_slice(&1_u16.to_le_bytes());
+    bmp.extend_from_slice(&24_u16.to_le_bytes());
+    bmp.extend_from_slice(&0_u32.to_le_bytes());
+    bmp.extend_from_slice(&image_bytes_u32.to_le_bytes());
+    bmp.extend_from_slice(&[0; 16]);
+    for row in (0..height).rev() {
+        let source = &pixels[row * row_bytes..(row + 1) * row_bytes];
+        for rgb in source.chunks_exact(3) {
+            bmp.extend_from_slice(&[rgb[2], rgb[1], rgb[0]]);
+        }
+        bmp.resize(bmp.len() + row_stride - row_bytes, 0);
+    }
+    Ok(bmp)
+}
+
+fn ppm_token<'a>(payload: &'a [u8], offset: &mut usize) -> Option<&'a [u8]> {
+    loop {
+        while payload.get(*offset).is_some_and(u8::is_ascii_whitespace) {
+            *offset += 1;
+        }
+        if payload.get(*offset) != Some(&b'#') {
+            break;
+        }
+        while payload.get(*offset).is_some_and(|byte| *byte != b'\n') {
+            *offset += 1;
+        }
+    }
+    let start = *offset;
+    while payload
+        .get(*offset)
+        .is_some_and(|byte| !byte.is_ascii_whitespace())
+    {
+        *offset += 1;
+    }
+    (start < *offset).then_some(&payload[start..*offset])
+}
+
+fn ppm_usize(
+    payload: &[u8],
+    offset: &mut usize,
+    name: &str,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    std::str::from_utf8(ppm_token(payload, offset).ok_or("source PPM header is incomplete")?)
+        .map_err(|_| format!("source PPM {name} is not UTF-8"))?
+        .parse::<usize>()
+        .map_err(|_| format!("source PPM {name} is invalid").into())
 }
 
 fn rotate(transform: SimilarityTransform, point: [f32; 3]) -> [f32; 3] {
@@ -138,6 +271,14 @@ fn read_file(path: PathBuf, content_type: &'static str) -> (&'static str, &'stat
             b"not found".to_vec(),
         ),
     }
+}
+
+fn not_found() -> (&'static str, &'static str, Vec<u8>) {
+    (
+        "404 Not Found",
+        "text/plain; charset=utf-8",
+        b"not found".to_vec(),
+    )
 }
 
 fn safe_chunk_path(path: &str) -> bool {
@@ -208,5 +349,31 @@ mod tests {
             rotate(SimilarityTransform::IDENTITY, [0.0, 0.0, 1.0]),
             [0.0, 0.0, 1.0]
         );
+    }
+
+    #[test]
+    fn decoded_rgb24_source_is_served_as_a_bottom_up_bgr_bmp() {
+        let root =
+            std::env::temp_dir().join(format!("vestra-studio-source-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("decoded")).unwrap();
+        fs::write(
+            source_frame_path(&root, 0),
+            [b"P6\n2 1\n255\n".as_slice(), &[1, 2, 3, 4, 5, 6]].concat(),
+        )
+        .unwrap();
+
+        let (status, content_type, body) = source_thumbnail(&root, "/sources/0.bmp");
+        assert_eq!(status, "200 OK");
+        assert_eq!(content_type, "image/bmp");
+        assert_eq!(&body[..2], b"BM");
+        assert_eq!(u32::from_le_bytes(body[18..22].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(body[22..26].try_into().unwrap()), 1);
+        assert_eq!(&body[54..60], &[3, 2, 1, 6, 5, 4]);
+        assert_eq!(
+            source_thumbnail(&root, "/sources/../../manifest.bmp").0,
+            "404 Not Found"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }
