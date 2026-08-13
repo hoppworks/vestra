@@ -8,11 +8,11 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vestra_core::{
-    BackprojectionSettings, ReconstructionSettings, SceneBundle, SceneProvenance,
-    VideoExtractionSettings, WindowSettings, capture_cpp_pr2_fixture, export_camera_json,
-    export_fused_glb, export_fused_ply, export_fused_splat, extract_video_frames,
-    fuse_scene_bundle, fused_topology, load_decoded_frame_cache, load_decoded_rgb24_cache,
-    plan_windows, reconstruct_frames,
+    BackprojectionSettings, CppPr2StreamOutput, ReconstructionSettings, SceneBundle,
+    SceneProvenance, VideoExtractionSettings, WindowSettings, capture_cpp_pr2_fixture,
+    export_camera_json, export_fused_glb, export_fused_ply, export_fused_splat,
+    extract_video_frames, fuse_scene_bundle, fused_topology, load_decoded_frame_cache,
+    load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
 use vestra_studio::serve;
@@ -147,6 +147,11 @@ enum Command {
         point_size: f32,
         #[arg(long, default_value_t = 50)]
         minimum_overlap_points: usize,
+    },
+    /// Validate and summarize a VPO1 output from the pinned C++ streaming oracle.
+    OracleInspect {
+        #[arg(long)]
+        input: PathBuf,
     },
 }
 
@@ -336,6 +341,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fixture.window_views.len(),
                 fixture.width,
                 fixture.height,
+            );
+        }
+        Command::OracleInspect { input } => {
+            let mut input = BufReader::new(File::open(input)?);
+            let output = CppPr2StreamOutput::read_vpo1(&mut input)?;
+            let point_count = output.radius.len();
+            let finite_points = output
+                .xyz
+                .chunks_exact(3)
+                .zip(&output.radius)
+                .filter(|(position, radius)| {
+                    position.iter().all(|value| value.is_finite())
+                        && radius.is_finite()
+                        && **radius > 0.0
+                })
+                .count();
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.cpp-pr2-oracle/v1",
+                    "frames": output.frame_count,
+                    "width": output.width,
+                    "height": output.height,
+                    "windows": output.window_mid_frame.len(),
+                    "points": point_count,
+                    "finite_positive_radius_points": finite_points,
+                    "warnings": output.warnings,
+                    "loops_found": output.loops_found,
+                    "metric_scale": output.metric_scale,
+                    "frame_owned_points": output.counts,
+                })
             );
         }
         Command::Fuse { scene } => {
