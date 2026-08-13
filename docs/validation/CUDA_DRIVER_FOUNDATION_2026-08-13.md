@@ -254,6 +254,15 @@ cargo test --lib --features cuda \
   driver_round_trip_preserves_f32_values_when_explicitly_enabled -- --nocapture
 ```
 
-The next dependent slice is a cached patch-projection plan followed by
-device-side CLS/position-token assembly. It must be checked against the CPU
-F32 `prepare_tokens` output before it can feed a device-resident backbone.
+Vestra Engine revision `88ebe75` consumes the kernel through a cached CUBLAS
+patch-projection plan, then uses the shared CPU CLS/register/position-token
+assembly. It passed both a single-image and the ordered `canyon.jpg:desk.jpg`
+multiview end-to-end Depth/Confidence oracle on the RTX 5080. CUBLAS changes
+the F32 reduction tree, so this narrow seam has its own explicit bound: MAE
+`<= 5e-6`, maximum absolute error `<= 1e-4`. This remains far tighter than
+the product F32 parity gate (Pearson `>= 0.9999`, MAE `<= 0.005`) and does not
+alter that gate.
+
+The next dependent slice is device-side CLS/position-token assembly followed
+by a device-resident backbone token lifetime. It must retain equivalent
+CPU-F32 oracle coverage before it can be treated as a production backend.
