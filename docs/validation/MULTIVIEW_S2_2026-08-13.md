@@ -2,9 +2,10 @@
 
 ## Status
 
-**Not accepted.** This is a reproducible integration finding, not a quality or
-performance claim. Vestra must not enable world fusion, stitching, or product
-marketing based on this result.
+**Accepted with canonical input.** The initial JPEG run is retained below as a
+decoder-boundary finding; it is not a model-inference mismatch. The accepted
+contract supplies both implementations with identical FFmpeg-decoded PPM RGB
+frames, exactly as Vestra's video pipeline already does.
 
 ## Environment
 
@@ -18,7 +19,7 @@ marketing based on this result.
 - Inputs: PR fixtures `canyon.jpg` and `desk.jpg`, each 1024×680.
 - Model output: 504×336, two views.
 - Rust compilation: `RUSTFLAGS="-C target-cpu=znver5"`, release.
-- Vestra Engine revision: `4c74e1a0dc85cc3db379683c8b0c0f51a7499918`.
+- Vestra Engine revision: `1562f8b70a1b35a9908feb88eaa38577b92f2a2a`.
 - Vestra Kernels safe revision: `bde198958348fcb7a0a294e0d05cd8f2f7e93c5b`.
 
 ## Commands
@@ -38,7 +39,7 @@ The acceptance gates are depth Pearson `r >= 0.9999`, depth MAE `<= 0.005`,
 W2C extrinsics MAE `<= 0.005`, and intrinsics max absolute error `<= 1.5`
 pixels for every view.
 
-## Result
+## Initial JPEG finding
 
 | View | Depth r | Depth MAE | W2C MAE | Intrinsics max error | Accepted |
 |---|---:|---:|---:|---:|---|
@@ -46,7 +47,27 @@ pixels for every view.
 | 1 | 0.99996033 | 0.00021448 | 0.00428749 | 6.54682 px | No |
 
 The safe generic Flash path produces materially identical figures, so the
-remaining discrepancy is not caused by the packed-QT8 crash fix.
+remaining discrepancy was not caused by the packed-QT8 crash fix. Block traces
+then showed the first mismatch at the input patch tokens while CLS/position
+tokens were bit-identical. Different JPEG decoders produced different input
+RGB bytes.
+
+## Accepted PPM results
+
+The same source JPG fixtures were decoded once with FFmpeg (`rgb24`) to PPM;
+those PPM files were passed unchanged to both CLIs. All values below satisfy
+the locked gates for **every view**.
+
+| Window | Views | Worst depth r | Worst depth MAE | Worst W2C MAE | Worst intrinsics error |
+|---|---:|---:|---:|---:|---:|
+| S=2 | 2 | 0.999999999982 | 0.0000015403 | 0.0000019950 | 0.003965 px |
+| S=3 | 3 | 0.999999999985 | 0.0000026587 | 0.0000082050 | 0.004754 px |
+| S=12 | 12 | 0.999999999741 | 0.0000211174 | 0.0000199768 | 0.032229 px |
+
+S=3 exercises the automatic saddle-balanced reference selection. S=12 uses a
+fixed ordered, FFmpeg-decoded schedule of `canyon`, `desk`, `mountains`, and
+`street`, repeated three times; this tests the actual 10,380-token global
+attention shape without conflating JPEG decoder differences with inference.
 
 ## Safety finding
 
@@ -57,11 +78,9 @@ actual S=2 route (`SIGSEGV`, 12/12 quick runs). A GDB trace placed the fault in
 `DA3_KERNELS_FLASH_PACKED_QT8=1`; normal inference uses the validated generic
 tile path and completed repeated S=2 runs.
 
-## Next debugging seam
+## Follow-up requirement
 
-Matching post-block tensors now establish that the numerical drift begins at
-block 0 (1,328,640 values; MAE `0.00246201`; max `0.0550864`) and grows
-monotonically to block 11 (MAE `0.11778764`; max `7.1549683`). This rules out a
-late head-only or output-ordering defect. The next authorised target is the
-first block's operator sequence: LayerNorm, QKV projection, QK norm/RoPE,
-attention, attention projection, FC1/GELU, and FC2/residual.
+The canonical PPM decode boundary is now part of every future parity and
+benchmark fixture. Do not compare JPEG-decoding-inclusive timing or output
+bytes across different decoder libraries and describe it as an inference
+comparison.
