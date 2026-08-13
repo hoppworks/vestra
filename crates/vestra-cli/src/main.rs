@@ -637,6 +637,7 @@ fn settings_fingerprint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vestra_core::{AlignmentReport, FusedPoint, FusedSceneChunk};
 
     #[test]
     fn lock_parser_extracts_pinned_component_revisions() {
@@ -671,5 +672,60 @@ mod tests {
             serde_json::json!({"min": 1.0, "median": 2.0, "max": 3.0})
         );
         assert!(summarize([f32::NAN].into_iter()).is_null());
+    }
+
+    #[test]
+    fn verification_reports_evidence_and_rejects_a_required_missing_loop() {
+        let root = std::env::temp_dir().join(format!("vestra-cli-verify-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bundle = SceneBundle::create(
+            &root,
+            SceneProvenance {
+                engine_revision: "engine".into(),
+                kernel_revision: "kernels".into(),
+                model_fingerprint: "model".into(),
+                settings_fingerprint: "settings".into(),
+            },
+        )
+        .unwrap();
+        bundle
+            .write_fused_scene(&FusedSceneChunk {
+                alignments: vec![AlignmentReport {
+                    transform: vestra_core::SimilarityTransform::IDENTITY,
+                    correspondence_count: 100,
+                    inlier_count: 95,
+                    rms_residual: 0.01,
+                }],
+                pose_graph: None,
+                window_poses: Vec::new(),
+                voxel_size: 0.1,
+                points: vec![FusedPoint {
+                    position: [0.0; 3],
+                    normal: [0.0, 0.0, 1.0],
+                    color_srgb: [0; 3],
+                    confidence: 1.0,
+                    radius: 0.1,
+                    contributors: 1,
+                }],
+            })
+            .unwrap();
+        let mut profile = SceneQualityProfile {
+            schema: "vestra.scene-quality/v1".into(),
+            name: "test".into(),
+            minimum_measured_windows: 0,
+            minimum_fused_points: 1,
+            minimum_sequential_inlier_ratio: 0.9,
+            maximum_sequential_rms_residual: 0.02,
+            require_loop_closure: false,
+        };
+        assert!(verify_scene(&bundle, &profile).unwrap().passed);
+        profile.require_loop_closure = true;
+        let rejected = verify_scene(&bundle, &profile).unwrap();
+        assert!(!rejected.passed);
+        assert_eq!(
+            rejected.violations,
+            ["profile requires an accepted loop closure"]
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
