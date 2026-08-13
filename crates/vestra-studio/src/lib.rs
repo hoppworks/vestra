@@ -293,7 +293,7 @@ fn start_intake_job(
         let mut guard = state
             .lock()
             .map_err(|_| "intake state is unavailable".to_owned())?;
-        if guard.active.is_some() {
+        if guard.active.as_ref().is_some_and(job_is_in_progress) {
             return Err(
                 "this local intake accepts one job; restart it before selecting another video"
                     .into(),
@@ -337,6 +337,13 @@ fn start_intake_job(
     Ok(
         serde_json::to_vec(&serde_json::json!({"job": id, "state": "running"}))
             .expect("fixed intake response serializes"),
+    )
+}
+
+fn job_is_in_progress(job: &IntakeJob) -> bool {
+    matches!(
+        job.outcome,
+        IntakeOutcome::Running | IntakeOutcome::CancelRequested
     )
 }
 
@@ -1092,6 +1099,33 @@ mod tests {
         );
         assert_eq!(intake_world_path("/api/job"), None);
         assert_eq!(intake_world_path("/unknown"), None);
+    }
+
+    #[test]
+    fn completed_jobs_do_not_block_a_new_local_capture() {
+        let root = std::env::temp_dir().join(format!("vestra-intake-state-{}", std::process::id()));
+        let job = IntakeJob {
+            id: 1,
+            root: root.clone(),
+            video: root.join("room.mov"),
+            scene: root.join("world.vestra"),
+            log: root.join("reconstruct.log"),
+            settings: IntakeSettings {
+                frames: 1,
+                width: 1,
+                height: 1,
+                chunk_size: 1,
+                overlap: 0,
+                minimum_confidence: 1.0,
+                pixel_stride: 1,
+            },
+            child: None,
+            outcome: IntakeOutcome::Complete,
+        };
+        assert!(!job_is_in_progress(&job));
+        let mut running = job;
+        running.outcome = IntakeOutcome::Running;
+        assert!(job_is_in_progress(&running));
     }
 
     #[test]
