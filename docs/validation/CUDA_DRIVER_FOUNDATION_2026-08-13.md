@@ -11,7 +11,7 @@ claim.
 | Item | Value |
 | --- | --- |
 | Repository | `https://github.com/hoppworks/vestra-kernels` |
-| Revision | `e078b562d6e23d3a213b6a5858f54688c9fad6d3` |
+| Revision | `f497add5b3ec3d74f3e2c1b4b6f86279ada59a7d` |
 | Feature | `cuda` |
 | CUDA binding | `cudarc 0.19.9`, Driver API with dynamic loading and NVRTC |
 | Host | Workhorse — AMD Ryzen 9 9950X, NVIDIA GeForce RTX 5080 |
@@ -70,6 +70,22 @@ Engine: in ordered multiview it produced depth MAE `1.1371911e-6`, exceeding
 the locked `1e-6` end-to-end limit. The accepted Engine route is the strict
 CPU-order oracle: one GPU thread per row with ascending column reductions,
 which preserves the reference numerical sequence.
+
+## CUDA attention oracle
+
+Kernels revision `f497add5b3ec3d74f3e2c1b4b6f86279ada59a7d` adds a
+device-resident F32 online-softmax attention primitive for head-major
+`[heads,tokens,head_dim]` tensors with `head_dim <= 64`. It maps one GPU
+thread to each `(head, query)` row and uses the same 64-key online-softmax
+state machine as the CPU path: running maximum, correction, running sum, and
+value accumulator. The Workhorse RTX 5080 test compares a two-head, five-token
+case with the CPU attention oracle under an absolute error envelope `<= 5e-5`.
+
+It is intentionally not wired into the Engine yet. DA3 has a specialised
+AVX-512 CPU attention path and optional Q/K normalization plus RoPE; the next
+gate is a dedicated actual-shape attention parity fixture, followed by the
+complete single-view and ordered-multiview Engine gates. No GPU speed claim is
+made from this small oracle.
 
 The first Engine-owned fixed-shape CUDA operator is recorded below. Every
 subsequent CUDA operator must likewise have a CPU F32 oracle and the locked
