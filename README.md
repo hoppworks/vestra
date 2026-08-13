@@ -146,6 +146,22 @@ cargo run -p vestra-cli -- plan --frames 120 --chunk-size 12 --overlap 3
 
 ## Local first run
 
+For the local browser flow, start the intake with the model and a dedicated
+job directory. It binds only to loopback, streams the selected video directly
+to that directory, starts the same durable `reconstruct` command, and opens a
+second local Studio port for the completed world:
+
+```bash
+cargo run -p vestra-cli -- app \
+  --model depth-anything-base-f32.gguf \
+  --jobs ./vestra-jobs
+```
+
+Open `http://127.0.0.1:4317`, choose one `.mov`, `.mp4`, `.m4v`, or `.avi`
+file, then select **Start reconstruction**. One intake instance deliberately
+accepts one job; restart it for another capture. The job owns its copied input,
+scene bundle, and `reconstruct.log` under `./vestra-jobs/job-000001/`.
+
 With FFmpeg and FFprobe installed, create a relative-scale scene locally:
 
 ```bash

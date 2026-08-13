@@ -3,14 +3,35 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::{Arc, Mutex},
 };
 
 use vestra_core::{CameraCalibration, SceneBundle, SimilarityTransform, camera_centre_direction};
 
 const INDEX_HTML: &str = include_str!("index.html");
+const INTAKE_HTML: &str = include_str!("intake.html");
+
+/// Local process-launch configuration for the browser intake. The server never
+/// accepts a destination or executable from HTTP; both are fixed by the CLI
+/// that started it.
+#[derive(Debug, Clone)]
+pub struct IntakeConfig {
+    pub executable: PathBuf,
+    pub model: PathBuf,
+    pub jobs_root: PathBuf,
+    pub port: u16,
+    pub frames: usize,
+    pub width: usize,
+    pub height: usize,
+    pub chunk_size: usize,
+    pub overlap: usize,
+    pub minimum_confidence: f32,
+    pub pixel_stride: usize,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum StudioError {
@@ -18,6 +39,8 @@ pub enum StudioError {
     Bind(#[from] std::io::Error),
     #[error("scene manifest is missing at {0}")]
     MissingManifest(PathBuf),
+    #[error("Vestra Studio intake configuration is invalid: {0}")]
+    IntakeConfig(&'static str),
 }
 
 /// Serves one scene only on localhost. This intentionally has no remote bind,
@@ -34,6 +57,307 @@ pub fn serve(scene_root: impl Into<PathBuf>, port: u16) -> Result<(), StudioErro
         let _ = handle(stream, &scene_root);
     }
     Ok(())
+}
+
+/// Serves a localhost-only intake page. A selected video is streamed to a
+/// job-owned directory, then the same executable launches `reconstruct`; the
+/// browser only polls immutable local job state and links to a second
+/// localhost-only Studio viewer after success.
+pub fn serve_intake(config: IntakeConfig) -> Result<(), StudioError> {
+    if !config.executable.is_file() {
+        return Err(StudioError::IntakeConfig(
+            "the Vestra executable is missing",
+        ));
+    }
+    if !config.model.is_file() {
+        return Err(StudioError::IntakeConfig("the model file is missing"));
+    }
+    if config.frames == 0 || config.width == 0 || config.height == 0 {
+        return Err(StudioError::IntakeConfig(
+            "frame and raster dimensions must be positive",
+        ));
+    }
+    fs::create_dir_all(&config.jobs_root)?;
+    let state = Arc::new(Mutex::new(IntakeState {
+        config,
+        next_job: 1,
+        active: None,
+    }));
+    let port = state.lock().expect("intake state lock").config.port;
+    let listener = TcpListener::bind(("127.0.0.1", port))?;
+    for stream in listener.incoming().flatten() {
+        let _ = handle_intake(stream, &state);
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct IntakeState {
+    config: IntakeConfig,
+    next_job: u64,
+    active: Option<IntakeJob>,
+}
+
+#[derive(Debug)]
+struct IntakeJob {
+    id: u64,
+    scene: PathBuf,
+    log: PathBuf,
+    child: Child,
+    viewer: Option<Child>,
+    outcome: IntakeOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntakeOutcome {
+    Running,
+    Complete,
+    Failed,
+}
+
+fn handle_intake(mut stream: TcpStream, state: &Arc<Mutex<IntakeState>>) -> std::io::Result<()> {
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut request = String::new();
+    reader.read_line(&mut request)?;
+    let mut fields = request.split_whitespace();
+    let method = fields.next().unwrap_or("");
+    let path = fields.next().unwrap_or("/");
+    let mut content_length = None;
+    let mut file_name = None;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        if line == "\r\n" || line.is_empty() {
+            break;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        match name.trim().to_ascii_lowercase().as_str() {
+            "content-length" => content_length = value.trim().parse::<u64>().ok(),
+            "x-vestra-file-name" => file_name = Some(value.trim().to_owned()),
+            _ => {}
+        }
+    }
+    match (method, path) {
+        ("GET", "/") | ("GET", "/index.html") => write_response(
+            &mut stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            INTAKE_HTML.as_bytes(),
+        ),
+        ("GET", "/api/job") => {
+            let payload = intake_status(state);
+            write_response(&mut stream, "200 OK", "application/json", &payload)
+        }
+        ("POST", "/api/job") => {
+            let Some(length) = content_length else {
+                return write_response(
+                    &mut stream,
+                    "411 Length Required",
+                    "text/plain; charset=utf-8",
+                    b"content-length required",
+                );
+            };
+            let Some(name) = file_name.and_then(|name| safe_video_name(&name)) else {
+                return write_response(
+                    &mut stream,
+                    "400 Bad Request",
+                    "text/plain; charset=utf-8",
+                    b"supported video filename required",
+                );
+            };
+            if length == 0 || length > 8 * 1024 * 1024 * 1024 {
+                return write_response(
+                    &mut stream,
+                    "413 Payload Too Large",
+                    "text/plain; charset=utf-8",
+                    b"video must be between 1 byte and 8 GiB",
+                );
+            }
+            match start_intake_job(state, &mut reader, length, &name) {
+                Ok(payload) => {
+                    write_response(&mut stream, "202 Accepted", "application/json", &payload)
+                }
+                Err(message) => write_response(
+                    &mut stream,
+                    "409 Conflict",
+                    "text/plain; charset=utf-8",
+                    message.as_bytes(),
+                ),
+            }
+        }
+        _ => write_response(
+            &mut stream,
+            "404 Not Found",
+            "text/plain; charset=utf-8",
+            b"not found",
+        ),
+    }
+}
+
+fn safe_video_name(raw: &str) -> Option<String> {
+    let name = Path::new(raw).file_name()?.to_str()?.to_owned();
+    if name != raw {
+        return None;
+    }
+    let extension = Path::new(&name).extension()?.to_str()?.to_ascii_lowercase();
+    matches!(extension.as_str(), "mov" | "mp4" | "m4v" | "avi").then_some(name)
+}
+
+fn start_intake_job(
+    state: &Arc<Mutex<IntakeState>>,
+    reader: &mut BufReader<TcpStream>,
+    length: u64,
+    file_name: &str,
+) -> Result<Vec<u8>, String> {
+    let (config, id) = {
+        let mut guard = state
+            .lock()
+            .map_err(|_| "intake state is unavailable".to_owned())?;
+        if guard.active.is_some() {
+            return Err(
+                "this local intake accepts one job; restart it before selecting another video"
+                    .into(),
+            );
+        }
+        let id = guard.next_job;
+        guard.next_job = guard.next_job.checked_add(1).ok_or("job id overflow")?;
+        (guard.config.clone(), id)
+    };
+    let root = config.jobs_root.join(format!("job-{id:06}"));
+    fs::create_dir_all(&root)
+        .map_err(|error| format!("could not create job directory: {error}"))?;
+    let video = root.join(file_name);
+    let mut output = fs::File::create(&video)
+        .map_err(|error| format!("could not create local video: {error}"))?;
+    let copied = std::io::copy(&mut reader.take(length), &mut output)
+        .map_err(|error| format!("could not write local video: {error}"))?;
+    if copied != length {
+        let _ = fs::remove_file(&video);
+        return Err("upload ended before its declared content length".into());
+    }
+    let scene = root.join("world.vestra");
+    let log = root.join("reconstruct.log");
+    let log_file =
+        fs::File::create(&log).map_err(|error| format!("could not create job log: {error}"))?;
+    let child = Command::new(&config.executable)
+        .args([
+            "reconstruct",
+            "--video",
+            video.to_string_lossy().as_ref(),
+            "--model",
+            config.model.to_string_lossy().as_ref(),
+            "--output",
+            scene.to_string_lossy().as_ref(),
+            "--frames",
+            &config.frames.to_string(),
+            "--width",
+            &config.width.to_string(),
+            "--height",
+            &config.height.to_string(),
+            "--chunk-size",
+            &config.chunk_size.to_string(),
+            "--overlap",
+            &config.overlap.to_string(),
+            "--minimum-confidence",
+            &config.minimum_confidence.to_string(),
+            "--pixel-stride",
+            &config.pixel_stride.to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(
+            log_file
+                .try_clone()
+                .map_err(|error| format!("could not clone job log: {error}"))?,
+        ))
+        .stderr(Stdio::from(log_file))
+        .spawn()
+        .map_err(|error| format!("could not start reconstruction: {error}"))?;
+    state
+        .lock()
+        .map_err(|_| "intake state is unavailable".to_owned())?
+        .active = Some(IntakeJob {
+        id,
+        scene,
+        log,
+        child,
+        viewer: None,
+        outcome: IntakeOutcome::Running,
+    });
+    Ok(
+        serde_json::to_vec(&serde_json::json!({"job": id, "state": "running"}))
+            .expect("fixed intake response serializes"),
+    )
+}
+
+fn intake_status(state: &Arc<Mutex<IntakeState>>) -> Vec<u8> {
+    let mut guard = match state.lock() {
+        Ok(guard) => guard,
+        Err(_) => return br#"{"state":"unavailable"}"#.to_vec(),
+    };
+    let config = guard.config.clone();
+    let Some(job) = guard.active.as_mut() else {
+        return br#"{"state":"idle"}"#.to_vec();
+    };
+    if job.outcome == IntakeOutcome::Running {
+        match job.child.try_wait() {
+            Ok(Some(status)) if status.success() => {
+                let viewer_port = config.port.saturating_add(1);
+                job.viewer = Command::new(&config.executable)
+                    .args([
+                        "serve",
+                        "--scene",
+                        job.scene.to_string_lossy().as_ref(),
+                        "--port",
+                        &viewer_port.to_string(),
+                    ])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .ok();
+                job.outcome = IntakeOutcome::Complete;
+            }
+            Ok(Some(_)) | Err(_) => job.outcome = IntakeOutcome::Failed,
+            Ok(None) => {}
+        }
+    }
+    let log_tail = fs::read_to_string(&job.log).ok().map(|log| {
+        log.chars()
+            .rev()
+            .take(2_000)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>()
+    });
+    let state = match job.outcome {
+        IntakeOutcome::Running => "running",
+        IntakeOutcome::Complete => "complete",
+        IntakeOutcome::Failed => "failed",
+    };
+    serde_json::to_vec(&serde_json::json!({
+        "job": job.id,
+        "state": state,
+        "viewer": if job.outcome == IntakeOutcome::Complete { Some(format!("http://127.0.0.1:{}", config.port.saturating_add(1))) } else { None },
+        "log_tail": log_tail,
+    }))
+    .expect("fixed intake status serializes")
+}
+
+fn write_response(
+    stream: &mut TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        body.len()
+    )?;
+    stream.write_all(body)
 }
 
 fn handle(mut stream: TcpStream, root: &Path) -> std::io::Result<()> {
@@ -419,6 +743,17 @@ mod tests {
         io::{Read, Write},
         thread,
     };
+
+    #[test]
+    fn intake_accepts_only_plain_supported_video_filenames() {
+        assert_eq!(
+            safe_video_name("walkthrough.MOV"),
+            Some("walkthrough.MOV".into())
+        );
+        assert!(safe_video_name("nested/room.mp4").is_none());
+        assert!(safe_video_name("room.mkv").is_none());
+        assert!(safe_video_name("../../scene.mov").is_none());
+    }
 
     #[test]
     fn only_sha256_chunk_paths_are_servable() {

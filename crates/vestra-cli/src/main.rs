@@ -16,7 +16,7 @@ use vestra_core::{
     plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
-use vestra_studio::serve;
+use vestra_studio::{IntakeConfig, serve, serve_intake};
 
 const VESTRA_LOCK: &str = include_str!("../../../vestra.lock.toml");
 
@@ -120,6 +120,29 @@ enum Command {
         scene: PathBuf,
         #[arg(long, default_value_t = 4317)]
         port: u16,
+    },
+    /// Start the localhost browser intake for selecting and reconstructing a video.
+    App {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        jobs: PathBuf,
+        #[arg(long, default_value_t = 4317)]
+        port: u16,
+        #[arg(long, default_value_t = 120)]
+        frames: usize,
+        #[arg(long, default_value_t = 504)]
+        width: usize,
+        #[arg(long, default_value_t = 336)]
+        height: usize,
+        #[arg(long, default_value_t = 12)]
+        chunk_size: usize,
+        #[arg(long, default_value_t = 3)]
+        overlap: usize,
+        #[arg(long, default_value_t = 1.0)]
+        minimum_confidence: f32,
+        #[arg(long, default_value_t = 8)]
+        pixel_stride: usize,
     },
     /// Capture window-scoped DA3 output for the pinned C++ PR #2 stitcher oracle.
     /// This is diagnostic evidence, not a production scene export.
@@ -302,6 +325,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "fused_points": fusion.points,
                 })
             );
+        }
+        Command::App {
+            model,
+            jobs,
+            port,
+            frames,
+            width,
+            height,
+            chunk_size,
+            overlap,
+            minimum_confidence,
+            pixel_stride,
+        } => {
+            let executable = std::env::current_exe()?;
+            println!("Vestra intake: http://127.0.0.1:{port}");
+            serve_intake(IntakeConfig {
+                executable,
+                model,
+                jobs_root: jobs,
+                port,
+                frames,
+                width,
+                height,
+                chunk_size,
+                overlap,
+                minimum_confidence,
+                pixel_stride,
+            })?;
         }
         Command::OracleFixture {
             model,

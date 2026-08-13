@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vestra — Capture</title>
+  <style>
+    :root{--ink:#11100e;--paper:#e6dfd2;--muted:#958e82;--line:#39362f;--ember:#e6653e;--signal:#69d2c4}*{box-sizing:border-box}body{min-height:100vh;margin:0;color:var(--paper);background:var(--ink);font-family:ui-monospace,Menlo,monospace;display:grid;place-items:center;overflow:hidden}body:before{content:"";position:fixed;inset:0;opacity:.25;pointer-events:none;background:linear-gradient(110deg,transparent 43%,#e6653e11 43.1%,transparent 43.25%),radial-gradient(#fff 0.45px,transparent .6px);background-size:auto,5px 5px}.field{width:min(760px,calc(100vw - 40px));position:relative;padding:clamp(25px,6vw,70px);border:1px solid var(--line);background:#151411cc;box-shadow:20px 20px 0 #e6653e18;animation:rise .8s both}.kicker{color:var(--signal);font-size:10px;letter-spacing:.2em;text-transform:uppercase}.brand{margin:14px 0 22px;font:700 clamp(4rem,14vw,9rem)/.72 Georgia,serif;letter-spacing:-.09em}.brand i{color:var(--ember);font-style:normal}.lede{max-width:460px;color:var(--muted);font-size:12px;line-height:1.7}.drop{display:block;margin-top:38px;padding:28px;border:1px dashed #615a50;background:#1b1915;cursor:pointer;transition:.2s}.drop:hover,.drop.drag{border-color:var(--ember);background:#231b16}.drop strong{display:block;font:700 22px Georgia,serif}.drop span{display:block;margin-top:9px;color:var(--muted);font-size:10px;letter-spacing:.07em;text-transform:uppercase}.drop input{display:none}button{margin-top:13px;padding:12px 15px;border:1px solid var(--ember);background:var(--ember);color:var(--ink);font:700 10px ui-monospace,monospace;letter-spacing:.12em;text-transform:uppercase;cursor:pointer}button:disabled{opacity:.35;cursor:not-allowed}.ledger{margin-top:26px;border-top:1px solid var(--line);font-size:10px}.row{display:flex;justify-content:space-between;gap:15px;padding:9px 0;border-bottom:1px solid var(--line)}.row b{color:var(--signal);font-weight:500;text-align:right;white-space:pre-wrap}.fine{margin-top:20px;color:var(--muted);font-size:9px;line-height:1.6}@keyframes rise{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
+  </style>
+</head>
+<body>
+  <main class="field">
+    <div class="kicker">Vestra / Local capture intake</div>
+    <div class="brand">ves<i>t</i>ra</div>
+    <p class="lede">Choose one continuous room video. Vestra keeps the capture on this machine, reconstructs a relative-scale world, then opens its local Studio.</p>
+    <label class="drop" id="drop"><strong id="file">Choose a video</strong><span>MP4 · MOV · M4V · AVI / local processing only</span><input id="video" type="file" accept="video/mp4,video/quicktime,video/x-m4v,video/x-msvideo"></label>
+    <button id="start" disabled>Start reconstruction</button>
+    <section class="ledger"><div class="row"><span>capture</span><b id="capture">waiting for video</b></div><div class="row"><span>job</span><b id="job">idle</b></div><div class="row"><span>world</span><b id="world">not created</b></div></section>
+    <p class="fine">The browser streams the selected file only to the Vestra process bound to 127.0.0.1. The reconstruction command and output directory are fixed when the intake starts.</p>
+  </main>
+  <script>
+    const input=document.querySelector('#video'),drop=document.querySelector('#drop'),start=document.querySelector('#start'),file=document.querySelector('#file'),capture=document.querySelector('#capture'),job=document.querySelector('#job'),world=document.querySelector('#world');let selected=null,poll=null;
+    function choose(f){if(!f)return;selected=f;file.textContent=f.name;capture.textContent=(f.size/1048576).toFixed(1)+' MiB · ready';start.disabled=false}
+    input.onchange=()=>choose(input.files[0]);for(const event of ['dragenter','dragover'])drop.addEventListener(event,e=>{e.preventDefault();drop.classList.add('drag')});for(const event of ['dragleave','drop'])drop.addEventListener(event,e=>{e.preventDefault();drop.classList.remove('drag')});drop.addEventListener('drop',e=>choose(e.dataTransfer.files[0]));
+    async function status(){const data=await (await fetch('/api/job')).json();job.textContent=data.state+(data.job?' #'+data.job:'');if(data.log_tail)capture.textContent=data.log_tail;if(data.state==='complete'){clearInterval(poll);world.innerHTML='<a href="'+data.viewer+'" style="color:#69d2c4">open coherent world ↗</a>';start.disabled=true}else if(data.state==='failed'){clearInterval(poll);world.textContent='reconstruction failed';start.disabled=false}}
+    start.onclick=async()=>{if(!selected)return;start.disabled=true;capture.textContent='streaming local video…';const response=await fetch('/api/job',{method:'POST',headers:{'content-length':String(selected.size),'x-vestra-file-name':selected.name},body:selected});if(!response.ok){capture.textContent=await response.text();start.disabled=false;return}job.textContent='running';capture.textContent='reconstructing on this machine…';poll=setInterval(()=>status().catch(e=>capture.textContent=e.message),1200);status()};
+  </script>
+</body>
+</html>
