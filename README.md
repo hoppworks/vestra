@@ -109,8 +109,9 @@ anchors are a future opt-in phase.
 Fused windows use shared source-frame pixels as direct correspondence evidence
 for a robust Sim(3). Degenerate (rank-one) overlaps are rejected rather than
 being assigned an invented rotation. The current fusion stores global points;
-the window cameras remain raw diagnostic evidence and are not yet exposed as
-global camera-path geometry.
+the window cameras remain raw diagnostic evidence. Their final local-to-fused
+world transforms are persisted with the derived world and can be exported for
+inspection; they are not silently rewritten into a misleading global W2C pose.
 
 There is no claim yet that the complete Vestra world pipeline is faster than
 the C++ PR. The existing qualified speed result covers single-image CPU F32.
@@ -178,6 +179,15 @@ Gaussian-splat training or generated geometry.
 
 ```bash
 cargo run -p vestra-cli -- export-splat --scene room.vestra --output room.splat
+```
+
+For camera-path diagnostics, export the raw per-window W2C camera evidence
+alongside the final local-to-fused relative Sim(3) transform. Consumers must
+compose these explicitly; the output intentionally does not pretend the W2C
+matrix is already global.
+
+```bash
+cargo run -p vestra-cli -- export-cameras --scene room.vestra --output room.cameras.json
 ```
 
 Each new surfel carries a world-space normal estimated from its local depth

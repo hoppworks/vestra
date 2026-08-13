@@ -2,7 +2,25 @@
 
 use std::{fs, path::Path};
 
-use crate::{SceneBundle, SceneBundleError};
+use crate::{CameraCalibration, SceneBundle, SceneBundleError, SimilarityTransform};
+
+#[derive(Debug, serde::Serialize)]
+struct CameraJsonExport {
+    schema: &'static str,
+    scale: &'static str,
+    coordinate_convention: &'static str,
+    cameras: Vec<CameraJsonEntry>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct CameraJsonEntry {
+    window_index: usize,
+    frame_index: usize,
+    /// The stored model calibration remains W2C in the window-local frame.
+    local_world_to_camera: CameraCalibration,
+    /// This transform maps that local camera/world frame into the fused world.
+    local_to_fused_world: SimilarityTransform,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
@@ -160,6 +178,49 @@ pub fn export_fused_splat(
     Ok(fused.points.len())
 }
 
+/// Exports camera evidence as explicitly composable JSON. W2C matrices remain
+/// in their native window-local coordinates; `local_to_fused_world` is kept
+/// alongside each one so consumers never mistake a local pose for global data.
+pub fn export_camera_json(
+    bundle: &SceneBundle,
+    output: impl AsRef<Path>,
+) -> Result<usize, ExportError> {
+    let manifest = bundle.manifest()?;
+    let hash = manifest
+        .fused_chunk_hash
+        .ok_or(ExportError::MissingFusedWorld)?;
+    let fused = bundle.read_fused_scene(&hash)?;
+    let mut cameras = Vec::new();
+    for measured_hash in &manifest.measured_chunk_hashes {
+        let window = bundle.read_measured_window(measured_hash)?;
+        let Some(pose) = fused
+            .window_poses
+            .iter()
+            .find(|pose| pose.window_index == window.window.index)
+        else {
+            continue;
+        };
+        cameras.extend(window.views.iter().map(|view| CameraJsonEntry {
+            window_index: window.window.index,
+            frame_index: view.frame_index,
+            local_world_to_camera: view.camera,
+            local_to_fused_world: pose.local_to_world,
+        }));
+    }
+    let count = cameras.len();
+    let payload = CameraJsonExport {
+        schema: "vestra.camera/v1",
+        scale: "relative",
+        coordinate_convention: "W2C is window-local; local_to_fused_world maps into the fused relative world",
+        cameras,
+    };
+    fs::write(
+        output,
+        serde_json::to_vec_pretty(&payload).expect("camera export is serializable"),
+    )?;
+    Ok(count)
+}
+
 fn quaternion_from_z_axis(normal: [f32; 3]) -> [f32; 4] {
     let length = normal.iter().map(|value| value * value).sum::<f32>().sqrt();
     if !length.is_finite() || length < 1e-6 {
@@ -207,7 +268,10 @@ fn position_bounds(points: &[crate::FusedPoint]) -> ([f32; 3], [f32; 3]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FusedPoint, FusedSceneChunk, SceneProvenance};
+    use crate::{
+        CameraCalibration, FrameWindow, FusedPoint, FusedSceneChunk, FusedWindowPose,
+        MeasuredFrameChunk, SceneProvenance, SimilarityTransform, WindowMeasuredChunk,
+    };
 
     #[test]
     fn export_preserves_relative_world_attributes_in_ply() {
@@ -228,6 +292,7 @@ mod tests {
             .write_fused_scene(&FusedSceneChunk {
                 alignments: Vec::new(),
                 pose_graph: None,
+                window_poses: Vec::new(),
                 voxel_size: 0.1,
                 points: vec![FusedPoint {
                     position: [1.0, 2.0, 3.0],
@@ -267,6 +332,7 @@ mod tests {
             .write_fused_scene(&FusedSceneChunk {
                 alignments: Vec::new(),
                 pose_graph: None,
+                window_poses: Vec::new(),
                 voxel_size: 0.1,
                 points: vec![FusedPoint {
                     position: [1.0, 2.0, 3.0],
@@ -310,6 +376,7 @@ mod tests {
             .write_fused_scene(&FusedSceneChunk {
                 alignments: Vec::new(),
                 pose_graph: None,
+                window_poses: Vec::new(),
                 voxel_size: 0.1,
                 points: vec![FusedPoint {
                     position: [1.0, 2.0, 3.0],
@@ -326,6 +393,75 @@ mod tests {
         assert_eq!(bytes.len(), 32);
         assert_eq!(f32::from_le_bytes(bytes[0..4].try_into().unwrap()), 1.0);
         assert_eq!(&bytes[24..27], &[4, 5, 6]);
+        fs::remove_file(output).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn camera_export_keeps_local_w2c_and_the_final_fused_transform_together() {
+        let root =
+            std::env::temp_dir().join(format!("vestra-camera-export-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let output = root.with_extension("cameras.json");
+        let bundle = SceneBundle::create(
+            &root,
+            SceneProvenance {
+                engine_revision: "test".into(),
+                kernel_revision: "test".into(),
+                model_fingerprint: "test".into(),
+                settings_fingerprint: "test".into(),
+            },
+        )
+        .unwrap();
+        bundle
+            .write_measured_window(&WindowMeasuredChunk {
+                window: FrameWindow {
+                    index: 7,
+                    start: 12,
+                    end: 13,
+                },
+                views: vec![MeasuredFrameChunk {
+                    frame_index: 12,
+                    camera: CameraCalibration {
+                        world_to_camera: [
+                            1.0, 0.0, 0.0, -2.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+                        ],
+                        intrinsics: [2.0, 0.0, 1.0, 0.0, 2.0, 1.0, 0.0, 0.0, 1.0],
+                    },
+                    points: Vec::new(),
+                }],
+            })
+            .unwrap();
+        bundle
+            .write_fused_scene(&FusedSceneChunk {
+                alignments: Vec::new(),
+                pose_graph: None,
+                window_poses: vec![FusedWindowPose {
+                    window_index: 7,
+                    local_to_world: SimilarityTransform {
+                        scale: 0.5,
+                        translation: [3.0, 4.0, 5.0],
+                        ..SimilarityTransform::IDENTITY
+                    },
+                }],
+                voxel_size: 0.1,
+                points: Vec::new(),
+            })
+            .unwrap();
+
+        assert_eq!(export_camera_json(&bundle, &output).unwrap(), 1);
+        let json: serde_json::Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+        assert_eq!(json["schema"], "vestra.camera/v1");
+        assert_eq!(json["scale"], "relative");
+        assert_eq!(json["cameras"][0]["frame_index"], 12);
+        assert_eq!(
+            json["cameras"][0]["local_world_to_camera"]["world_to_camera"][3],
+            -2.0
+        );
+        assert_eq!(
+            json["cameras"][0]["local_to_fused_world"]["translation"][0],
+            3.0
+        );
         fs::remove_file(output).unwrap();
         fs::remove_dir_all(root).unwrap();
     }

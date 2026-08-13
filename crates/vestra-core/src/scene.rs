@@ -482,6 +482,7 @@ mod tests {
         let fused = crate::FusedSceneChunk {
             alignments: Vec::new(),
             pose_graph: None,
+            window_poses: Vec::new(),
             voxel_size: 0.25,
             points: vec![crate::FusedPoint {
                 position: [1.0, 2.0, 3.0],
@@ -542,6 +543,7 @@ mod tests {
         let fused = crate::FusedSceneChunk {
             alignments: Vec::new(),
             pose_graph: None,
+            window_poses: Vec::new(),
             voxel_size: 0.25,
             points: vec![point; FUSED_POINT_CHUNK_SIZE + 1],
         };

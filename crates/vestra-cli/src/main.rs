@@ -8,8 +8,9 @@ use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 use vestra_core::{
     BackprojectionSettings, ReconstructionSettings, SceneBundle, SceneProvenance,
-    VideoExtractionSettings, WindowSettings, export_fused_glb, export_fused_ply,
-    export_fused_splat, extract_video_frames, fuse_scene_bundle, plan_windows, reconstruct_frames,
+    VideoExtractionSettings, WindowSettings, export_camera_json, export_fused_glb,
+    export_fused_ply, export_fused_splat, extract_video_frames, fuse_scene_bundle, plan_windows,
+    reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
 use vestra_studio::serve;
@@ -81,6 +82,13 @@ enum Command {
     },
     /// Export the fused relative-scale world as compact oriented `.splat` surfels.
     ExportSplat {
+        #[arg(long)]
+        scene: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Export composable window-local camera evidence as JSON.
+    ExportCameras {
         #[arg(long)]
         scene: PathBuf,
         #[arg(long)]
@@ -263,6 +271,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "format": "splat/antimatter15",
                     "output": output,
                     "points": points,
+                    "scale": "relative",
+                })
+            );
+        }
+        Command::ExportCameras { scene, output } => {
+            let bundle = SceneBundle::open(scene)?;
+            let cameras = export_camera_json(&bundle, &output)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "bundle": bundle.root(),
+                    "format": "camera-json/v1",
+                    "output": output,
+                    "cameras": cameras,
                     "scale": "relative",
                 })
             );

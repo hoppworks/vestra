@@ -150,6 +150,15 @@ pub struct FusedPoint {
     pub contributors: u32,
 }
 
+/// One raw multiview window's final local-to-world transform. It records the
+/// pose after any accepted loop optimization and lets exports/viewers expose
+/// camera evidence without mutating the immutable measured chunks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FusedWindowPose {
+    pub window_index: usize,
+    pub local_to_world: SimilarityTransform,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FusedSceneChunk {
     pub alignments: Vec<AlignmentReport>,
@@ -157,6 +166,8 @@ pub struct FusedSceneChunk {
     /// and globally optimized before this fused derivative was published.
     #[serde(default)]
     pub pose_graph: Option<PoseGraphReport>,
+    #[serde(default)]
+    pub window_poses: Vec<FusedWindowPose>,
     pub voxel_size: f32,
     pub points: Vec<FusedPoint>,
 }
@@ -866,6 +877,7 @@ pub fn stitch_measured_windows_with_loop_closures(
         return Ok(FusedSceneChunk {
             alignments: Vec::new(),
             pose_graph: None,
+            window_poses: Vec::new(),
             voxel_size: 0.0,
             points: Vec::new(),
         });
@@ -925,9 +937,17 @@ pub fn stitch_measured_windows_with_loop_closures(
         poses = graph.nodes;
         Some(report)
     };
+    let window_poses = windows
+        .iter()
+        .zip(&poses)
+        .map(|(window, &local_to_world)| FusedWindowPose {
+            window_index: window.window.index,
+            local_to_world,
+        })
+        .collect::<Vec<_>>();
     let global = windows
         .iter()
-        .zip(poses)
+        .zip(poses.iter().copied())
         .map(|(window, pose)| transform_window(window, pose))
         .collect::<Vec<_>>();
     let mut radii = global
@@ -941,6 +961,7 @@ pub fn stitch_measured_windows_with_loop_closures(
         return Ok(FusedSceneChunk {
             alignments,
             pose_graph,
+            window_poses,
             voxel_size: 0.0,
             points: Vec::new(),
         });
@@ -1012,6 +1033,7 @@ pub fn stitch_measured_windows_with_loop_closures(
     Ok(FusedSceneChunk {
         alignments,
         pose_graph,
+        window_poses,
         voxel_size,
         points,
     })
@@ -1326,6 +1348,9 @@ mod tests {
         .unwrap();
         assert_eq!(raw[2].views[0].points[0].position, [-10.0, 0.0, 0.0]);
         assert_eq!(fused.alignments.len(), 2);
+        assert_eq!(fused.window_poses.len(), 3);
+        assert_eq!(fused.window_poses[0].window_index, 0);
+        assert_eq!(fused.window_poses[2].window_index, 2);
         // All three windows contain the same source frame. It is preserved
         // three times in raw evidence but owns one fused observation.
         assert!(fused.points.iter().all(|point| point.contributors == 1));

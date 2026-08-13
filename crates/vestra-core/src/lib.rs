@@ -15,7 +15,9 @@ pub mod scene;
 pub mod stitch;
 pub mod video;
 
-pub use export::{ExportError, export_fused_glb, export_fused_ply, export_fused_splat};
+pub use export::{
+    ExportError, export_camera_json, export_fused_glb, export_fused_ply, export_fused_splat,
+};
 pub use geometry::{
     BackprojectionError, BackprojectionSettings, CameraCalibration, MeasuredPoint, MeasuredView,
     backproject_measured_view,
@@ -37,8 +39,8 @@ pub use scene::{
     SceneManifest, SceneProvenance, WindowMeasuredChunk,
 };
 pub use stitch::{
-    AlignmentReport, FusedPoint, FusedSceneChunk, LoopClosureSettings, LoopMeasurement,
-    LoopMeasurementSettings, SimilarityTransform, StitchError, StitchSettings,
+    AlignmentReport, FusedPoint, FusedSceneChunk, FusedWindowPose, LoopClosureSettings,
+    LoopMeasurement, LoopMeasurementSettings, SimilarityTransform, StitchError, StitchSettings,
     align_overlapping_windows, measure_loop_closure, stitch_measured_windows,
     stitch_measured_windows_with_loop_closures, stitch_measured_windows_with_settings,
     transform_points,
