@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 use vestra_core::{
     BackprojectionSettings, ReconstructionSettings, SceneBundle, SceneProvenance,
     VideoExtractionSettings, WindowSettings, export_camera_json, export_fused_glb,
-    export_fused_ply, export_fused_splat, extract_video_frames, fuse_scene_bundle, plan_windows,
-    reconstruct_frames,
+    export_fused_ply, export_fused_splat, extract_video_frames, fuse_scene_bundle,
+    load_decoded_frame_cache, plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
 use vestra_studio::serve;
@@ -43,6 +43,10 @@ enum Command {
         model: PathBuf,
         #[arg(long)]
         output: PathBuf,
+        /// Reuse compatible durable window checkpoints in an existing bundle.
+        /// Provenance must match exactly; incompatible checkpoints are refused.
+        #[arg(long)]
+        resume: bool,
         #[arg(long, default_value_t = 120)]
         frames: usize,
         #[arg(long, default_value_t = 504)]
@@ -129,6 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             video,
             model,
             output,
+            resume,
             frames,
             width,
             height,
@@ -152,16 +157,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     pixel_stride,
                 )?,
             };
-            let bundle = SceneBundle::create(&output, provenance)?;
-            let decoded = extract_video_frames(
-                &video,
-                output.join("decoded"),
-                VideoExtractionSettings {
-                    width,
-                    height,
-                    max_frames: frames,
-                },
-            )?;
+            let bundle = if resume {
+                let bundle = SceneBundle::open(&output)?;
+                if bundle.manifest()?.provenance != provenance {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "resume bundle provenance does not match this video, model, engine, kernels, or reconstruction settings",
+                    )
+                    .into());
+                }
+                bundle
+            } else {
+                SceneBundle::create(&output, provenance)?
+            };
+            let decode_settings = VideoExtractionSettings {
+                width,
+                height,
+                max_frames: frames,
+            };
+            let decoded_directory = output.join("decoded");
+            let decoded = if resume && decoded_directory.is_dir() {
+                load_decoded_frame_cache(&video, &decoded_directory, decode_settings)?
+            } else {
+                extract_video_frames(&video, &decoded_directory, decode_settings)?
+            };
             bundle.write_capture_quality(decoded.capture_quality.clone())?;
             if decoded.frames.is_empty() {
                 return Err("ffmpeg produced no frames".into());
@@ -194,8 +213,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
             )?;
             for checkpoint in &progress {
+                let state = if checkpoint.reused {
+                    "reused"
+                } else {
+                    "checkpointed"
+                };
                 eprintln!(
-                    "checkpointed window {} [{}..{}) with {} measured points",
+                    "{state} window {} [{}..{}) with {} measured points",
                     checkpoint.window.index,
                     checkpoint.window.start,
                     checkpoint.window.end,
@@ -214,6 +238,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "decoded_frames": decoded.frames.len(),
                     "capture_quality": decoded.capture_quality,
                     "windows": progress.len(),
+                    "reused_windows": progress.iter().filter(|item| item.reused).count(),
+                    "inferred_windows": progress.iter().filter(|item| !item.reused).count(),
                     "measured_points": progress.iter().map(|item| item.measured_points).sum::<usize>(),
                     "fused_chunk": fusion.chunk_hash,
                     "fused_points": fusion.points,

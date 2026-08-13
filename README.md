@@ -140,8 +140,18 @@ Vestra samples up to 120 frames at 504×336 by default, retains one measured
 surfel per 8×8 depth pixels for the local JSON/WebGL v1, reconstructs each
 12/3 overlapping window, checkpoints measured evidence, then automatically
 publishes a derived fused world. Use `--pixel-stride 1` only for small
-diagnostic captures. To rebuild that derived layer without another model
-inference run:
+diagnostic captures. To continue a stopped run, repeat exactly the same
+command with `--resume`; Vestra verifies input/model/engine/kernel/settings
+provenance and reuses only complete schedule-compatible windows. To rebuild
+the derived layer without another model inference run:
+
+```bash
+cargo run -p vestra-cli -- reconstruct \
+  --video room.mov \
+  --model depth-anything-base-f32.gguf \
+  --output room.vestra \
+  --resume
+```
 
 Before inference, Vestra records a lightweight adjacent-frame luma-motion
 indicator as `ready`, `review`, or `recapture` in the manifest and Studio HUD.

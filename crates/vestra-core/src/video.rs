@@ -67,6 +67,10 @@ pub enum VideoInputError {
     Decode(String),
     #[error("decoded frame directory already exists at {0}")]
     ExistingOutput(PathBuf),
+    #[error(
+        "decoded frame cache at {path} does not match the locked reconstruction raster/frame contract: {reason}"
+    )]
+    InvalidCache { path: PathBuf, reason: String },
     #[error("decoded PPM is invalid: {0}")]
     Ppm(String),
     #[error("video I/O failed: {0}")]
@@ -85,32 +89,7 @@ pub fn extract_video_frames(
     if settings.width == 0 || settings.height == 0 || settings.max_frames == 0 {
         return Err(VideoInputError::InvalidSettings);
     }
-    let duration_stdout = Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-        ])
-        .arg(video)
-        .output()
-        .map_err(|error| VideoInputError::Probe(error.to_string()))?;
-    if !duration_stdout.status.success() {
-        return Err(VideoInputError::Probe(
-            String::from_utf8_lossy(&duration_stdout.stderr)
-                .trim()
-                .to_owned(),
-        ));
-    }
-    let duration_text = String::from_utf8_lossy(&duration_stdout.stdout)
-        .trim()
-        .to_owned();
-    let duration = duration_text.parse::<f64>().ok();
-    let Some(duration_seconds) = duration.filter(|value| value.is_finite() && *value > 0.0) else {
-        return Err(VideoInputError::InvalidDuration(Some(duration_text)));
-    };
+    let duration_seconds = probe_duration(video)?;
 
     let decoded_directory = work_directory.into();
     if decoded_directory.exists() {
@@ -137,7 +116,66 @@ pub fn extract_video_frames(
         ));
     }
 
-    let mut paths = fs::read_dir(&decoded_directory)?
+    load_decoded_frame_cache_with_duration(&decoded_directory, settings, duration_seconds)
+}
+
+/// Loads the deterministic decode cache produced by [`extract_video_frames`].
+/// This is deliberately strict: callers use it only after locking video and
+/// settings provenance, and every cached image must match the requested raster.
+pub fn load_decoded_frame_cache(
+    video: &Path,
+    decoded_directory: impl Into<PathBuf>,
+    settings: VideoExtractionSettings,
+) -> Result<VideoFrames, VideoInputError> {
+    if settings.width == 0 || settings.height == 0 || settings.max_frames == 0 {
+        return Err(VideoInputError::InvalidSettings);
+    }
+    let duration_seconds = probe_duration(video)?;
+    load_decoded_frame_cache_with_duration(&decoded_directory.into(), settings, duration_seconds)
+}
+
+fn probe_duration(video: &Path) -> Result<f64, VideoInputError> {
+    let duration_stdout = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ])
+        .arg(video)
+        .output()
+        .map_err(|error| VideoInputError::Probe(error.to_string()))?;
+    if !duration_stdout.status.success() {
+        return Err(VideoInputError::Probe(
+            String::from_utf8_lossy(&duration_stdout.stderr)
+                .trim()
+                .to_owned(),
+        ));
+    }
+    let duration_text = String::from_utf8_lossy(&duration_stdout.stdout)
+        .trim()
+        .to_owned();
+    let duration = duration_text.parse::<f64>().ok();
+    let Some(duration_seconds) = duration.filter(|value| value.is_finite() && *value > 0.0) else {
+        return Err(VideoInputError::InvalidDuration(Some(duration_text)));
+    };
+    Ok(duration_seconds)
+}
+
+fn load_decoded_frame_cache_with_duration(
+    decoded_directory: &Path,
+    settings: VideoExtractionSettings,
+    duration_seconds: f64,
+) -> Result<VideoFrames, VideoInputError> {
+    if !decoded_directory.is_dir() {
+        return Err(VideoInputError::InvalidCache {
+            path: decoded_directory.to_path_buf(),
+            reason: "directory is missing".to_owned(),
+        });
+    }
+    let mut paths = fs::read_dir(decoded_directory)?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|extension| extension == "ppm"))
@@ -147,11 +185,30 @@ pub fn extract_video_frames(
         .iter()
         .map(|path| read_ppm_rgb(path))
         .collect::<Result<Vec<_>, _>>()?;
+    if frames.is_empty() || frames.len() > settings.max_frames {
+        return Err(VideoInputError::InvalidCache {
+            path: decoded_directory.to_path_buf(),
+            reason: format!(
+                "expected 1..={} frames, found {}",
+                settings.max_frames,
+                frames.len()
+            ),
+        });
+    }
+    if frames
+        .iter()
+        .any(|frame| frame.width != settings.width || frame.height != settings.height)
+    {
+        return Err(VideoInputError::InvalidCache {
+            path: decoded_directory.to_path_buf(),
+            reason: format!("expected {}x{} RGB frames", settings.width, settings.height),
+        });
+    }
     let capture_quality = assess_capture_quality(&frames);
     Ok(VideoFrames {
         duration_seconds,
         frames,
-        decoded_directory,
+        decoded_directory: decoded_directory.to_path_buf(),
         capture_quality,
     })
 }
@@ -292,6 +349,39 @@ mod tests {
         assert_eq!(frame.width, 2);
         assert_eq!(frame.height, 1);
         assert_eq!(frame.rgb_hwc_u8, vec![1, 2, 3, 4, 5, 6]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn decode_cache_requires_the_locked_raster_and_is_reusable() {
+        let root =
+            std::env::temp_dir().join(format!("vestra-decode-cache-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("frame-000001.ppm"),
+            b"P6\n2 1\n255\n\x01\x02\x03\x04\x05\x06",
+        )
+        .unwrap();
+        let settings = VideoExtractionSettings {
+            width: 2,
+            height: 1,
+            max_frames: 2,
+        };
+        let cached = load_decoded_frame_cache_with_duration(&root, settings, 3.0).unwrap();
+        assert_eq!(cached.frames.len(), 1);
+        assert_eq!(cached.decoded_directory, root);
+        assert!(matches!(
+            load_decoded_frame_cache_with_duration(
+                &root,
+                VideoExtractionSettings {
+                    width: 1,
+                    ..settings
+                },
+                3.0,
+            ),
+            Err(VideoInputError::InvalidCache { .. })
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 

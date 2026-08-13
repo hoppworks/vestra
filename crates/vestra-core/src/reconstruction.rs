@@ -1,5 +1,7 @@
 //! The deterministic bridge from multi-view inference to durable measured chunks.
 
+use std::collections::BTreeMap;
+
 use vestra_engine::Engine;
 
 use crate::{
@@ -20,6 +22,9 @@ pub struct ReconstructionProgress {
     pub window: FrameWindow,
     pub chunk_hash: String,
     pub measured_points: usize,
+    /// True when a complete immutable checkpoint was already present and was
+    /// deliberately reused without executing model inference again.
+    pub reused: bool,
 }
 
 /// Published result of deriving a relative-scale world from the immutable
@@ -45,6 +50,10 @@ pub enum ReconstructionError {
     Schedule(#[from] crate::ScheduleError),
     #[error("window stitching failed: {0}")]
     Stitch(#[from] crate::StitchError),
+    #[error(
+        "persisted checkpoint for window {window_index} is incompatible with this reconstruction schedule"
+    )]
+    CheckpointConflict { window_index: usize },
 }
 
 /// Rebuilds the derived world from the bundle's raw evidence in deterministic
@@ -87,8 +96,23 @@ pub fn reconstruct_frames(
     settings: ReconstructionSettings,
 ) -> Result<Vec<ReconstructionProgress>, ReconstructionError> {
     let windows = plan_windows(frames.len(), settings.windows)?;
+    let manifest = bundle.manifest()?;
+    let mut checkpoints = BTreeMap::new();
+    for hash in manifest.measured_chunk_hashes {
+        let chunk = bundle.read_measured_window(&hash)?;
+        let window_index = chunk.window.index;
+        if checkpoints.insert(window_index, (hash, chunk)).is_some() {
+            return Err(ReconstructionError::CheckpointConflict { window_index });
+        }
+    }
     let mut progress = Vec::with_capacity(windows.len());
     for window in windows {
+        if let Some((chunk_hash, checkpoint)) = checkpoints.remove(&window.index) {
+            progress.push(validated_checkpoint_progress(
+                window, checkpoint, chunk_hash,
+            )?);
+            continue;
+        }
         let frame_slice = &frames[window.start..window.end];
         let inference = infer_ordered_window(engine, frame_slice)?;
         if inference.views.len() != frame_slice.len() {
@@ -132,9 +156,36 @@ pub fn reconstruct_frames(
             window,
             chunk_hash,
             measured_points,
+            reused: false,
         });
     }
     Ok(progress)
+}
+
+fn validated_checkpoint_progress(
+    window: FrameWindow,
+    checkpoint: WindowMeasuredChunk,
+    chunk_hash: String,
+) -> Result<ReconstructionProgress, ReconstructionError> {
+    let expected_frame_indices = window.start..window.end;
+    let valid = checkpoint.window == window
+        && checkpoint.views.len() == expected_frame_indices.len()
+        && checkpoint
+            .views
+            .iter()
+            .zip(expected_frame_indices)
+            .all(|(view, frame_index)| view.frame_index == frame_index);
+    if !valid {
+        return Err(ReconstructionError::CheckpointConflict {
+            window_index: window.index,
+        });
+    }
+    Ok(ReconstructionProgress {
+        window,
+        chunk_hash,
+        measured_points: checkpoint.views.iter().map(|view| view.points.len()).sum(),
+        reused: true,
+    })
 }
 
 /// Maps source RGB to the inference raster without inventing colour values.
@@ -174,6 +225,62 @@ mod tests {
             rgb_at_inference_resolution(&frame, 4, 1),
             vec![1, 2, 3, 1, 2, 3, 4, 5, 6, 4, 5, 6]
         );
+    }
+
+    #[test]
+    fn compatible_checkpoint_is_reused_without_inference() {
+        let window = FrameWindow {
+            index: 3,
+            start: 9,
+            end: 11,
+        };
+        let camera = CameraCalibration {
+            world_to_camera: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            intrinsics: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        };
+        let checkpoint = WindowMeasuredChunk {
+            window,
+            views: vec![
+                MeasuredFrameChunk {
+                    frame_index: 9,
+                    camera,
+                    points: vec![MeasuredPoint {
+                        position: [0.0; 3],
+                        normal: [0.0, 0.0, 1.0],
+                        color_srgb: [0; 3],
+                        confidence: 1.0,
+                        radius: 1.0,
+                        source_pixel: [0, 0],
+                    }],
+                },
+                MeasuredFrameChunk {
+                    frame_index: 10,
+                    camera,
+                    points: Vec::new(),
+                },
+            ],
+        };
+        let progress =
+            validated_checkpoint_progress(window, checkpoint, "checkpoint".into()).unwrap();
+        assert!(progress.reused);
+        assert_eq!(progress.measured_points, 1);
+    }
+
+    #[test]
+    fn incompatible_checkpoint_is_never_reused() {
+        let window = FrameWindow {
+            index: 3,
+            start: 9,
+            end: 11,
+        };
+        let checkpoint = WindowMeasuredChunk {
+            window: FrameWindow { end: 10, ..window },
+            views: Vec::new(),
+        };
+        assert!(matches!(
+            validated_checkpoint_progress(window, checkpoint, "checkpoint".into()),
+            Err(ReconstructionError::CheckpointConflict { window_index: 3 })
+        ));
     }
 
     #[test]
