@@ -174,6 +174,28 @@ fn handle_intake(mut stream: TcpStream, state: &Arc<Mutex<IntakeState>>) -> std:
             _ => {}
         }
     }
+    if method == "GET" && (path == "/world" || path.starts_with("/world/")) {
+        let scene_path = match path.strip_prefix("/world").unwrap_or("/") {
+            "" | "/" => "/",
+            remainder => remainder,
+        };
+        let scene = state.lock().ok().and_then(|guard| {
+            guard.active.as_ref().and_then(|job| {
+                (job.outcome == IntakeOutcome::Complete
+                    && job.scene.join("manifest.json").is_file())
+                .then(|| job.scene.clone())
+            })
+        });
+        return match scene {
+            Some(scene) => handle_scene_path(&mut stream, &scene, scene_path),
+            None => write_response(
+                &mut stream,
+                "404 Not Found",
+                "text/plain; charset=utf-8",
+                b"completed local world not found",
+            ),
+        };
+    }
     match (method, path) {
         ("GET", "/") | ("GET", "/index.html") => write_response(
             &mut stream,
@@ -559,7 +581,7 @@ fn intake_status(state: &Arc<Mutex<IntakeState>>) -> Vec<u8> {
         let Some(child) = job.child.as_mut() else {
             job.outcome = IntakeOutcome::Interrupted;
             let _ = write_intake_record(job);
-            return intake_payload(job, &config);
+            return intake_payload(job);
         };
         match child.try_wait() {
             Ok(Some(status)) if status.success() => {
@@ -585,7 +607,7 @@ fn intake_status(state: &Arc<Mutex<IntakeState>>) -> Vec<u8> {
     if job.outcome == IntakeOutcome::Complete && job.viewer.is_none() {
         job.viewer = spawn_viewer(&config, &job.scene).ok();
     }
-    intake_payload(job, &config)
+    intake_payload(job)
 }
 
 fn spawn_viewer(config: &IntakeConfig, scene: &Path) -> std::io::Result<Child> {
@@ -604,7 +626,7 @@ fn spawn_viewer(config: &IntakeConfig, scene: &Path) -> std::io::Result<Child> {
         .spawn()
 }
 
-fn intake_payload(job: &IntakeJob, config: &IntakeConfig) -> Vec<u8> {
+fn intake_payload(job: &IntakeJob) -> Vec<u8> {
     let log_tail = fs::read_to_string(&job.log).ok().map(|log| {
         log.chars()
             .rev()
@@ -625,7 +647,7 @@ fn intake_payload(job: &IntakeJob, config: &IntakeConfig) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "job": job.id,
         "state": state,
-        "viewer": if job.outcome == IntakeOutcome::Complete && job.viewer.is_some() { Some(format!("http://127.0.0.1:{}", config.port.saturating_add(1))) } else { None },
+        "viewer": if job.outcome == IntakeOutcome::Complete && job.viewer.is_some() { Some("/world/") } else { None },
         "can_cancel": job.outcome == IntakeOutcome::Running,
         "can_resume": matches!(job.outcome, IntakeOutcome::Cancelled | IntakeOutcome::Interrupted | IntakeOutcome::Failed),
         "log_tail": log_tail,
@@ -652,6 +674,10 @@ fn handle(mut stream: TcpStream, root: &Path) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     reader.read_line(&mut request)?;
     let path = request.split_whitespace().nth(1).unwrap_or("/");
+    handle_scene_path(&mut stream, root, path)
+}
+
+fn handle_scene_path(stream: &mut TcpStream, root: &Path, path: &str) -> std::io::Result<()> {
     let (status, content_type, body) = match path {
         "/" | "/index.html" => (
             "200 OK",
