@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vestra_core::{
     BackprojectionSettings, ReconstructionSettings, SceneBundle, SceneProvenance,
-    VideoExtractionSettings, WindowSettings, export_camera_json, export_fused_glb,
-    export_fused_ply, export_fused_splat, extract_video_frames, fuse_scene_bundle, fused_topology,
-    load_decoded_frame_cache, plan_windows, reconstruct_frames,
+    VideoExtractionSettings, WindowSettings, capture_cpp_pr2_fixture, export_camera_json,
+    export_fused_glb, export_fused_ply, export_fused_splat, extract_video_frames,
+    fuse_scene_bundle, fused_topology, load_decoded_frame_cache, plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
 use vestra_studio::serve;
@@ -118,6 +118,36 @@ enum Command {
         scene: PathBuf,
         #[arg(long, default_value_t = 4317)]
         port: u16,
+    },
+    /// Capture window-scoped DA3 output for the pinned C++ PR #2 stitcher oracle.
+    /// This is diagnostic evidence, not a production scene export.
+    OracleFixture {
+        #[arg(long)]
+        video: PathBuf,
+        #[arg(long)]
+        model: PathBuf,
+        /// Existing canonical RGB24 PPM cache, normally `<scene>/decoded`.
+        #[arg(long)]
+        decoded: PathBuf,
+        /// New VPS1 artifact. Refuses to overwrite an existing file.
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value_t = 120)]
+        frames: usize,
+        #[arg(long, default_value_t = 504)]
+        width: usize,
+        #[arg(long, default_value_t = 336)]
+        height: usize,
+        #[arg(long, default_value_t = 12)]
+        chunk_size: usize,
+        #[arg(long, default_value_t = 3)]
+        overlap: usize,
+        #[arg(long, default_value_t = 55.0)]
+        confidence_percentile: f64,
+        #[arg(long, default_value_t = 1.2)]
+        point_size: f32,
+        #[arg(long, default_value_t = 50)]
+        minimum_overlap_points: usize,
     },
 }
 
@@ -254,6 +284,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "fused_chunk": fusion.chunk_hash,
                     "fused_points": fusion.points,
                 })
+            );
+        }
+        Command::OracleFixture {
+            video,
+            model,
+            decoded,
+            output,
+            frames,
+            width,
+            height,
+            chunk_size,
+            overlap,
+            confidence_percentile,
+            point_size,
+            minimum_overlap_points,
+        } => {
+            if output.exists() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "refusing to overwrite existing oracle fixture at {}",
+                        output.display()
+                    ),
+                )
+                .into());
+            }
+            let decoded = load_decoded_frame_cache(
+                &video,
+                &decoded,
+                VideoExtractionSettings {
+                    width,
+                    height,
+                    max_frames: frames,
+                },
+            )?;
+            let mut engine = Engine::load(&model, QuantPref::PreferF32)?;
+            let fixture = capture_cpp_pr2_fixture(
+                &mut engine,
+                &decoded.frames,
+                WindowSettings {
+                    chunk_size,
+                    overlap,
+                },
+                confidence_percentile,
+                point_size,
+                minimum_overlap_points,
+            )?;
+            let mut file = File::options().write(true).create_new(true).open(&output)?;
+            fixture.write_vps1(&mut file)?;
+            println!(
+                "wrote VPS1: {} frames, {} windows, {}×{}",
+                fixture.frame_count,
+                fixture.window_views.len(),
+                fixture.width,
+                fixture.height,
             );
         }
         Command::Fuse { scene } => {
