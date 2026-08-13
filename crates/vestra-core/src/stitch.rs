@@ -49,6 +49,21 @@ impl SimilarityTransform {
                 + self.translation[2],
         ]
     }
+
+    #[must_use]
+    pub fn rotate(self, vector: [f32; 3]) -> [f32; 3] {
+        normalize([
+            self.rotation[0] * vector[0]
+                + self.rotation[1] * vector[1]
+                + self.rotation[2] * vector[2],
+            self.rotation[3] * vector[0]
+                + self.rotation[4] * vector[1]
+                + self.rotation[5] * vector[2],
+            self.rotation[6] * vector[0]
+                + self.rotation[7] * vector[1]
+                + self.rotation[8] * vector[2],
+        ])
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,6 +77,8 @@ pub struct AlignmentReport {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FusedPoint {
     pub position: [f32; 3],
+    #[serde(default)]
+    pub normal: [f32; 3],
     pub color_srgb: [u8; 3],
     pub confidence: f32,
     pub radius: f32,
@@ -115,7 +132,7 @@ struct Match {
     weight: f64,
 }
 
-type VoxelCell = (f32, [f32; 3], [f32; 3], f32, u32);
+type VoxelCell = (f32, [f32; 3], [f32; 3], [f32; 3], f32, u32);
 
 /// Fits the transform that maps `source` into `target` from shared
 /// `(frame_index, source_pixel)` observations. The returned transform is
@@ -383,6 +400,14 @@ fn mat_vec(r: [f64; 9], x: [f64; 3]) -> [f64; 3] {
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
+fn normalize(vector: [f32; 3]) -> [f32; 3] {
+    let length = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if !length.is_finite() || length <= 1e-12 {
+        [0.0, 0.0, 1.0]
+    } else {
+        vector.map(|value| value / length)
+    }
+}
 fn rotation_from_quaternion(q: [f64; 4]) -> [f64; 9] {
     let [w, x, y, z] = q;
     [
@@ -406,6 +431,7 @@ pub fn transform_points(
         .iter()
         .map(|p| MeasuredPoint {
             position: transform.apply(p.position),
+            normal: transform.rotate(p.normal),
             radius: p.radius * transform.scale,
             ..*p
         })
@@ -482,24 +508,26 @@ pub fn stitch_measured_windows_with_settings(
                 );
                 let cell = cells
                     .entry(key)
-                    .or_insert((0.0, [0.0; 3], [0.0; 3], 0.0, 0));
+                    .or_insert((0.0, [0.0; 3], [0.0; 3], [0.0; 3], 0.0, 0));
                 let weight = point.confidence.max(0.0);
                 cell.0 += weight;
                 for d in 0..3 {
                     cell.1[d] += weight * point.position[d];
                     cell.2[d] += weight * f32::from(point.color_srgb[d]);
+                    cell.3[d] += weight * point.normal[d];
                 }
-                cell.3 += point.radius;
-                cell.4 += 1;
+                cell.4 += point.radius;
+                cell.5 += 1;
             }
         }
     }
     let mut points = cells
         .into_values()
-        .map(|(weight, position, color, radius, contributors)| {
+        .map(|(weight, position, color, normal, radius, contributors)| {
             let d = weight.max(1e-6);
             FusedPoint {
                 position: position.map(|v| v / d),
+                normal: normalize(normal.map(|v| v / d)),
                 color_srgb: color.map(|v| (v / d).round().clamp(0.0, 255.0) as u8),
                 confidence: weight / contributors as f32,
                 radius: radius / contributors as f32,
@@ -555,6 +583,7 @@ mod tests {
     fn p(i: u32, pos: [f32; 3]) -> MeasuredPoint {
         MeasuredPoint {
             position: pos,
+            normal: [0.0, 0.0, 1.0],
             color_srgb: [0; 3],
             confidence: 1.,
             radius: 1.,
@@ -585,6 +614,7 @@ mod tests {
         let transformed = transform_points(
             &[MeasuredPoint {
                 position: [1.0, 0.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
                 color_srgb: [1, 2, 3],
                 confidence: 1.0,
                 radius: 0.25,
@@ -597,6 +627,7 @@ mod tests {
         );
         assert_eq!(transformed[0].position, [2.0, 0.0, 0.0]);
         assert_eq!(transformed[0].radius, 0.5);
+        assert_eq!(transformed[0].normal, [0.0, 0.0, 1.0]);
     }
 
     #[test]

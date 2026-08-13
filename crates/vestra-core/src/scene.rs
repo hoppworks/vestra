@@ -287,6 +287,7 @@ mod tests {
                 },
                 points: vec![MeasuredPoint {
                     position: [1.0, 2.0, 3.0],
+                    normal: [0.0, 0.0, 1.0],
                     color_srgb: [4, 5, 6],
                     confidence: 2.0,
                     radius: 0.1,
@@ -332,6 +333,7 @@ mod tests {
             voxel_size: 0.25,
             points: vec![crate::FusedPoint {
                 position: [1.0, 2.0, 3.0],
+                normal: [0.0, 0.0, 1.0],
                 color_srgb: [4, 5, 6],
                 confidence: 0.7,
                 radius: 0.1,
@@ -367,5 +369,15 @@ mod tests {
         bundle.write_capture_quality(quality.clone()).unwrap();
         assert_eq!(bundle.manifest().unwrap().capture_quality, Some(quality));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_measured_chunks_without_normals_remain_readable() {
+        let legacy = r#"{
+          "window":{"index":0,"start":0,"end":1},
+          "views":[{"frame_index":0,"camera":{"world_to_camera":[1,0,0,0,0,1,0,0,0,0,1,0],"intrinsics":[1,0,0,0,1,0,0,0,1]},"points":[{"position":[1,2,3],"color_srgb":[4,5,6],"confidence":1,"radius":0.1,"source_pixel":[0,0]}]}]
+        }"#;
+        let chunk: WindowMeasuredChunk = serde_json::from_str(legacy).unwrap();
+        assert_eq!(chunk.views[0].points[0].normal, [0.0, 0.0, 0.0]);
     }
 }

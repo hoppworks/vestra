@@ -27,15 +27,18 @@ pub fn export_fused_ply(
         .ok_or(ExportError::MissingFusedWorld)?;
     let fused = bundle.read_fused_scene(&hash)?;
     let mut bytes = format!(
-        "ply\nformat ascii 1.0\ncomment Vestra relative-scale fused world\nelement vertex {}\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nproperty float confidence\nproperty float radius\nproperty uint contributors\nend_header\n",
+        "ply\nformat ascii 1.0\ncomment Vestra relative-scale fused world\nelement vertex {}\nproperty float x\nproperty float y\nproperty float z\nproperty float nx\nproperty float ny\nproperty float nz\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nproperty float confidence\nproperty float radius\nproperty uint contributors\nend_header\n",
         fused.points.len()
     );
     for point in &fused.points {
         bytes.push_str(&format!(
-            "{} {} {} {} {} {} {} {} {}\n",
+            "{} {} {} {} {} {} {} {} {} {} {} {}\n",
             point.position[0],
             point.position[1],
             point.position[2],
+            point.normal[0],
+            point.normal[1],
+            point.normal[2],
             point.color_srgb[0],
             point.color_srgb[1],
             point.color_srgb[2],
@@ -74,6 +77,7 @@ mod tests {
                 voxel_size: 0.1,
                 points: vec![FusedPoint {
                     position: [1.0, 2.0, 3.0],
+                    normal: [0.0, 0.0, 1.0],
                     color_srgb: [4, 5, 6],
                     confidence: 0.7,
                     radius: 0.2,
@@ -85,7 +89,7 @@ mod tests {
         assert_eq!(export_fused_ply(&bundle, &output).unwrap(), 1);
         let text = fs::read_to_string(&output).unwrap();
         assert!(text.contains("comment Vestra relative-scale fused world"));
-        assert!(text.ends_with("1 2 3 4 5 6 0.7 0.2 3\n"));
+        assert!(text.ends_with("1 2 3 0 0 1 4 5 6 0.7 0.2 3\n"));
         fs::remove_file(output).unwrap();
         fs::remove_dir_all(root).unwrap();
     }

@@ -195,6 +195,7 @@ mod tests {
         .unwrap();
         let point = |pixel, position| MeasuredPoint {
             position,
+            normal: [0.0, 0.0, 1.0],
             color_srgb: [30, 40, 50],
             confidence: 1.0,
             radius: 0.25,

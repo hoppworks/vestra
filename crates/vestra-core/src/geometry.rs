@@ -53,6 +53,10 @@ impl Default for BackprojectionSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MeasuredPoint {
     pub position: [f32; 3],
+    /// Unit normal in relative world coordinates. It is oriented toward the
+    /// observing camera when a depth stencil is unavailable at an edge.
+    #[serde(default)]
+    pub normal: [f32; 3],
     pub color_srgb: [u8; 3],
     pub confidence: f32,
     pub radius: f32,
@@ -151,9 +155,17 @@ pub fn backproject_measured_view(
                 r01 * dx + r11 * dy + r21 * dz,
                 r02 * dx + r12 * dy + r22 * dz,
             ];
+            let normal = estimate_world_normal(
+                view,
+                x,
+                y,
+                [r00, r01, r02, r10, r11, r12, r20, r21, r22],
+                position,
+            );
             let rgb_index = index * 3;
             points.push(MeasuredPoint {
                 position,
+                normal,
                 color_srgb: [
                     view.rgb_hwc_u8[rgb_index],
                     view.rgb_hwc_u8[rgb_index + 1],
@@ -166,6 +178,83 @@ pub fn backproject_measured_view(
         }
     }
     Ok(points)
+}
+
+fn estimate_world_normal(
+    view: MeasuredView<'_>,
+    x: usize,
+    y: usize,
+    rotation: [f32; 9],
+    position: [f32; 3],
+) -> [f32; 3] {
+    let point_at = |px: usize, py: usize| -> Option<[f32; 3]> {
+        if px >= view.width || py >= view.height {
+            return None;
+        }
+        let depth = view.depth[py * view.width + px];
+        if !depth.is_finite() || depth <= 0.0 {
+            return None;
+        }
+        let fx = view.camera.intrinsics[0];
+        let fy = view.camera.intrinsics[4];
+        let cx = view.camera.intrinsics[2];
+        let cy = view.camera.intrinsics[5];
+        Some([
+            (px as f32 - cx) * depth / fx,
+            (py as f32 - cy) * depth / fy,
+            depth,
+        ])
+    };
+    let centre = point_at(x, y).expect("caller has already validated centre depth");
+    let camera_normal = match (
+        point_at(x.saturating_add(1), y),
+        point_at(x, y.saturating_add(1)),
+    ) {
+        (Some(right), Some(down)) => normalize(cross(sub(down, centre), sub(right, centre))),
+        _ => {
+            let [r00, r01, r02, tx, r10, r11, r12, ty, r20, r21, r22, tz] =
+                view.camera.world_to_camera;
+            let origin = [
+                -(r00 * tx + r10 * ty + r20 * tz),
+                -(r01 * tx + r11 * ty + r21 * tz),
+                -(r02 * tx + r12 * ty + r22 * tz),
+            ];
+            normalize(sub(origin, position))
+        }
+    };
+    // W2C camera normals become world normals through R^T.
+    normalize([
+        rotation[0] * camera_normal[0]
+            + rotation[3] * camera_normal[1]
+            + rotation[6] * camera_normal[2],
+        rotation[1] * camera_normal[0]
+            + rotation[4] * camera_normal[1]
+            + rotation[7] * camera_normal[2],
+        rotation[2] * camera_normal[0]
+            + rotation[5] * camera_normal[1]
+            + rotation[8] * camera_normal[2],
+    ])
+}
+
+fn sub(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
+}
+
+fn cross(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+fn normalize(vector: [f32; 3]) -> [f32; 3] {
+    let length = (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt();
+    if !length.is_finite() || length <= 1e-12 {
+        [0.0, 0.0, 1.0]
+    } else {
+        vector.map(|value| value / length)
+    }
 }
 
 #[cfg(test)]
@@ -201,6 +290,26 @@ mod tests {
         assert_eq!(points[3].position, [0.75, 0.75, 3.0]);
         assert_eq!(points[1].color_srgb, [40, 50, 60]);
         assert_eq!(points[0].radius, 1.0);
+    }
+
+    #[test]
+    fn flat_depth_raster_emits_a_unit_world_normal() {
+        let rgb = [0; 12];
+        let depth = [2.0; 4];
+        let confidence = [1.0; 4];
+        let points = backproject_measured_view(
+            MeasuredView {
+                rgb_hwc_u8: &rgb,
+                depth: &depth,
+                confidence: &confidence,
+                width: 2,
+                height: 2,
+                camera: camera([1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+            },
+            BackprojectionSettings::default(),
+        )
+        .unwrap();
+        assert_eq!(points[0].normal, [0.0, 0.0, -1.0]);
     }
 
     #[test]
