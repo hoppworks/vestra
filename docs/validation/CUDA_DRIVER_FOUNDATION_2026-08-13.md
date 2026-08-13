@@ -11,7 +11,7 @@ claim.
 | Item | Value |
 | --- | --- |
 | Repository | `https://github.com/hoppworks/vestra-kernels` |
-| Revision | `4c569deaf602e1316656e9c9ba6eddb88c588d55` |
+| Revision | `f3b0df00555e8132b2878568e9d374d05f3b090d` |
 | Feature | `cuda` |
 | CUDA binding | `cudarc 0.19.9`, Driver API with dynamic loading and NVRTC |
 | Host | Workhorse — AMD Ryzen 9 9950X, NVIDIA GeForce RTX 5080 |
@@ -44,7 +44,7 @@ device-resident residual building block. The separate opt-in Engine parity
 slice below calls it, but the normal Engine path does not; therefore this
 evidence must not be used as a GPU performance result.
 
-Kernels revision `4c569deaf602e1316656e9c9ba6eddb88c588d55` additionally
+Kernels revision `f3b0df00555e8132b2878568e9d374d05f3b090d` additionally
 provides device-resident F32 row-major GEMM through dynamically loaded
 CUBLAS, a native linear epilogue, and the same exact-erf GELU approximation
 used by the CPU path. Its Workhorse oracle verified the hand-computed `2×3 ×
@@ -55,6 +55,13 @@ tolerance of `2e-6`. The implementation invokes CUBLAS through the
 equivalent column-major identity `Cᵀ = Bᵀ × Aᵀ`, avoiding a host-side
 transpose. CUBLAS is isolated under
 `/var/roothome/vestra-cuda-deps/nvidia/cublas/lib` alongside NVRTC.
+
+The same test now builds two cached device linear plans and chains them:
+`[2,3] → [2,2] → [2,1]`. Both weights, biases, and scales are uploaded only
+when a plan is prepared; the first projection output stays on the device as
+the second projection input. The final exact result is `[-58,-157]`. This is
+the first verified device-resident multi-operator chain, not an end-to-end
+inference or performance claim.
 
 The first Engine-owned fixed-shape CUDA operator is recorded below. Every
 subsequent CUDA operator must likewise have a CPU F32 oracle and the locked
