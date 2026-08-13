@@ -11,7 +11,7 @@ through the deferred pose collection and relative surfel fusion route.
 
 - Host: AMD Ryzen 9 9950X Workhorse
 - Thread budget: `RAYON_NUM_THREADS=16`
-- Build: `RUSTFLAGS=-C target-cpu=znver5`, Vestra `275210c`
+- Build: `RUSTFLAGS=-C target-cpu=znver5`, Vestra `fbd9519`
 - Model: `depth-anything-base-f32.gguf` (F32), SHA-256
   `1b13b166e8a8b4f2c862f42d36edb2f9aab995a18cc527a52b9f160b99c6b8da`
 - Engine revision: `1562f8b70a1b35a9908feb88eaa38577b92f2a2a`
@@ -40,6 +40,8 @@ vestra export --scene robot-motion.vestra --output world.ply
 - measured points: 2,816
 - fused relative-scale surfels: 2,710
 - exported ASCII PLY rows: 2,710
+- automatic revisit result: no loop was accepted (`pose_graph: null`), as
+  expected for this non-revisiting clip
 - fused chunk SHA-256:
   `bc72dec49dc41cac2b278779a8ca20fa4cd66315e03cd1fe693ed677a00774c2`
 
@@ -47,4 +49,4 @@ The successful run confirms that raw windows are checkpointed independently,
 sequential poses are collected before a single final fusion pass, and the
 derived fused chunk remains content-addressed. It is not evidence of a
 geometrically coherent room: that requires a real capture and the pending
-revisit candidate/measurement path.
+room-scale validation suite.

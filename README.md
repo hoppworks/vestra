@@ -73,10 +73,10 @@ world pipeline that do not depend on an unverified model claim:
    then confidence-fused into a voxel-deduplicated surfel world. The derived
    chunk is immutable, content-addressed, and atomically referenced by the
    manifest; raw evidence is never overwritten.
-10. Verified non-sequential loop constraints can be globally redistributed by
-    a relative Sim(3) pose graph before fusion. Vestra deliberately does not
-    yet auto-propose loops: a revisit must first be supported by independent
-    geometric correspondence evidence.
+10. Vestra automatically proposes only non-adjacent camera revisits, measures
+    them with tight spatial geometry gates, and redistributes accepted loop
+    constraints through a relative Sim(3) pose graph before fusion. Failed or
+    weak candidates are ignored; they never create an identity fallback.
 11. The complete local MP4-to-Studio smoke path is evidenced on the Ryzen 9
     Workhorse in [the end-to-end validation record](docs/validation/END_TO_END_SMOKE_2026-08-13.md).
     A separate [motion-video smoke record](docs/validation/MOTION_VIDEO_SMOKE_2026-08-13.md)

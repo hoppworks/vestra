@@ -11,8 +11,8 @@ video
   -> back-projection and confidence filtering
   -> robust weighted Sim3 window alignment
   -> bounded point-to-plane seam refinement
-  -> [next] revisit proposal and geometric loop measurement
-  -> optional verified-loop Sim3 pose-graph optimization
+  -> revisit proposal and geometric loop measurement
+  -> verified-loop Sim3 pose-graph optimization
   -> confidence-weighted voxel surfel fusion
   -> [next] TSDF de-ghosting
   -> measured/fused scene chunks

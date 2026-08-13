@@ -44,8 +44,8 @@ Remaining:
 
 - one bounded point-to-plane refinement over direct overlap matches, using
   fused surfel normals (complete); spatial-hash ICP remains next
-- relative Sim3 pose-graph optimizer and deferred final fusion (complete);
-  revisit proposal and geometric loop measurement remain next
+- automatic revisit proposal, geometric loop measurement, relative Sim3
+  pose-graph optimization, and deferred final fusion (complete)
 - TSDF de-ghosting and first-observer ownership
 - surfel normals, voxel mode, thinning, and confidence reveal ordering
 - quality gates for connectedness, drift, overlap error, surface retention,
