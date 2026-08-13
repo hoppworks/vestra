@@ -59,6 +59,22 @@ pub struct AlignmentReport {
     pub rms_residual: f32,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FusedPoint {
+    pub position: [f32; 3],
+    pub color_srgb: [u8; 3],
+    pub confidence: f32,
+    pub radius: f32,
+    pub contributors: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FusedSceneChunk {
+    pub alignments: Vec<AlignmentReport>,
+    pub voxel_size: f32,
+    pub points: Vec<FusedPoint>,
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum StitchError {
     #[error("windows have fewer than three pixel correspondences")]
@@ -309,6 +325,100 @@ pub fn transform_points(
             ..*p
         })
         .collect()
+}
+
+pub fn stitch_measured_windows(
+    windows: &[WindowMeasuredChunk],
+) -> Result<FusedSceneChunk, StitchError> {
+    let Some(first) = windows.first() else {
+        return Ok(FusedSceneChunk {
+            alignments: Vec::new(),
+            voxel_size: 0.0,
+            points: Vec::new(),
+        });
+    };
+    let mut global = vec![transform_window(first, SimilarityTransform::IDENTITY)];
+    let mut alignments = Vec::new();
+    for window in &windows[1..] {
+        let report =
+            align_overlapping_windows(window, global.last().expect("first window exists"))?;
+        global.push(transform_window(window, report.transform));
+        alignments.push(report);
+    }
+    let mut radii = global
+        .iter()
+        .flat_map(|w| w.views.iter())
+        .flat_map(|f| f.points.iter())
+        .map(|p| p.radius)
+        .filter(|r| r.is_finite() && *r > 0.0)
+        .collect::<Vec<_>>();
+    if radii.is_empty() {
+        return Ok(FusedSceneChunk {
+            alignments,
+            voxel_size: 0.0,
+            points: Vec::new(),
+        });
+    }
+    radii.sort_by(f32::total_cmp);
+    let voxel_size = (radii[radii.len() / 2] * 2.0).max(1e-6);
+    let mut cells: HashMap<(i32, i32, i32), (f32, [f32; 3], [f32; 3], f32, u32)> = HashMap::new();
+    for window in &global {
+        for frame in &window.views {
+            for point in &frame.points {
+                let key = (
+                    (point.position[0] / voxel_size).floor() as i32,
+                    (point.position[1] / voxel_size).floor() as i32,
+                    (point.position[2] / voxel_size).floor() as i32,
+                );
+                let cell = cells
+                    .entry(key)
+                    .or_insert((0.0, [0.0; 3], [0.0; 3], 0.0, 0));
+                let weight = point.confidence.max(0.0);
+                cell.0 += weight;
+                for d in 0..3 {
+                    cell.1[d] += weight * point.position[d];
+                    cell.2[d] += weight * f32::from(point.color_srgb[d]);
+                }
+                cell.3 += point.radius;
+                cell.4 += 1;
+            }
+        }
+    }
+    let mut points = cells
+        .into_values()
+        .map(|(weight, position, color, radius, contributors)| {
+            let d = weight.max(1e-6);
+            FusedPoint {
+                position: position.map(|v| v / d),
+                color_srgb: color.map(|v| (v / d).round().clamp(0.0, 255.0) as u8),
+                confidence: weight / contributors as f32,
+                radius: radius / contributors as f32,
+                contributors,
+            }
+        })
+        .collect::<Vec<_>>();
+    points.sort_by(|a, b| {
+        a.position[0]
+            .total_cmp(&b.position[0])
+            .then(a.position[1].total_cmp(&b.position[1]))
+            .then(a.position[2].total_cmp(&b.position[2]))
+    });
+    Ok(FusedSceneChunk {
+        alignments,
+        voxel_size,
+        points,
+    })
+}
+
+fn transform_window(
+    window: &WindowMeasuredChunk,
+    transform: SimilarityTransform,
+) -> WindowMeasuredChunk {
+    let mut out = window.clone();
+    for frame in &mut out.views {
+        frame.points = transform_points(&frame.points, transform);
+    }
+    out
 }
 
 #[cfg(test)]

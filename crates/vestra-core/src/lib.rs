@@ -24,7 +24,8 @@ pub use scene::{
     WindowMeasuredChunk,
 };
 pub use stitch::{
-    AlignmentReport, SimilarityTransform, StitchError, align_overlapping_windows, transform_points,
+    AlignmentReport, FusedPoint, FusedSceneChunk, SimilarityTransform, StitchError,
+    align_overlapping_windows, stitch_measured_windows, transform_points,
 };
 pub use video::{VideoExtractionSettings, VideoFrames, VideoInputError, extract_video_frames};
 
