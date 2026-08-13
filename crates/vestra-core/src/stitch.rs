@@ -6,7 +6,7 @@
 //! geometrically degenerate estimates are explicit errors: this module never
 //! invents an alignment.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -271,35 +271,46 @@ pub fn measure_loop_closure(
             report: None,
         });
     }
-    let mut cells: HashMap<(i32, i32, i32), Vec<&MeasuredPoint>> = HashMap::new();
-    for point in earlier.views.iter().flat_map(|view| &view.points) {
+    let mut cells: HashMap<(i32, i32, i32), Vec<(usize, &MeasuredPoint)>> = HashMap::new();
+    for (index, point) in earlier
+        .views
+        .iter()
+        .flat_map(|view| &view.points)
+        .enumerate()
+    {
         if point.position.iter().all(|value| value.is_finite()) {
             cells
                 .entry(spatial_cell(point.position, settings.match_distance))
                 .or_default()
-                .push(point);
+                .push((index, point));
         }
     }
     let mut matches = Vec::new();
+    // A revisit edge needs independent spatial evidence. Greedy nearest
+    // matching is deterministic because source points are persisted in order;
+    // a target point may therefore contribute to at most one correspondence.
+    let mut used_targets = HashSet::new();
     for point in later.views.iter().flat_map(|view| &view.points) {
         let seeded = seed_later_to_earlier.apply(point.position);
-        let mut nearest: Option<(&MeasuredPoint, f32)> = None;
+        let mut nearest: Option<(usize, &MeasuredPoint, f32)> = None;
         let base = spatial_cell(seeded, settings.match_distance);
         for x in (base.0 - 1)..=(base.0 + 1) {
             for y in (base.1 - 1)..=(base.1 + 1) {
                 for z in (base.2 - 1)..=(base.2 + 1) {
-                    for candidate in cells.get(&(x, y, z)).into_iter().flatten() {
+                    for &(index, candidate) in cells.get(&(x, y, z)).into_iter().flatten() {
                         let residual = distance(seeded, candidate.position);
                         if residual <= settings.match_distance
-                            && nearest.is_none_or(|(_, best)| residual < best)
+                            && !used_targets.contains(&index)
+                            && nearest.is_none_or(|(_, _, best)| residual < best)
                         {
-                            nearest = Some((candidate, residual));
+                            nearest = Some((index, candidate, residual));
                         }
                     }
                 }
             }
         }
-        if let Some((candidate, _)) = nearest {
+        if let Some((index, candidate, _)) = nearest {
+            used_targets.insert(index);
             matches.push(Match {
                 source: point.position.map(f64::from),
                 target: candidate.position.map(f64::from),
@@ -1431,6 +1442,31 @@ mod tests {
             ),
             Err(StitchError::InsufficientCorrespondences)
         );
+    }
+
+    #[test]
+    fn revisit_matching_rejects_many_to_one_spatial_evidence() {
+        let earlier = chunk(vec![p(0, [0.0, 0.0, 0.0])]);
+        let later = chunk(
+            (0..8)
+                .map(|index| p(index, [0.001 * index as f32, 0.0, 0.0]))
+                .collect(),
+        );
+        assert!(matches!(
+            measure_loop_closure(
+                &earlier,
+                &later,
+                SimilarityTransform::IDENTITY,
+                LoopMeasurementSettings {
+                    match_distance: 0.1,
+                    minimum_correspondences: 3,
+                    minimum_inlier_ratio: 0.75,
+                    maximum_rms_residual: 0.01,
+                    information: 1.0,
+                },
+            ),
+            Err(StitchError::InsufficientCorrespondences)
+        ));
     }
 
     #[test]
