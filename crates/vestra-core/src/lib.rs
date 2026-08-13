@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use vestra_engine::{Engine, EngineError, MultiViewInferOut, ViewInput};
 
+pub mod cpp_pr2_oracle;
 pub mod export;
 pub mod geometry;
 pub mod pose_graph;
@@ -15,6 +16,7 @@ pub mod scene;
 pub mod stitch;
 pub mod video;
 
+pub use cpp_pr2_oracle::{CppPr2Fixture, CppPr2Frame, CppPr2OracleError, CppPr2StreamOutput};
 pub use export::{
     ExportError, export_camera_json, export_fused_glb, export_fused_ply, export_fused_splat,
 };
