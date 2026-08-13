@@ -18,15 +18,16 @@ pub use geometry::{
 };
 pub use reconstruction::{
     FusionProgress, ReconstructionError, ReconstructionProgress, ReconstructionSettings,
-    fuse_scene_bundle, reconstruct_frames,
+    fuse_scene_bundle, fuse_scene_bundle_with_settings, reconstruct_frames,
 };
 pub use scene::{
     MeasuredFrameChunk, SceneBundle, SceneBundleError, SceneManifest, SceneProvenance,
     WindowMeasuredChunk,
 };
 pub use stitch::{
-    AlignmentReport, FusedPoint, FusedSceneChunk, SimilarityTransform, StitchError,
-    align_overlapping_windows, stitch_measured_windows, transform_points,
+    AlignmentReport, FusedPoint, FusedSceneChunk, SimilarityTransform, StitchError, StitchSettings,
+    align_overlapping_windows, stitch_measured_windows, stitch_measured_windows_with_settings,
+    transform_points,
 };
 pub use video::{VideoExtractionSettings, VideoFrames, VideoInputError, extract_video_frames};
 

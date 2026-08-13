@@ -73,6 +73,8 @@ world pipeline that do not depend on an unverified model claim:
    then confidence-fused into a voxel-deduplicated surfel world. The derived
    chunk is immutable, content-addressed, and atomically referenced by the
    manifest; raw evidence is never overwritten.
+10. The complete local MP4-to-Studio smoke path is evidenced on the Ryzen 9
+    Workhorse in [the end-to-end validation record](docs/validation/END_TO_END_SMOKE_2026-08-13.md).
 
 The next hard gate is a real-video end-to-end run followed by validation of
 window alignment, revisit/loop handling, and dense fusion quality. Studio

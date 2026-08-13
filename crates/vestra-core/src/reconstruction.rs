@@ -6,7 +6,7 @@ use crate::{
     BackprojectionError, BackprojectionSettings, CameraCalibration, FrameWindow,
     MeasuredFrameChunk, MeasuredView, OwnedFrame, SceneBundle, SceneBundleError,
     WindowMeasuredChunk, WindowSettings, backproject_measured_view, infer_ordered_window,
-    plan_windows, stitch_measured_windows,
+    plan_windows, stitch_measured_windows_with_settings,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -59,6 +59,15 @@ pub enum ReconstructionError {
 /// Rebuilds the derived world from the bundle's raw evidence in deterministic
 /// schedule order. It never mutates or removes a measured chunk.
 pub fn fuse_scene_bundle(bundle: &SceneBundle) -> Result<FusionProgress, ReconstructionError> {
+    fuse_scene_bundle_with_settings(bundle, crate::StitchSettings::default())
+}
+
+/// Testable/settings-aware form of [`fuse_scene_bundle`]. Product callers use
+/// the strict default quality gate above.
+pub fn fuse_scene_bundle_with_settings(
+    bundle: &SceneBundle,
+    settings: crate::StitchSettings,
+) -> Result<FusionProgress, ReconstructionError> {
     let manifest = bundle.manifest()?;
     let mut windows = manifest
         .measured_chunk_hashes
@@ -66,7 +75,7 @@ pub fn fuse_scene_bundle(bundle: &SceneBundle) -> Result<FusionProgress, Reconst
         .map(|hash| bundle.read_measured_window(hash))
         .collect::<Result<Vec<_>, _>>()?;
     windows.sort_by_key(|chunk| chunk.window.index);
-    let fused = stitch_measured_windows(&windows)?;
+    let fused = stitch_measured_windows_with_settings(&windows, settings)?;
     let chunk_hash = bundle.write_fused_scene(&fused)?;
     Ok(FusionProgress {
         chunk_hash,
@@ -241,7 +250,14 @@ mod tests {
         bundle.write_measured_window(&source).unwrap();
         bundle.write_measured_window(&target).unwrap();
 
-        let summary = fuse_scene_bundle(&bundle).unwrap();
+        let summary = fuse_scene_bundle_with_settings(
+            &bundle,
+            crate::StitchSettings {
+                minimum_correspondences: 3,
+                ..crate::StitchSettings::default()
+            },
+        )
+        .unwrap();
 
         assert_eq!(summary.aligned_windows, 2);
         assert_eq!(summary.points, 4);

@@ -75,12 +75,37 @@ pub struct FusedSceneChunk {
     pub points: Vec<FusedPoint>,
 }
 
+/// Product quality gates for one sequential overlap seam. The defaults are
+/// intentionally stricter than the mathematical minimum of three points:
+/// real videos must contribute enough direct pixel evidence before a fused
+/// world is published.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct StitchSettings {
+    pub minimum_correspondences: usize,
+    pub minimum_inlier_ratio: f32,
+    pub minimum_scale: f32,
+    pub maximum_scale: f32,
+}
+
+impl Default for StitchSettings {
+    fn default() -> Self {
+        Self {
+            minimum_correspondences: 50,
+            minimum_inlier_ratio: 0.6,
+            minimum_scale: 0.1,
+            maximum_scale: 10.0,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum StitchError {
     #[error("windows have fewer than three pixel correspondences")]
     InsufficientCorrespondences,
     #[error("overlap correspondence geometry is degenerate")]
     DegenerateGeometry,
+    #[error("overlap seam does not meet the configured quality gate")]
+    QualityGate,
 }
 
 #[derive(Clone, Copy)]
@@ -387,6 +412,13 @@ pub fn transform_points(
 pub fn stitch_measured_windows(
     windows: &[WindowMeasuredChunk],
 ) -> Result<FusedSceneChunk, StitchError> {
+    stitch_measured_windows_with_settings(windows, StitchSettings::default())
+}
+
+pub fn stitch_measured_windows_with_settings(
+    windows: &[WindowMeasuredChunk],
+    settings: StitchSettings,
+) -> Result<FusedSceneChunk, StitchError> {
     let Some(first) = windows.first() else {
         return Ok(FusedSceneChunk {
             alignments: Vec::new(),
@@ -399,6 +431,14 @@ pub fn stitch_measured_windows(
     for window in &windows[1..] {
         let report =
             align_overlapping_windows(window, global.last().expect("first window exists"))?;
+        let inlier_ratio = report.inlier_count as f32 / report.correspondence_count as f32;
+        if report.correspondence_count < settings.minimum_correspondences
+            || inlier_ratio < settings.minimum_inlier_ratio
+            || report.transform.scale < settings.minimum_scale
+            || report.transform.scale > settings.maximum_scale
+        {
+            return Err(StitchError::QualityGate);
+        }
         global.push(transform_window(window, report.transform));
         alignments.push(report);
     }
@@ -571,6 +611,22 @@ mod tests {
         assert_eq!(
             align_overlapping_windows(&source, &target),
             Err(StitchError::DegenerateGeometry)
+        );
+    }
+
+    #[test]
+    fn production_fusion_rejects_a_tiny_overlap() {
+        let target = chunk(vec![
+            p(0, [0.0, 0.0, 0.0]),
+            p(1, [1.0, 0.0, 0.0]),
+            p(2, [0.0, 1.0, 0.0]),
+            p(3, [0.0, 0.0, 1.0]),
+        ]);
+        let mut source = target.clone();
+        source.window.index = 1;
+        assert_eq!(
+            stitch_measured_windows(&[target, source]),
+            Err(StitchError::QualityGate)
         );
     }
 }
