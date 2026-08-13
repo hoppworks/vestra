@@ -468,6 +468,40 @@ mod tests {
     }
 
     #[test]
+    fn cpp_pr2_reference_emission_keeps_first_owned_frames_once() {
+        let view = |color: [u8; 3]| CppPr2Frame {
+            intrinsics: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            world_to_camera: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            depth: vec![1.0, 2.0, 3.0, 4.0],
+            confidence: vec![1.0; 4],
+            rgb_hwc_u8: color.into_iter().cycle().take(12).collect(),
+        };
+        let fixture = CppPr2Fixture {
+            frame_count: 3,
+            width: 2,
+            height: 2,
+            windows: WindowSettings {
+                chunk_size: 2,
+                overlap: 1,
+            },
+            confidence_percentile: 0.0,
+            point_size: 1.0,
+            minimum_overlap_points: 3,
+            window_views: vec![
+                vec![view([1, 2, 3]), view([4, 5, 6])],
+                vec![view([4, 5, 6]), view([7, 8, 9])],
+            ],
+        };
+        let cloud = emit_cpp_pr2_reference_cloud(&fixture).unwrap();
+        assert_eq!(cloud.points.len(), 12);
+        assert_eq!(cloud.frame_owned_points, vec![4, 4, 4]);
+        assert_eq!(cloud.points[0].color_srgb, [1, 2, 3]);
+        assert_eq!(cloud.points[4].color_srgb, [4, 5, 6]);
+        assert_eq!(cloud.points[8].color_srgb, [7, 8, 9]);
+        assert!((cloud.points[3].radius - 4.0).abs() < 1e-5);
+    }
+
+    #[test]
     fn color_resampling_retains_direct_source_pixel_values() {
         let frame = OwnedFrame {
             rgb_hwc_u8: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
