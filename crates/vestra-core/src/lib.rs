@@ -10,6 +10,7 @@ pub mod export;
 pub mod geometry;
 pub mod pose_graph;
 pub mod reconstruction;
+pub mod revisit;
 pub mod scene;
 pub mod stitch;
 pub mod video;
@@ -26,6 +27,10 @@ pub use pose_graph::{
 pub use reconstruction::{
     FusionProgress, ReconstructionError, ReconstructionProgress, ReconstructionSettings,
     fuse_scene_bundle, fuse_scene_bundle_with_settings, reconstruct_frames,
+};
+pub use revisit::{
+    CameraCentreDirection, RevisitProposal, RevisitProposalSettings, WindowCameraPath,
+    camera_centre_direction, propose_revisits,
 };
 pub use scene::{
     MeasuredFrameChunk, SceneBundle, SceneBundleError, SceneManifest, SceneProvenance,
