@@ -74,6 +74,85 @@ pub enum CppPr2OracleError {
 }
 
 impl CppPr2Fixture {
+    /// Reads a complete window-scoped VPS1 fixture. It refuses extra bytes so
+    /// the exact model evidence cannot be confused with a partial append.
+    pub fn read_vps1(reader: &mut impl Read) -> Result<Self, CppPr2OracleError> {
+        let mut magic = [0; 4];
+        read_exact(reader, &mut magic)?;
+        if magic != FIXTURE_MAGIC {
+            return Err(CppPr2OracleError::Magic);
+        }
+        let version = read_u32(reader)?;
+        if version != FIXTURE_VERSION {
+            return Err(CppPr2OracleError::Version(version));
+        }
+        let frame_count = read_u32(reader)? as usize;
+        let height = read_u32(reader)? as usize;
+        let width = read_u32(reader)? as usize;
+        let chunk_size = read_u32(reader)? as usize;
+        let overlap = read_u32(reader)? as usize;
+        let confidence_percentile = read_f64(reader)?;
+        let point_size = read_f32(reader)?;
+        let minimum_overlap_points = read_u32(reader)? as usize;
+        let window_count = read_u32(reader)? as usize;
+        let windows = WindowSettings {
+            chunk_size,
+            overlap,
+        };
+        let expected_lengths = expected_window_lengths(frame_count, windows);
+        if frame_count == 0 || width == 0 || height == 0 || expected_lengths.len() != window_count {
+            return Err(CppPr2OracleError::InvalidHeader);
+        }
+        let plane = width
+            .checked_mul(height)
+            .ok_or(CppPr2OracleError::InvalidHeader)?;
+        let rgb_len = plane
+            .checked_mul(3)
+            .ok_or(CppPr2OracleError::InvalidHeader)?;
+        let mut window_views = Vec::with_capacity(window_count);
+        for expected in expected_lengths {
+            let view_count = read_u32(reader)? as usize;
+            if view_count != expected {
+                return Err(CppPr2OracleError::InconsistentPayload);
+            }
+            let mut views = Vec::with_capacity(view_count);
+            for _ in 0..view_count {
+                let mut intrinsics = [0.0; 9];
+                let mut world_to_camera = [0.0; 12];
+                for value in &mut intrinsics {
+                    *value = read_f32(reader)?;
+                }
+                for value in &mut world_to_camera {
+                    *value = read_f32(reader)?;
+                }
+                views.push(CppPr2Frame {
+                    intrinsics,
+                    world_to_camera,
+                    depth: read_f32_vec(reader, plane)?,
+                    confidence: read_f32_vec(reader, plane)?,
+                    rgb_hwc_u8: read_u8_vec(reader, rgb_len)?,
+                });
+            }
+            window_views.push(views);
+        }
+        let mut extra = [0; 1];
+        if reader.read(&mut extra).map_err(io_error)? != 0 {
+            return Err(CppPr2OracleError::TrailingBytes);
+        }
+        let fixture = Self {
+            frame_count,
+            width,
+            height,
+            windows,
+            confidence_percentile,
+            point_size,
+            minimum_overlap_points,
+            window_views,
+        };
+        fixture.validate()?;
+        Ok(fixture)
+    }
+
     /// Serializes the VPS1 format consumed by `vestra_cpp_stream_fixture_dump`.
     /// Optional C++ branches are intentionally not represented by this tier.
     pub fn write_vps1(&self, writer: &mut impl Write) -> Result<(), CppPr2OracleError> {
@@ -272,6 +351,11 @@ fn read_f32(reader: &mut impl Read) -> Result<f32, CppPr2OracleError> {
     read_exact(reader, &mut bytes)?;
     Ok(f32::from_le_bytes(bytes))
 }
+fn read_f64(reader: &mut impl Read) -> Result<f64, CppPr2OracleError> {
+    let mut bytes = [0; 8];
+    read_exact(reader, &mut bytes)?;
+    Ok(f64::from_le_bytes(bytes))
+}
 fn write_u32(writer: &mut impl Write, value: u32) -> std::io::Result<()> {
     writer.write_all(&value.to_le_bytes())
 }
@@ -332,9 +416,14 @@ mod tests {
     #[test]
     fn vps1_is_little_endian_and_rejects_invalid_pixels() {
         let mut bytes = Vec::new();
-        fixture().write_vps1(&mut bytes).unwrap();
+        let original = fixture();
+        original.write_vps1(&mut bytes).unwrap();
         assert_eq!(&bytes[..4], b"VPS1");
         assert_eq!(&bytes[4..8], &FIXTURE_VERSION.to_le_bytes());
+        assert_eq!(
+            CppPr2Fixture::read_vps1(&mut bytes.as_slice()).unwrap(),
+            original
+        );
         let mut invalid = fixture();
         invalid.window_views[0][0].depth.pop();
         assert_eq!(

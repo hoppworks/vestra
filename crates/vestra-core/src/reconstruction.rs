@@ -6,9 +6,9 @@ use vestra_engine::Engine;
 
 use crate::{
     BackprojectionError, BackprojectionSettings, CameraCalibration, CppPr2Fixture, CppPr2Frame,
-    FrameWindow, MeasuredFrameChunk, MeasuredView, OwnedFrame, SceneBundle, SceneBundleError,
-    WindowMeasuredChunk, WindowSettings, backproject_measured_view, infer_ordered_window,
-    plan_windows, stitch_measured_windows_with_settings,
+    FrameWindow, FusedSceneChunk, MeasuredFrameChunk, MeasuredView, OwnedFrame, SceneBundle,
+    SceneBundleError, WindowMeasuredChunk, WindowSettings, backproject_measured_view,
+    infer_ordered_window, plan_windows, stitch_measured_windows_with_settings,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -140,6 +140,92 @@ pub fn capture_cpp_pr2_fixture(
         minimum_overlap_points,
         window_views,
     })
+}
+
+/// Runs Vestra's sequential Sim(3) estimator over exactly the window-scoped
+/// evidence supplied to the C++ PR #2 stitcher. This is transform-tier oracle
+/// evidence; the returned chunk is not a claim of raw-cloud equivalence.
+pub fn stitch_cpp_pr2_fixture_as_vestra(
+    fixture: &CppPr2Fixture,
+) -> Result<FusedSceneChunk, ReconstructionError> {
+    let mut windows = Vec::with_capacity(fixture.window_views.len());
+    for (window_index, views) in fixture.window_views.iter().enumerate() {
+        let threshold = confidence_percentile(views, fixture.confidence_percentile)?;
+        let start = window_index * (fixture.windows.chunk_size - fixture.windows.overlap);
+        let measured_views = views
+            .iter()
+            .enumerate()
+            .map(|(offset, view)| {
+                let points = backproject_measured_view(
+                    MeasuredView {
+                        rgb_hwc_u8: &view.rgb_hwc_u8,
+                        depth: &view.depth,
+                        confidence: &view.confidence,
+                        width: fixture.width,
+                        height: fixture.height,
+                        camera: CameraCalibration {
+                            world_to_camera: view.world_to_camera,
+                            intrinsics: view.intrinsics,
+                        },
+                    },
+                    BackprojectionSettings {
+                        minimum_confidence: threshold,
+                        pixel_stride: 1,
+                        // Position and confidence are the only inputs to the
+                        // sequential fit; C++ radius parity is a later raw tier.
+                        surfel_radius_pixels: 1.0,
+                    },
+                )?;
+                Ok(MeasuredFrameChunk {
+                    frame_index: start + offset,
+                    camera: CameraCalibration {
+                        world_to_camera: view.world_to_camera,
+                        intrinsics: view.intrinsics,
+                    },
+                    points,
+                })
+            })
+            .collect::<Result<Vec<_>, ReconstructionError>>()?;
+        windows.push(WindowMeasuredChunk {
+            window: FrameWindow {
+                index: window_index,
+                start,
+                end: start + measured_views.len(),
+            },
+            views: measured_views,
+        });
+    }
+    let settings = crate::StitchSettings {
+        minimum_correspondences: fixture.minimum_overlap_points,
+        minimum_inlier_ratio: 0.0,
+        maximum_normalized_rms_residual: f32::INFINITY,
+        minimum_scale: 1e-9,
+        maximum_scale: 1e9,
+        loop_closure: None,
+    };
+    Ok(stitch_measured_windows_with_settings(&windows, settings)?)
+}
+
+fn confidence_percentile(
+    views: &[CppPr2Frame],
+    percentile: f64,
+) -> Result<f32, ReconstructionError> {
+    if !percentile.is_finite() || !(0.0..=100.0).contains(&percentile) {
+        return Err(ReconstructionError::OracleOutputShape);
+    }
+    let mut values = views
+        .iter()
+        .flat_map(|view| view.confidence.iter().copied())
+        .filter(|value| value.is_finite())
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return Err(ReconstructionError::OracleOutputShape);
+    }
+    values.sort_by(f32::total_cmp);
+    let position = percentile / 100.0 * (values.len() - 1) as f64;
+    let lower = position.floor() as usize;
+    let upper = position.ceil() as usize;
+    Ok(values[lower] + (values[upper] - values[lower]) * (position - lower as f64) as f32)
 }
 
 /// Runs every deterministic window and immediately checkpoints direct evidence.
