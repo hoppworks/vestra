@@ -7,6 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use vestra_core::{SceneBundle, SimilarityTransform, camera_centre_direction};
+
 const INDEX_HTML: &str = include_str!("index.html");
 
 #[derive(Debug, thiserror::Error)]
@@ -45,6 +47,7 @@ fn handle(mut stream: TcpStream, root: &Path) -> std::io::Result<()> {
             INDEX_HTML.as_bytes().to_vec(),
         ),
         "/manifest.json" => read_file(root.join("manifest.json"), "application/json"),
+        "/evidence.json" => evidence(root),
         _ if path.starts_with("/chunks/") && path.ends_with(".json") && safe_chunk_path(path) => {
             read_file(root.join(&path[1..]), "application/json")
         }
@@ -63,6 +66,67 @@ fn handle(mut stream: TcpStream, root: &Path) -> std::io::Result<()> {
         body.len()
     )?;
     stream.write_all(&body)
+}
+
+/// Emits only compact diagnostic evidence for Studio. The raw camera W2C
+/// matrices stay in the immutable chunks; this endpoint derives camera rays
+/// in the fused relative frame, never inventing metric coordinates.
+fn evidence(root: &Path) -> (&'static str, &'static str, Vec<u8>) {
+    let payload = (|| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let bundle = SceneBundle::open(root)?;
+        let manifest = bundle.manifest()?;
+        let Some(hash) = manifest.fused_chunk_hash else {
+            return Ok(serde_json::to_vec(&serde_json::json!({"camera_rays": []}))?);
+        };
+        let fused = bundle.read_fused_scene(&hash)?;
+        let mut camera_rays = Vec::new();
+        for measured_hash in manifest.measured_chunk_hashes {
+            let window = bundle.read_measured_window(&measured_hash)?;
+            let Some(pose) = fused
+                .window_poses
+                .iter()
+                .find(|pose| pose.window_index == window.window.index)
+            else {
+                continue;
+            };
+            for view in window.views {
+                let Some(camera) = camera_centre_direction(view.frame_index, view.camera) else {
+                    continue;
+                };
+                let direction = rotate(pose.local_to_world, camera.forward_local);
+                if !direction.iter().all(|value| value.is_finite()) {
+                    continue;
+                }
+                camera_rays.push(serde_json::json!({
+                    "window_index": window.window.index,
+                    "frame_index": view.frame_index,
+                    "origin": pose.local_to_world.apply(camera.centre_local),
+                    "forward": direction,
+                }));
+            }
+        }
+        Ok(serde_json::to_vec(&serde_json::json!({
+            "scale": "relative",
+            "camera_rays": camera_rays,
+        }))?)
+    })();
+    match payload {
+        Ok(body) => ("200 OK", "application/json", body),
+        Err(_) => (
+            "404 Not Found",
+            "text/plain; charset=utf-8",
+            b"scene evidence unavailable".to_vec(),
+        ),
+    }
+}
+
+fn rotate(transform: SimilarityTransform, point: [f32; 3]) -> [f32; 3] {
+    let r = transform.rotation;
+    [
+        r[0] * point[0] + r[1] * point[1] + r[2] * point[2],
+        r[3] * point[0] + r[4] * point[1] + r[5] * point[2],
+        r[6] * point[0] + r[7] * point[1] + r[8] * point[2],
+    ]
 }
 
 fn read_file(path: PathBuf, content_type: &'static str) -> (&'static str, &'static str, Vec<u8>) {
@@ -136,5 +200,13 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.ends_with("{\"schema\":\"vestra.scene/v1\"}"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rotation_preserves_identity_camera_direction() {
+        assert_eq!(
+            rotate(SimilarityTransform::IDENTITY, [0.0, 0.0, 1.0]),
+            [0.0, 0.0, 1.0]
+        );
     }
 }

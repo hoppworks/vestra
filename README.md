@@ -221,5 +221,10 @@ cargo run -p vestra-cli -- serve --scene room.vestra
 The server binds only to `127.0.0.1:4317`. It serves no upload endpoint and
 never sends the scene to a remote service.
 
+Press `C` or use **Show camera rays** in the scene ledger to overlay the
+captured camera directions. They are derived from the stored window-local W2C
+calibrations plus their persisted final local-to-fused relative Sim(3) poses;
+they are diagnostic evidence, not a metric camera trajectory.
+
 See [VISION.md](VISION.md), [ARCHITECTURE.md](ARCHITECTURE.md), and the ADRs in
 `docs/adr/` for the locked decisions and implementation order.
