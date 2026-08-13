@@ -40,9 +40,17 @@ VESTRA_CUDA_TEST=1 cargo test --lib --features cuda \
 
 `CudaRuntime` and `CudaTensorF32` live exclusively in Vestra Kernels behind
 the opt-in `cuda` feature. `add_f32_in_place` is the first native,
-device-resident residual building block. No Engine inference operation
-currently calls it; therefore this evidence must not be used as a GPU
-inference or performance result.
+device-resident residual building block. The separate opt-in Engine parity
+slice below calls it, but the normal Engine path does not; therefore this
+evidence must not be used as a GPU performance result.
+
+Kernels revision `cf10a78ab08c31142955e2b89f632b339933093c` additionally
+provides device-resident F32 row-major GEMM through dynamically loaded
+CUBLAS. Its Workhorse oracle verified the hand-computed `2×3 × 3×2` product
+`[58, 64, 139, 154]`. The implementation invokes CUBLAS through the
+equivalent column-major identity `Cᵀ = Bᵀ × Aᵀ`, avoiding a host-side
+transpose. CUBLAS is isolated under
+`/var/roothome/vestra-cuda-deps/nvidia/cublas/lib` alongside NVRTC.
 
 The first Engine-owned fixed-shape CUDA operator is recorded below. Every
 subsequent CUDA operator must likewise have a CPU F32 oracle and the locked
