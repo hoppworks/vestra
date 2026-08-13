@@ -80,7 +80,10 @@ fn safe_chunk_path(path: &str) -> bool {
     else {
         return false;
     };
-    let hash = name.strip_prefix("fused-").unwrap_or(name);
+    let hash = name
+        .strip_prefix("fused-")
+        .or_else(|| name.strip_prefix("points-"))
+        .unwrap_or(name);
     hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
@@ -97,6 +100,7 @@ mod tests {
         let hash = "a".repeat(64);
         assert!(safe_chunk_path(&format!("/chunks/{hash}.json")));
         assert!(safe_chunk_path(&format!("/chunks/fused-{hash}.json")));
+        assert!(safe_chunk_path(&format!("/chunks/points-{hash}.json")));
         assert!(!safe_chunk_path("/chunks/../../manifest.json"));
         assert!(!safe_chunk_path("/chunks/xyz.json"));
     }

@@ -14,10 +14,13 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{CameraCalibration, FrameWindow, FusedSceneChunk, MeasuredPoint, ScaleStatus};
+use crate::{
+    CameraCalibration, FrameWindow, FusedPoint, FusedSceneChunk, MeasuredPoint, ScaleStatus,
+};
 
 const MANIFEST_FILE: &str = "manifest.json";
 const CHUNKS_DIRECTORY: &str = "chunks";
+const FUSED_POINT_CHUNK_SIZE: usize = 50_000;
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +42,10 @@ pub struct SceneManifest {
     /// It is optional so v1 bundles created before fusion remain readable.
     #[serde(default)]
     pub fused_chunk_hash: Option<String>,
+    /// Ordered, immutable point payloads for progressive browser delivery.
+    /// The full fused chunk remains canonical for export and compatibility.
+    #[serde(default)]
+    pub fused_point_chunk_hashes: Vec<String>,
     /// Input-motion indicator recorded before reconstruction. It warns about
     /// capture risk without changing the relative geometry claim.
     #[serde(default)]
@@ -57,6 +64,11 @@ pub struct MeasuredFrameChunk {
     pub frame_index: usize,
     pub camera: CameraCalibration,
     pub points: Vec<MeasuredPoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FusedPointChunk {
+    pub points: Vec<FusedPoint>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -99,6 +111,7 @@ impl SceneBundle {
             provenance,
             measured_chunk_hashes: Vec::new(),
             fused_chunk_hash: None,
+            fused_point_chunk_hashes: Vec::new(),
             capture_quality: None,
         })?;
         Ok(bundle)
@@ -168,6 +181,15 @@ impl SceneBundle {
     /// atomically points the manifest at it. Repeating the same fusion is
     /// idempotent; a later fusion replaces only this derived reference.
     pub fn write_fused_scene(&self, chunk: &FusedSceneChunk) -> Result<String, SceneBundleError> {
+        let point_chunk_hashes = chunk
+            .points
+            .chunks(FUSED_POINT_CHUNK_SIZE)
+            .map(|points| {
+                self.write_fused_point_chunk(&FusedPointChunk {
+                    points: points.to_vec(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let payload = serde_json::to_vec(chunk)?;
         let hash = sha256_hex(&payload);
         let chunk_path = self
@@ -180,9 +202,34 @@ impl SceneBundle {
         let mut manifest = self.manifest()?;
         if manifest.fused_chunk_hash.as_deref() != Some(hash.as_str()) {
             manifest.fused_chunk_hash = Some(hash.clone());
-            self.write_manifest(&manifest)?;
+        }
+        if manifest.fused_point_chunk_hashes != point_chunk_hashes {
+            manifest.fused_point_chunk_hashes = point_chunk_hashes;
+        }
+        self.write_manifest(&manifest)?;
+        Ok(hash)
+    }
+
+    fn write_fused_point_chunk(&self, chunk: &FusedPointChunk) -> Result<String, SceneBundleError> {
+        let payload = serde_json::to_vec(chunk)?;
+        let hash = sha256_hex(&payload);
+        let path = self
+            .root
+            .join(CHUNKS_DIRECTORY)
+            .join(format!("points-{hash}.json"));
+        if !path.exists() {
+            atomic_write(&path, &payload)?;
         }
         Ok(hash)
+    }
+
+    pub fn read_fused_point_chunk(&self, hash: &str) -> Result<FusedPointChunk, SceneBundleError> {
+        let payload = fs::read(
+            self.root
+                .join(CHUNKS_DIRECTORY)
+                .join(format!("points-{hash}.json")),
+        )?;
+        Ok(serde_json::from_slice(&payload)?)
     }
 
     pub fn read_fused_scene(&self, hash: &str) -> Result<FusedSceneChunk, SceneBundleError> {
@@ -350,11 +397,59 @@ mod tests {
             manifest.fused_chunk_hash.as_deref(),
             Some(fused_hash.as_str())
         );
+        assert_eq!(manifest.fused_point_chunk_hashes.len(), 1);
+        assert_eq!(
+            bundle
+                .read_fused_point_chunk(&manifest.fused_point_chunk_hashes[0])
+                .unwrap()
+                .points,
+            fused.points
+        );
         assert_eq!(
             bundle.read_measured_window(&measured_hash).unwrap(),
             measured
         );
         assert_eq!(bundle.read_fused_scene(&fused_hash).unwrap(), fused);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fused_points_are_published_as_ordered_progressive_chunks() {
+        let root = test_root();
+        let bundle = SceneBundle::create(&root, provenance()).unwrap();
+        let point = crate::FusedPoint {
+            position: [1.0, 2.0, 3.0],
+            normal: [0.0, 0.0, 1.0],
+            color_srgb: [4, 5, 6],
+            confidence: 0.7,
+            radius: 0.1,
+            contributors: 2,
+        };
+        let fused = crate::FusedSceneChunk {
+            alignments: Vec::new(),
+            pose_graph: None,
+            voxel_size: 0.25,
+            points: vec![point; FUSED_POINT_CHUNK_SIZE + 1],
+        };
+        bundle.write_fused_scene(&fused).unwrap();
+        let manifest = bundle.manifest().unwrap();
+        assert_eq!(manifest.fused_point_chunk_hashes.len(), 2);
+        assert_eq!(
+            bundle
+                .read_fused_point_chunk(&manifest.fused_point_chunk_hashes[0])
+                .unwrap()
+                .points
+                .len(),
+            FUSED_POINT_CHUNK_SIZE
+        );
+        assert_eq!(
+            bundle
+                .read_fused_point_chunk(&manifest.fused_point_chunk_hashes[1])
+                .unwrap()
+                .points
+                .len(),
+            1
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

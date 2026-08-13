@@ -81,6 +81,9 @@ world pipeline that do not depend on an unverified model claim:
     Workhorse in [the end-to-end validation record](docs/validation/END_TO_END_SMOKE_2026-08-13.md).
     A separate [motion-video smoke record](docs/validation/MOTION_VIDEO_SMOKE_2026-08-13.md)
     covers three overlapping windows from changing footage.
+12. Fused points are additionally persisted in ordered, content-addressed
+    chunks (50,000 surfels each). Studio streams and renders these chunks in
+    sequence; the canonical fused payload remains available for PLY export.
 
 The next hard gate is a real-video end-to-end run followed by validation of
 window alignment, revisit/loop handling, and dense fusion quality. Studio

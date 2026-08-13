@@ -33,8 +33,8 @@ pub use revisit::{
     camera_centre_direction, propose_revisits, window_camera_path,
 };
 pub use scene::{
-    MeasuredFrameChunk, SceneBundle, SceneBundleError, SceneManifest, SceneProvenance,
-    WindowMeasuredChunk,
+    FusedPointChunk, MeasuredFrameChunk, SceneBundle, SceneBundleError, SceneManifest,
+    SceneProvenance, WindowMeasuredChunk,
 };
 pub use stitch::{
     AlignmentReport, FusedPoint, FusedSceneChunk, LoopClosureSettings, LoopMeasurement,

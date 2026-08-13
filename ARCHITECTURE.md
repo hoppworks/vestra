@@ -46,7 +46,9 @@ deduplication, checkpoint resume, partial reprocessing, and migrations.
 The manifest identifies source fingerprints, engine/kernel revisions, model
 and settings hashes, coordinate conventions, and its immutable measured and
 derived fused chunk identities. Fused data is published only after its chunk
-is durable; raw evidence is never replaced.
+is durable; raw evidence is never replaced. The canonical fused payload is
+also segmented into ordered SHA-addressed point chunks, allowing Studio to
+render a world progressively without waiting for a single huge JSON response.
 
 ## Reliability
 
