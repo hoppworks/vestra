@@ -243,9 +243,7 @@ non-overlapping patch rows in the exact `[channel, patch_y, patch_x]` order
 consumed by the model's OIHW patch-projection weights. The output is ready for
 a cached CUBLAS projection and avoids a host-side im2col allocation.
 
-This is a layout-only kernel, not a CUDA speed claim and not yet wired into
-Engine inference. Its explicit 3-channel, 4×4, patch-2 oracle passed on the
-RTX 5080:
+Its explicit 3-channel, 4×4, patch-2 oracle passed on the RTX 5080:
 
 ```sh
 LD_LIBRARY_PATH=/var/roothome/vestra-cuda-deps/nvidia/cuda_nvrtc/lib:/var/roothome/vestra-cuda-deps/nvidia/cublas/lib \
@@ -256,13 +254,22 @@ cargo test --lib --features cuda \
 
 Vestra Engine revision `388167c` consumes the kernel through a cached CUBLAS
 patch-projection plan and assembles DA3-BASE's CLS/position token sequence on
-the GPU before its temporary download to the CPU backbone. It passed both a single-image and the ordered `canyon.jpg:desk.jpg`
-multiview end-to-end Depth/Confidence oracle on the RTX 5080. CUBLAS changes
+the GPU before its temporary download to the CPU backbone. It passed both a
+single-image and the ordered `canyon.jpg:desk.jpg` multiview end-to-end
+Depth/Confidence oracle on the RTX 5080. CUBLAS changes
 the F32 reduction tree, so this narrow seam has its own explicit bound: MAE
 `<= 5e-6`, maximum absolute error `<= 1e-4`. This remains far tighter than
 the product F32 parity gate (Pearson `>= 0.9999`, MAE `<= 0.005`) and does not
 alter that gate.
 
-The next dependent slice is device-side CLS/position-token assembly followed
-by a device-resident backbone token lifetime. It must retain equivalent
-CPU-F32 oracle coverage before it can be treated as a production backend.
+Vestra Engine revision `530c7ad` then separates the connected tail's
+device-owned core from its legacy host adapter. It caches LN1 parameters and
+accepts/returns a device token buffer, so a future persistent backbone can
+chain qualified blocks without a per-block PCIe round trip. The current
+adapter deliberately remains transfer-bound and parity-only. The real-model
+single-view tail gate passed after this refactor in 17.13 seconds in a debug
+test build. This is architecture validation, **not** a GPU speed result.
+
+The next dependent slice is a device-resident backbone token lifetime. It
+must retain equivalent CPU-F32 oracle coverage before it can be treated as a
+production backend.

@@ -3,7 +3,7 @@ captured_at = "2026-08-13"
 
 [engine]
 repository = "https://github.com/hoppworks/vestra-engine"
-revision = "388167c055af08754fdd8b4231df06c0582e3197"
+revision = "530c7ad26e9987963300677561305b330ef6678a"
 local_path = "../vestra-engine"
 
 [kernels]
