@@ -3,12 +3,12 @@ captured_at = "2026-08-13"
 
 [engine]
 repository = "https://github.com/hoppworks/vestra-engine"
-revision = "2ec752737ee182c4c165570d2f7fbdacfdf462bc"
+revision = "e6c8d0fd566a37f8bc15d030d9ac99370e748df9"
 local_path = "../vestra-engine"
 
 [kernels]
 repository = "https://github.com/hoppworks/vestra-kernels"
-revision = "0e2f8e30714bc10757c8c759af5eedb6afb812eb"
+revision = "9740a98dffc3aedf6611f987c1f67ff272f894d7"
 local_path = "../vestra-kernels"
 
 [cpp_oracle]
