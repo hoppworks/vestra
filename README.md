@@ -153,6 +153,12 @@ cargo run -p vestra-cli -- reconstruct \
   --resume
 ```
 
+Press `Ctrl-C` to cancel a CLI reconstruction immediately. Vestra exits with
+code `130`; the atomic scene contract guarantees that only complete measured
+windows remain manifest-referenced. Restart with the identical command and
+`--resume` to continue. The in-process API currently exposes window-boundary
+completion, while this CLI path supplies the bounded cancellation guarantee.
+
 Before inference, Vestra records a lightweight adjacent-frame luma-motion
 indicator as `ready`, `review`, or `recapture` in the manifest and Studio HUD.
 It is a capture-risk warning—not a claim that a `ready` capture is geometrically

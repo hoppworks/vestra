@@ -142,6 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             minimum_confidence,
             pixel_stride,
         } => {
+            install_reconstruction_interrupt_handler()?;
             let provenance = SceneProvenance {
                 engine_revision: locked_revision("engine")?,
                 kernel_revision: locked_revision("kernels")?,
@@ -326,6 +327,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+/// Makes command-line cancellation bounded independently of the current
+/// inference kernel. Scene publication is already atomic: an interrupt can
+/// leave an unreferenced temporary chunk, but never publishes a partial
+/// manifest. A later `reconstruct --resume` validates and reuses complete
+/// checkpoints before executing any missing window.
+fn install_reconstruction_interrupt_handler() -> Result<(), ctrlc::Error> {
+    ctrlc::set_handler(|| {
+        eprintln!(
+            "reconstruction canceled; durable checkpoints remain available for `vestra reconstruct --resume`"
+        );
+        std::process::exit(130);
+    })
 }
 
 /// Summarizes only persisted evidence. The report intentionally does not turn
