@@ -31,7 +31,10 @@ pub use stitch::{
     align_overlapping_windows, stitch_measured_windows, stitch_measured_windows_with_settings,
     transform_points,
 };
-pub use video::{VideoExtractionSettings, VideoFrames, VideoInputError, extract_video_frames};
+pub use video::{
+    CaptureDisposition, CaptureQuality, VideoExtractionSettings, VideoFrames, VideoInputError,
+    assess_capture_quality, extract_video_frames,
+};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ScheduleError {

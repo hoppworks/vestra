@@ -127,6 +127,11 @@ publishes a derived fused world. Use `--pixel-stride 1` only for small
 diagnostic captures. To rebuild that derived layer without another model
 inference run:
 
+Before inference, Vestra records a lightweight adjacent-frame luma-motion
+indicator as `ready`, `review`, or `recapture` in the manifest and Studio HUD.
+It is a capture-risk warning—not a claim that a `ready` capture is geometrically
+correct.
+
 ```bash
 cargo run -p vestra-cli -- fuse --scene room.vestra
 ```

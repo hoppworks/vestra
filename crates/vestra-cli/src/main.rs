@@ -135,6 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     max_frames: frames,
                 },
             )?;
+            bundle.write_capture_quality(decoded.capture_quality.clone())?;
             if decoded.frames.is_empty() {
                 return Err("ffmpeg produced no frames".into());
             }
@@ -142,6 +143,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "decoded {} frames from {:.3}s of video",
                 decoded.frames.len(),
                 decoded.duration_seconds
+            );
+            eprintln!(
+                "capture indicator: {:?} (mean adjacent luma delta {:.5})",
+                decoded.capture_quality.disposition,
+                decoded.capture_quality.mean_adjacent_luma_delta,
             );
             let mut engine = Engine::load(&model, QuantPref::PreferF32)?;
             let progress = reconstruct_frames(
@@ -179,6 +185,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 serde_json::json!({
                     "bundle": bundle.root(),
                     "decoded_frames": decoded.frames.len(),
+                    "capture_quality": decoded.capture_quality,
                     "windows": progress.len(),
                     "measured_points": progress.iter().map(|item| item.measured_points).sum::<usize>(),
                     "fused_chunk": fusion.chunk_hash,

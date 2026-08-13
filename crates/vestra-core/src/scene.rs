@@ -28,7 +28,7 @@ pub struct SceneProvenance {
     pub settings_fingerprint: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneManifest {
     pub schema: String,
     pub scale: ScaleStatus,
@@ -39,6 +39,10 @@ pub struct SceneManifest {
     /// It is optional so v1 bundles created before fusion remain readable.
     #[serde(default)]
     pub fused_chunk_hash: Option<String>,
+    /// Input-motion indicator recorded before reconstruction. It warns about
+    /// capture risk without changing the relative geometry claim.
+    #[serde(default)]
+    pub capture_quality: Option<crate::CaptureQuality>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,6 +99,7 @@ impl SceneBundle {
             provenance,
             measured_chunk_hashes: Vec::new(),
             fused_chunk_hash: None,
+            capture_quality: None,
         })?;
         Ok(bundle)
     }
@@ -187,6 +192,18 @@ impl SceneBundle {
                 .join(format!("fused-{hash}.json")),
         )?;
         Ok(serde_json::from_slice(&payload)?)
+    }
+
+    pub fn write_capture_quality(
+        &self,
+        capture_quality: crate::CaptureQuality,
+    ) -> Result<(), SceneBundleError> {
+        let mut manifest = self.manifest()?;
+        if manifest.capture_quality.as_ref() != Some(&capture_quality) {
+            manifest.capture_quality = Some(capture_quality);
+            self.write_manifest(&manifest)?;
+        }
+        Ok(())
     }
 
     fn write_manifest(&self, manifest: &SceneManifest) -> Result<(), SceneBundleError> {
@@ -335,6 +352,20 @@ mod tests {
             measured
         );
         assert_eq!(bundle.read_fused_scene(&fused_hash).unwrap(), fused);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn capture_indicator_is_atomically_recorded_in_manifest() {
+        let root = test_root();
+        let bundle = SceneBundle::create(&root, provenance()).unwrap();
+        let quality = crate::CaptureQuality {
+            disposition: crate::CaptureDisposition::Review,
+            frame_count: 12,
+            mean_adjacent_luma_delta: 0.006,
+        };
+        bundle.write_capture_quality(quality.clone()).unwrap();
+        assert_eq!(bundle.manifest().unwrap().capture_quality, Some(quality));
         fs::remove_dir_all(root).unwrap();
     }
 }

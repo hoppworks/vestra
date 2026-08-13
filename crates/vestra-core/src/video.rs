@@ -12,6 +12,24 @@ use std::{
 
 use crate::OwnedFrame;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureDisposition {
+    Ready,
+    Review,
+    Recapture,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CaptureQuality {
+    pub disposition: CaptureDisposition,
+    pub frame_count: usize,
+    /// Mean absolute luma change between neighbouring selected frames, in
+    /// normalized `[0, 1]` units. It is a capture-risk indicator, not a
+    /// geometric quality claim.
+    pub mean_adjacent_luma_delta: f32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoExtractionSettings {
     pub width: usize,
@@ -34,6 +52,7 @@ pub struct VideoFrames {
     pub duration_seconds: f64,
     pub frames: Vec<OwnedFrame>,
     pub decoded_directory: PathBuf,
+    pub capture_quality: CaptureQuality,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -128,11 +147,66 @@ pub fn extract_video_frames(
         .iter()
         .map(|path| read_ppm_rgb(path))
         .collect::<Result<Vec<_>, _>>()?;
+    let capture_quality = assess_capture_quality(&frames);
     Ok(VideoFrames {
         duration_seconds,
         frames,
         decoded_directory,
+        capture_quality,
     })
+}
+
+/// Computes a deterministic low-cost warning signal before expensive model
+/// work. Static footage is insufficient for a coherent walk-through world;
+/// the product reports it but leaves deliberate diagnostic runs possible.
+pub fn assess_capture_quality(frames: &[OwnedFrame]) -> CaptureQuality {
+    if frames.len() < 2 {
+        return CaptureQuality {
+            disposition: CaptureDisposition::Recapture,
+            frame_count: frames.len(),
+            mean_adjacent_luma_delta: 0.0,
+        };
+    }
+    let mut deltas = Vec::with_capacity(frames.len() - 1);
+    for pair in frames.windows(2) {
+        let left = &pair[0];
+        let right = &pair[1];
+        if left.width != right.width || left.height != right.height {
+            return CaptureQuality {
+                disposition: CaptureDisposition::Recapture,
+                frame_count: frames.len(),
+                mean_adjacent_luma_delta: 0.0,
+            };
+        }
+        let mut total = 0.0;
+        for (a, b) in left
+            .rgb_hwc_u8
+            .chunks_exact(3)
+            .zip(right.rgb_hwc_u8.chunks_exact(3))
+        {
+            let luma = |rgb: &[u8]| {
+                (0.2126 * f32::from(rgb[0])
+                    + 0.7152 * f32::from(rgb[1])
+                    + 0.0722 * f32::from(rgb[2]))
+                    / 255.0
+            };
+            total += (luma(a) - luma(b)).abs();
+        }
+        deltas.push(total / (left.width * left.height) as f32);
+    }
+    let mean = deltas.iter().sum::<f32>() / deltas.len() as f32;
+    let disposition = if mean < 0.002 {
+        CaptureDisposition::Recapture
+    } else if mean < 0.01 {
+        CaptureDisposition::Review
+    } else {
+        CaptureDisposition::Ready
+    };
+    CaptureQuality {
+        disposition,
+        frame_count: frames.len(),
+        mean_adjacent_luma_delta: mean,
+    }
 }
 
 fn read_ppm_rgb(path: &Path) -> Result<OwnedFrame, VideoInputError> {
@@ -219,5 +293,36 @@ mod tests {
         assert_eq!(frame.height, 1);
         assert_eq!(frame.rgb_hwc_u8, vec![1, 2, 3, 4, 5, 6]);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn static_capture_is_marked_for_recapture() {
+        let frame = OwnedFrame {
+            rgb_hwc_u8: vec![10, 20, 30],
+            width: 1,
+            height: 1,
+        };
+        assert_eq!(
+            assess_capture_quality(&[frame.clone(), frame]).disposition,
+            CaptureDisposition::Recapture
+        );
+    }
+
+    #[test]
+    fn changing_capture_is_ready_for_processing() {
+        let dark = OwnedFrame {
+            rgb_hwc_u8: vec![0, 0, 0],
+            width: 1,
+            height: 1,
+        };
+        let bright = OwnedFrame {
+            rgb_hwc_u8: vec![255, 255, 255],
+            width: 1,
+            height: 1,
+        };
+        assert_eq!(
+            assess_capture_quality(&[dark, bright]).disposition,
+            CaptureDisposition::Ready
+        );
     }
 }
