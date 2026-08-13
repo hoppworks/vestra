@@ -50,8 +50,10 @@ only to support coordinated development without copying code.
 
 ## Current state
 
-The first tracer bullet is active. Vestra can already represent the parts of a
-world pipeline that do not depend on an unverified model claim:
+The base relative-scale world pipeline is implemented and independently
+validated against the pinned C++ reference. The remaining work is production
+backend completion, broader regression coverage, and explicitly optional
+branches—not a claim that those features already exist:
 
 1. PR #2's streaming window schedule is represented in Rust.
 2. Vestra imports Vestra Engine through the repository boundary.
@@ -99,12 +101,17 @@ world pipeline that do not depend on an unverified model claim:
     local bundle as a picture-in-picture diagnostic. It dynamically converts
     only an indexed local RGB24 cache frame for the loopback browser request;
     it exposes neither an upload endpoint nor arbitrary filesystem paths.
+15. The pinned C++ PR #2 base stream now has real-fixture, pre-voxel parity:
+    identical 12/3 window schedule, dense overlap correspondences, Huber-IRLS
+    Sim(3), first-owner point emission, 9,931,557 ordered points, per-frame
+    ownership and RGB. The numerical cloud comparison is recorded in
+    [the streaming oracle record](docs/validation/CPP_PR2_STREAMING_ORACLE_2026-08-13.md).
 
-The next hard gate is a device-resident end-to-end backbone and DPT/pose-head
-path with the same oracle discipline. Only then can a CUDA throughput claim
-or a fair CUDA comparison with the C++ reference be made. Studio already
-prefers the fused world when a manifest references one, while retaining the
-measured-layer fallback for inspection and recovery.
+The next hard performance gate is a device-resident end-to-end backbone and
+DPT/pose-head path with the same oracle discipline. Only then can a CUDA
+throughput claim or a fair CUDA comparison with the C++ reference be made.
+Studio already prefers the fused world when a manifest references one, while
+retaining the measured-layer fallback for inspection and recovery.
 
 ## Scene bundles
 
