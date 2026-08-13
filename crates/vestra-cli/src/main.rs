@@ -697,6 +697,7 @@ mod tests {
                     rms_residual: 0.01,
                     normalized_rms_residual: 0.01,
                 }],
+                pose_graph_edges: Vec::new(),
                 pose_graph: None,
                 window_poses: Vec::new(),
                 voxel_size: 0.1,

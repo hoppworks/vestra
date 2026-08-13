@@ -167,6 +167,12 @@ pub struct FusedWindowPose {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FusedSceneChunk {
     pub alignments: Vec<AlignmentReport>,
+    /// The measured sequential seams and accepted non-sequential loop edges
+    /// used by the final pose graph. It is preserved as provenance so viewers
+    /// can distinguish an observed seam from an accepted revisit constraint.
+    /// Older scene bundles have no such field and remain readable.
+    #[serde(default)]
+    pub pose_graph_edges: Vec<PoseGraphEdge>,
     /// Present only when independently verified loop constraints were supplied
     /// and globally optimized before this fused derivative was published.
     #[serde(default)]
@@ -1006,6 +1012,7 @@ pub fn stitch_measured_windows_with_loop_closures(
     let Some(first) = windows.first() else {
         return Ok(FusedSceneChunk {
             alignments: Vec::new(),
+            pose_graph_edges: Vec::new(),
             pose_graph: None,
             window_poses: Vec::new(),
             voxel_size: 0.0,
@@ -1055,14 +1062,14 @@ pub fn stitch_measured_windows_with_loop_closures(
     if let Some(loop_settings) = settings.loop_closure {
         accepted_loops.extend(discover_loop_closures(windows, &poses, loop_settings));
     }
-    let pose_graph = if accepted_loops.is_empty() {
+    let mut pose_graph_edges = sequential_edges;
+    pose_graph_edges.extend(accepted_loops);
+    let pose_graph = if pose_graph_edges.iter().all(|edge| !edge.loop_closure) {
         None
     } else {
-        let mut edges = sequential_edges;
-        edges.extend(accepted_loops);
         let mut graph = RelativePoseGraph {
             nodes: poses,
-            edges,
+            edges: pose_graph_edges.clone(),
             fixed: Vec::new(),
         };
         let report = optimize_relative_pose_graph(&mut graph, PoseGraphSettings::default())?;
@@ -1092,6 +1099,7 @@ pub fn stitch_measured_windows_with_loop_closures(
     if radii.is_empty() {
         return Ok(FusedSceneChunk {
             alignments,
+            pose_graph_edges,
             pose_graph,
             window_poses,
             voxel_size: 0.0,
@@ -1164,6 +1172,7 @@ pub fn stitch_measured_windows_with_loop_closures(
     });
     Ok(FusedSceneChunk {
         alignments,
+        pose_graph_edges,
         pose_graph,
         window_poses,
         voxel_size,

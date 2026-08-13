@@ -42,6 +42,12 @@ reported `HIDE CAMERA RAYS` and rendered the camera directions together with
 their intrinsic image-plane frustums. The source panel was placed independently
 of the ledger so it did not obstruct either diagnostic control.
 
+Finally, `Show seams / loops` was enabled. The existing legacy bundle contains
+13 persisted sequential alignment reports and no accepted loop closure, so
+Studio rendered only the teal seam links and retained the honest HUD value of
+`0` loops. Current bundles additionally persist accepted loop edges as amber
+links; absent legacy edge data is never fabricated.
+
 ## Commands
 
 ```sh

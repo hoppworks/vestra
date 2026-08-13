@@ -215,6 +215,11 @@ alongside the final local-to-fused relative Sim(3) transform. Consumers must
 compose these explicitly; the output intentionally does not pretend the W2C
 matrix is already global.
 
+Newly fused bundles also retain the exact sequential seam edges and every
+accepted non-sequential loop edge that informed the final pose graph. This is
+provenance for local inspection, not an assertion that every proposed revisit
+was accepted.
+
 ```bash
 cargo run -p vestra-cli -- export-cameras --scene room.vestra --output room.cameras.json
 ```
@@ -243,6 +248,12 @@ When a fused world is present, **Show measured evidence** switches between the
 derived voxel-fused surfels and the immutable per-window measurements. This is
 a local diagnostic control: it makes seam or ghost inspection possible without
 presenting the fused layer as new source evidence.
+
+Use **Show seams / loops** (or `L`) to inspect persisted seam evidence. Teal
+links are sequential overlap seams; amber links are independently verified
+loop edges. Legacy bundles remain readable and can still expose their ordered
+sequential seams, but only bundles produced by current Vestra revisions retain
+explicit loop-edge provenance.
 
 When a bundle retains its decode cache, Studio also shows a local
 **Source frame** picture-in-picture. Use **Next frame** (or `F`) to step through

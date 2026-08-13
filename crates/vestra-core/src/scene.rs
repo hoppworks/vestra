@@ -481,6 +481,7 @@ mod tests {
         let measured_hash = bundle.write_measured_window(&measured).unwrap();
         let fused = crate::FusedSceneChunk {
             alignments: Vec::new(),
+            pose_graph_edges: Vec::new(),
             pose_graph: None,
             window_poses: Vec::new(),
             voxel_size: 0.25,
@@ -542,6 +543,7 @@ mod tests {
         };
         let fused = crate::FusedSceneChunk {
             alignments: Vec::new(),
+            pose_graph_edges: Vec::new(),
             pose_graph: None,
             window_poses: Vec::new(),
             voxel_size: 0.25,
@@ -592,5 +594,20 @@ mod tests {
         }"#;
         let chunk: WindowMeasuredChunk = serde_json::from_str(legacy).unwrap();
         assert_eq!(chunk.views[0].points[0].normal, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn legacy_fused_chunks_without_pose_edge_provenance_remain_readable() {
+        let fused: crate::FusedSceneChunk = serde_json::from_str(
+            r#"{
+              "alignments": [],
+              "pose_graph": null,
+              "window_poses": [],
+              "voxel_size": 0.1,
+              "points": []
+            }"#,
+        )
+        .unwrap();
+        assert!(fused.pose_graph_edges.is_empty());
     }
 }

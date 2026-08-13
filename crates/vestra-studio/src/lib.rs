@@ -1,7 +1,7 @@
 //! Local-only HTTP host for the dependency-free Vestra browser studio.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
@@ -85,6 +85,7 @@ fn evidence(root: &Path) -> (&'static str, &'static str, Vec<u8>) {
         let fused = bundle.read_fused_scene(&hash)?;
         let mut camera_rays = Vec::new();
         let mut source_frames = BTreeSet::new();
+        let mut window_anchors = BTreeMap::new();
         for measured_hash in manifest.measured_chunk_hashes {
             let window = bundle.read_measured_window(&measured_hash)?;
             let Some(pose) = fused
@@ -105,6 +106,10 @@ fn evidence(root: &Path) -> (&'static str, &'static str, Vec<u8>) {
                 if !direction.iter().all(|value| value.is_finite()) {
                     continue;
                 }
+                let origin = pose.local_to_world.apply(camera.centre_local);
+                if origin.iter().all(|value| value.is_finite()) {
+                    window_anchors.entry(window.window.index).or_insert(origin);
+                }
                 let corners = camera_frustum_directions(view.camera)
                     .map(|directions| {
                         directions.map(|direction| rotate(pose.local_to_world, direction))
@@ -115,16 +120,23 @@ fn evidence(root: &Path) -> (&'static str, &'static str, Vec<u8>) {
                 camera_rays.push(serde_json::json!({
                     "window_index": window.window.index,
                     "frame_index": view.frame_index,
-                    "origin": pose.local_to_world.apply(camera.centre_local),
+                    "origin": origin,
                     "forward": direction,
                     "corners": corners,
                 }));
             }
         }
+        let seam_links = diagnostic_links(
+            &fused.window_poses,
+            &fused.alignments,
+            &fused.pose_graph_edges,
+            &window_anchors,
+        );
         Ok(serde_json::to_vec(&serde_json::json!({
             "scale": "relative",
             "camera_rays": camera_rays,
             "source_frames": source_frames.into_iter().collect::<Vec<_>>(),
+            "diagnostic_links": seam_links,
         }))?)
     })();
     match payload {
@@ -135,6 +147,54 @@ fn evidence(root: &Path) -> (&'static str, &'static str, Vec<u8>) {
             b"scene evidence unavailable".to_vec(),
         ),
     }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+struct DiagnosticLink {
+    from: [f32; 3],
+    to: [f32; 3],
+    kind: &'static str,
+}
+
+/// Converts persisted alignment provenance into visible links. Sequential
+/// `AlignmentReport`s are ordered by adjacent windows. Explicit loop edges
+/// are retained by new fused bundles; legacy bundles still show their seams.
+fn diagnostic_links(
+    poses: &[vestra_core::FusedWindowPose],
+    alignments: &[vestra_core::AlignmentReport],
+    pose_graph_edges: &[vestra_core::PoseGraphEdge],
+    anchors: &BTreeMap<usize, [f32; 3]>,
+) -> Vec<DiagnosticLink> {
+    let anchor_for_node = |node: usize| {
+        poses
+            .get(node)
+            .and_then(|pose| anchors.get(&pose.window_index))
+            .copied()
+    };
+    let mut links = alignments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, _)| {
+            Some(DiagnosticLink {
+                from: anchor_for_node(index)?,
+                to: anchor_for_node(index + 1)?,
+                kind: "seam",
+            })
+        })
+        .collect::<Vec<_>>();
+    links.extend(
+        pose_graph_edges
+            .iter()
+            .filter(|edge| edge.loop_closure)
+            .filter_map(|edge| {
+                Some(DiagnosticLink {
+                    from: anchor_for_node(edge.from)?,
+                    to: anchor_for_node(edge.to)?,
+                    kind: "loop",
+                })
+            }),
+    );
+    links
 }
 
 /// Four normalized corner directions for a diagnostic image-plane frustum.
@@ -421,6 +481,60 @@ mod tests {
         assert!((corners[2][0] - expected).abs() < 1e-6);
         assert!((corners[2][1] - expected).abs() < 1e-6);
         assert!((corners[2][2] - 2.0 * expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn diagnostic_links_preserve_seams_and_only_verified_loop_edges() {
+        let poses = [
+            vestra_core::FusedWindowPose {
+                window_index: 10,
+                local_to_world: SimilarityTransform::IDENTITY,
+            },
+            vestra_core::FusedWindowPose {
+                window_index: 11,
+                local_to_world: SimilarityTransform::IDENTITY,
+            },
+            vestra_core::FusedWindowPose {
+                window_index: 12,
+                local_to_world: SimilarityTransform::IDENTITY,
+            },
+        ];
+        let anchors = BTreeMap::from([
+            (10, [0.0, 0.0, 0.0]),
+            (11, [1.0, 0.0, 0.0]),
+            (12, [2.0, 0.0, 0.0]),
+        ]);
+        let alignment = vestra_core::AlignmentReport {
+            transform: SimilarityTransform::IDENTITY,
+            correspondence_count: 100,
+            inlier_count: 100,
+            rms_residual: 0.0,
+            normalized_rms_residual: 0.0,
+        };
+        let edges = [
+            vestra_core::PoseGraphEdge {
+                from: 0,
+                to: 1,
+                measurement: SimilarityTransform::IDENTITY,
+                information: 1.0,
+                loop_closure: false,
+            },
+            vestra_core::PoseGraphEdge {
+                from: 2,
+                to: 0,
+                measurement: SimilarityTransform::IDENTITY,
+                information: 1.0,
+                loop_closure: true,
+            },
+        ];
+
+        let links = diagnostic_links(&poses, &[alignment.clone(), alignment], &edges, &anchors);
+        assert_eq!(links.len(), 3);
+        assert_eq!(links[0].kind, "seam");
+        assert_eq!(links[1].from, [1.0, 0.0, 0.0]);
+        assert_eq!(links[2].kind, "loop");
+        assert_eq!(links[2].from, [2.0, 0.0, 0.0]);
+        assert_eq!(links[2].to, [0.0, 0.0, 0.0]);
     }
 
     #[test]

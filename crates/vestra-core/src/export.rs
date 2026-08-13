@@ -291,6 +291,7 @@ mod tests {
         bundle
             .write_fused_scene(&FusedSceneChunk {
                 alignments: Vec::new(),
+                pose_graph_edges: Vec::new(),
                 pose_graph: None,
                 window_poses: Vec::new(),
                 voxel_size: 0.1,
@@ -331,6 +332,7 @@ mod tests {
         bundle
             .write_fused_scene(&FusedSceneChunk {
                 alignments: Vec::new(),
+                pose_graph_edges: Vec::new(),
                 pose_graph: None,
                 window_poses: Vec::new(),
                 voxel_size: 0.1,
@@ -375,6 +377,7 @@ mod tests {
         bundle
             .write_fused_scene(&FusedSceneChunk {
                 alignments: Vec::new(),
+                pose_graph_edges: Vec::new(),
                 pose_graph: None,
                 window_poses: Vec::new(),
                 voxel_size: 0.1,
@@ -435,6 +438,7 @@ mod tests {
         bundle
             .write_fused_scene(&FusedSceneChunk {
                 alignments: Vec::new(),
+                pose_graph_edges: Vec::new(),
                 pose_graph: None,
                 window_poses: vec![FusedWindowPose {
                     window_index: 7,
