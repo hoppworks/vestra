@@ -92,5 +92,27 @@ cargo test --workspace
 cargo run -p vestra-cli -- plan --frames 120 --chunk-size 12 --overlap 3
 ```
 
+## Local first run
+
+With FFmpeg and FFprobe installed, create a relative-scale scene locally:
+
+```bash
+cargo run -p vestra-cli -- reconstruct \
+  --video room.mov \
+  --model depth-anything-base-f32.gguf \
+  --output room.vestra
+```
+
+Vestra samples up to 120 frames at 504×336 by default, reconstructs each
+12/3 overlapping window, and checkpoints measured evidence as it goes. Open
+the result in the local browser studio:
+
+```bash
+cargo run -p vestra-cli -- serve --scene room.vestra
+```
+
+The server binds only to `127.0.0.1:4317`. It serves no upload endpoint and
+never sends the scene to a remote service.
+
 See [VISION.md](VISION.md), [ARCHITECTURE.md](ARCHITECTURE.md), and the ADRs in
 `docs/adr/` for the locked decisions and implementation order.
