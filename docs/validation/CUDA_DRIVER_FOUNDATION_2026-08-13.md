@@ -11,7 +11,7 @@ claim.
 | Item | Value |
 | --- | --- |
 | Repository | `https://github.com/hoppworks/vestra-kernels` |
-| Revision | `94391c4e25a677b0bc44634c6fa4b3afa9342358` |
+| Revision | `4c569deaf602e1316656e9c9ba6eddb88c588d55` |
 | Feature | `cuda` |
 | CUDA binding | `cudarc 0.19.9`, Driver API with dynamic loading and NVRTC |
 | Host | Workhorse — AMD Ryzen 9 9950X, NVIDIA GeForce RTX 5080 |
@@ -44,13 +44,16 @@ device-resident residual building block. The separate opt-in Engine parity
 slice below calls it, but the normal Engine path does not; therefore this
 evidence must not be used as a GPU performance result.
 
-Kernels revision `94391c4e25a677b0bc44634c6fa4b3afa9342358` additionally provides device-resident F32
-row-major GEMM through dynamically loaded CUBLAS and a native linear
-epilogue. Its Workhorse oracle verified the hand-computed `2×3 × 3×2`
-product `[58, 64, 139, 154]`, followed by `(C + bias) × gamma` with
-`bias=[1,-4]`, `gamma=[0.5,2]`, yielding `[29.5,120,70,300]` exactly. The
-implementation invokes CUBLAS through the equivalent column-major identity
-`Cᵀ = Bᵀ × Aᵀ`, avoiding a host-side transpose. CUBLAS is isolated under
+Kernels revision `4c569deaf602e1316656e9c9ba6eddb88c588d55` additionally
+provides device-resident F32 row-major GEMM through dynamically loaded
+CUBLAS, a native linear epilogue, and the same exact-erf GELU approximation
+used by the CPU path. Its Workhorse oracle verified the hand-computed `2×3 ×
+3×2` product `[58, 64, 139, 154]`, followed by `(C + bias) × gamma` with
+`bias=[1,-4]`, `gamma=[0.5,2]`, yielding `[29.5,120,70,300]` exactly. It also
+compared device GELU at `[-3,-1,0,1,3]` with the CPU reference at an absolute
+tolerance of `2e-6`. The implementation invokes CUBLAS through the
+equivalent column-major identity `Cᵀ = Bᵀ × Aᵀ`, avoiding a host-side
+transpose. CUBLAS is isolated under
 `/var/roothome/vestra-cuda-deps/nvidia/cublas/lib` alongside NVRTC.
 
 The first Engine-owned fixed-shape CUDA operator is recorded below. Every
