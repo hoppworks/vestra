@@ -212,8 +212,12 @@ impl Default for StitchSettings {
         Self {
             minimum_correspondences: 50,
             minimum_inlier_ratio: 0.6,
-            minimum_scale: 0.1,
-            maximum_scale: 10.0,
+            // Depth scale is independently relative in every multiview
+            // window. This gate therefore only rejects numerical collapse or
+            // explosion; correspondence support and residual decide seam
+            // quality, not an invented metric-scale range.
+            minimum_scale: 1e-3,
+            maximum_scale: 1e3,
             loop_closure: Some(LoopClosureSettings {
                 minimum_window_gap: 3,
                 candidate_distance_radii: 80.0,
@@ -1194,6 +1198,36 @@ mod tests {
                 })
             }
         ));
+    }
+
+    #[test]
+    fn production_fusion_accepts_supported_relative_scale_below_one_tenth() {
+        let source_points = (0..50)
+            .map(|index| {
+                p(
+                    index,
+                    [
+                        (index % 5) as f32,
+                        ((index / 5) % 5) as f32,
+                        (index / 25) as f32,
+                    ],
+                )
+            })
+            .collect::<Vec<_>>();
+        let target_points = source_points
+            .iter()
+            .map(|point| {
+                let mut scaled = *point;
+                scaled.position = point.position.map(|value| value * 0.05 + 1.0);
+                scaled
+            })
+            .collect::<Vec<_>>();
+        let target = chunk(target_points);
+        let mut source = chunk(source_points);
+        source.window.index = 1;
+        let fused = stitch_measured_windows(&[target, source]).unwrap();
+        assert_eq!(fused.alignments.len(), 1);
+        assert!((fused.alignments[0].transform.scale - 0.05).abs() < 1e-4);
     }
 
     #[test]
