@@ -50,14 +50,36 @@ only to support coordinated development without copying code.
 
 ## Current state
 
-The first tracer bullet is active:
+The first tracer bullet is active. Vestra can already represent the parts of a
+world pipeline that do not depend on an unverified model claim:
 
 1. PR #2's streaming window schedule is represented in Rust.
 2. Vestra imports Vestra Engine through the repository boundary.
 3. Vestra Engine implements genuine ordered multi-view local/global attention.
 4. `S=1` is bitwise equal to its established single-view path.
 5. The saddle-balanced reference scoring and reordering contract is ported.
-6. Real C++ oracle parity for `S=2,3,12` is the next hard gate.
+6. Calibrated depth, confidence, RGB, and a W2C camera pose deterministically
+   produce relative-scale measured surfel points. Invalid or low-confidence
+   pixels never become geometry.
+7. Each measured window can be written to an atomic, content-addressed
+   `.vestra` bundle. Repeating an identical window write is idempotent; a
+   crash cannot publish a partial manifest as a completed scene.
+
+The next hard gate is real C++ oracle parity for multi-view windows of
+`S=2,3,12`. Only after that gate will Vestra stitch overlapping windows,
+perform fusion, and present the result in the browser studio.
+
+## Scene bundles
+
+A `.vestra` scene is a local directory while processing. Its manifest records
+the engine, kernel, model, and settings identities. Measured window chunks are
+immutable JSON payloads addressed by their SHA-256 content hash. The manifest
+is replaced atomically after a chunk is durable, which lets a job resume or a
+viewer reveal completed windows without confusing them with fused geometry.
+
+V1 scenes are explicitly relative-scale. A point's position is evidence from
+the depth map and camera calibration; it is not a claim in metres. Metric-scale
+anchors are a future opt-in phase.
 
 There is no claim yet that the complete Vestra world pipeline is faster than
 the C++ PR. The existing qualified speed result covers single-image CPU F32.
