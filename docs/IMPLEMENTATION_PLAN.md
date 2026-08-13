@@ -4,7 +4,7 @@ The plan is parity-first. A stage does not advance because it looks plausible
 in the viewer; it advances when its isolated C++ oracle, Rust tests, and scene
 quality measurements pass.
 
-## Slice 1 — Multi-view inference parity (active)
+## Slice 1 — Multi-view inference parity (complete for the locked F32 contract)
 
 Completed:
 
@@ -16,24 +16,31 @@ Completed:
 - bitwise `S=1` equivalence and synthetic cross-view coupling tests
 - saddle-balanced reference scoring and reference-first permutation contract
 
-Remaining hard gate:
+Accepted gate:
 
-- integrate the preliminary local CLS pass for automatic `S>=3` selection
-- add an oracle dump command to pinned C++ PR #2
-- compare captures and final results at `S=2`, `S=3`, and `S=12`
-- require Pearson `r >= 0.9999` and MAE `<= 0.005` for F32 tensors unless an
-  operator-specific stricter bitwise contract applies
-- benchmark one 12-view window with identical CPU-F32 work
+- automatic `S>=3` reference selection is part of the locked engine path
+- the temporary C++ oracle dump command was used only to establish parity and
+  is not a product dependency
+- canonical RGB24 C++ oracle comparisons passed at `S=2`, `S=3`, and `S=12`
+  for depth/confidence and camera outputs; see `docs/validation/`
 
-## Slice 2 — Points and sliding windows
+## Slice 2 — Points and sliding windows (first usable implementation complete)
 
 - calibrated back-projection with confidence, color, and radius
 - immutable per-window scene chunks
 - exact 12/3 window schedule and progressive frame ownership
-- weighted Huber/IRLS Umeyama Sim3 on dense overlap correspondences
-- C++ analytic and real-window seam oracles
+- robust relative Sim(3) on dense shared-pixel overlap correspondences,
+  including rank-one rejection and quality gates
+- deterministic confidence-weighted voxel surfel fusion, with immutable raw
+  evidence and an atomically published fused layer
+- controlled MP4 → Studio Workhorse smoke evidence
 
-## Slice 3 — Reconstruction cleanup
+Remaining:
+
+- a real captured-room seam/oracle corpus
+- correspondence ownership policy for overlapping source frames
+
+## Slice 3 — Reconstruction cleanup (next geometry milestones)
 
 - point-to-plane ICP with spatial hash
 - loop detection and Sim3 pose graph
@@ -42,13 +49,19 @@ Remaining hard gate:
 - quality gates for connectedness, drift, overlap error, surface retention,
   and ghost thickness
 
-## Slice 4 — Scene, service, and studio
+## Slice 4 — Scene, service, and studio (first local product path complete)
 
-- streamable content-addressed `.vestra` scene format
-- resumable local job service and CLI
-- progressive WebGPU studio with WebGL2 fallback
-- cinematic world mode and diagnostic inspect mode
-- `.splat`, PLY, GLB, camera JSON, and flythrough export
+- content-addressed `.vestra` measured/fused JSON chunks and atomic manifest
+- local CLI (`reconstruct`, `fuse`, `export`, `serve`) and browser Studio
+- interactive WebGL point-world inspection with fused-layer preference
+- ASCII PLY export containing relative positions, RGB, confidence, radius,
+  and contributor count
+
+Remaining:
+
+- progressive binary chunks and GPU uploads
+- WebGL2/WebGPU diagnostic and cinematic modes
+- `.splat`, GLB, camera JSON, and flythrough export
 
 ## Slice 5 — CUDA and product performance
 

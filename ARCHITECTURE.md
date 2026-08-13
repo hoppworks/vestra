@@ -10,9 +10,10 @@ video
   -> Vestra Engine depth, confidence, intrinsics, extrinsics
   -> back-projection and confidence filtering
   -> robust weighted Sim3 window alignment
-  -> optional point-to-plane ICP
-  -> loop detection and Sim3 pose-graph optimization
-  -> TSDF de-ghosting and surface fusion
+  -> [next] point-to-plane ICP
+  -> [next] loop detection and Sim3 pose-graph optimization
+  -> confidence-weighted voxel surfel fusion
+  -> [next] TSDF de-ghosting
   -> measured/fused scene chunks
   -> surfel/voxel render data and open exports
   -> browser studio
@@ -42,17 +43,19 @@ manifest is atomically replaced last. This supports progressive viewing,
 deduplication, checkpoint resume, partial reprocessing, and migrations.
 
 The manifest identifies source fingerprints, engine/kernel revisions, model
-and settings hashes, coordinate conventions, completed phases, quality gates,
-and geometry-layer provenance.
+and settings hashes, coordinate conventions, and its immutable measured and
+derived fused chunk identities. Fused data is published only after its chunk
+is durable; raw evidence is never replaced.
 
 ## Reliability
 
 - Job identity derives from input content and normalized settings.
 - Each window is an independently durable checkpoint.
-- Cancellation is cooperative at bounded sub-phase boundaries.
 - A crash cannot make a partial bundle appear complete.
-- Re-running a completed phase is deterministic.
-- Cache deletion cannot invalidate an exported scene.
+- Re-running a completed fusion is deterministic and idempotent.
+- A seam needs direct shared-pixel evidence, non-degenerate geometry, and the
+  configured correspondence/inlier/scale gate; there is no identity fallback.
+- PLY export preserves relative coordinates rather than asserting metres.
 
 ## Benchmark boundary
 
