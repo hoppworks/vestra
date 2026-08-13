@@ -163,9 +163,14 @@ cargo run -p vestra-cli -- app \
 ```
 
 Open `http://127.0.0.1:4317`, choose one `.mov`, `.mp4`, `.m4v`, or `.avi`
-file, then select **Start reconstruction**. One intake instance deliberately
-accepts one job; restart it for another capture. The job owns its copied input,
-scene bundle, and `reconstruct.log` under `./vestra-jobs/job-000001/`.
+file, then select **Start reconstruction**. The intake persists the job's
+video filename and reconstruction settings atomically in its job directory.
+Use **Cancel safely** to request the same interrupt that the CLI handles; only
+complete window checkpoints remain published. On restart, the most recent
+running job becomes **interrupted** and can be resumed from the browser with
+its original settings. The intake deliberately accepts one job at a time; the
+job owns its copied input, scene bundle, `job.json`, and `reconstruct.log`
+under `./vestra-jobs/job-000001/`.
 
 With FFmpeg and FFprobe installed, create a relative-scale scene locally:
 

@@ -78,10 +78,12 @@ pub fn serve_intake(config: IntakeConfig) -> Result<(), StudioError> {
         ));
     }
     fs::create_dir_all(&config.jobs_root)?;
+    let next_job = next_job_id(&config.jobs_root)?;
+    let active = recover_latest_job(&config)?;
     let state = Arc::new(Mutex::new(IntakeState {
         config,
-        next_job: 1,
-        active: None,
+        next_job,
+        active,
     }));
     let port = state.lock().expect("intake state lock").config.port;
     let listener = TcpListener::bind(("127.0.0.1", port))?;
@@ -101,19 +103,52 @@ struct IntakeState {
 #[derive(Debug)]
 struct IntakeJob {
     id: u64,
+    root: PathBuf,
+    video: PathBuf,
     scene: PathBuf,
     log: PathBuf,
-    child: Child,
+    settings: IntakeSettings,
+    child: Option<Child>,
     viewer: Option<Child>,
     outcome: IntakeOutcome,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum IntakeOutcome {
     Running,
+    CancelRequested,
+    Cancelled,
+    Interrupted,
     Complete,
     Failed,
 }
+
+/// The reconstruction settings are persisted with each browser job. Resuming
+/// never adopts values from a later `vestra app` invocation, because that
+/// would violate the scene provenance contract checked by `reconstruct`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct IntakeSettings {
+    frames: usize,
+    width: usize,
+    height: usize,
+    chunk_size: usize,
+    overlap: usize,
+    minimum_confidence: f32,
+    pixel_stride: usize,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct IntakeRecord {
+    schema: String,
+    id: u64,
+    video_name: String,
+    settings: IntakeSettings,
+    outcome: IntakeOutcome,
+}
+
+const INTAKE_RECORD_FILE: &str = "job.json";
+const INTAKE_RECORD_SCHEMA: &str = "vestra.intake-job/v1";
 
 fn handle_intake(mut stream: TcpStream, state: &Arc<Mutex<IntakeState>>) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -150,6 +185,28 @@ fn handle_intake(mut stream: TcpStream, state: &Arc<Mutex<IntakeState>>) -> std:
             let payload = intake_status(state);
             write_response(&mut stream, "200 OK", "application/json", &payload)
         }
+        ("POST", "/api/job/cancel") => match cancel_intake_job(state) {
+            Ok(payload) => {
+                write_response(&mut stream, "202 Accepted", "application/json", &payload)
+            }
+            Err(message) => write_response(
+                &mut stream,
+                "409 Conflict",
+                "text/plain; charset=utf-8",
+                message.as_bytes(),
+            ),
+        },
+        ("POST", "/api/job/resume") => match resume_intake_job(state) {
+            Ok(payload) => {
+                write_response(&mut stream, "202 Accepted", "application/json", &payload)
+            }
+            Err(message) => write_response(
+                &mut stream,
+                "409 Conflict",
+                "text/plain; charset=utf-8",
+                message.as_bytes(),
+            ),
+        },
         ("POST", "/api/job") => {
             let Some(length) = content_length else {
                 return write_response(
@@ -237,33 +294,167 @@ fn start_intake_job(
         let _ = fs::remove_file(&video);
         return Err("upload ended before its declared content length".into());
     }
+    let settings = IntakeSettings::from(&config);
     let scene = root.join("world.vestra");
     let log = root.join("reconstruct.log");
-    let log_file =
-        fs::File::create(&log).map_err(|error| format!("could not create job log: {error}"))?;
-    let child = Command::new(&config.executable)
+    let mut job = IntakeJob {
+        id,
+        root,
+        video,
+        scene,
+        log,
+        settings,
+        viewer: None,
+        outcome: IntakeOutcome::Running,
+        child: None,
+    };
+    write_intake_record(&job).map_err(|error| format!("could not persist job state: {error}"))?;
+    job.child = Some(spawn_reconstruction(&config, &job, false)?);
+    state
+        .lock()
+        .map_err(|_| "intake state is unavailable".to_owned())?
+        .active = Some(job);
+    Ok(
+        serde_json::to_vec(&serde_json::json!({"job": id, "state": "running"}))
+            .expect("fixed intake response serializes"),
+    )
+}
+
+impl From<&IntakeConfig> for IntakeSettings {
+    fn from(config: &IntakeConfig) -> Self {
+        Self {
+            frames: config.frames,
+            width: config.width,
+            height: config.height,
+            chunk_size: config.chunk_size,
+            overlap: config.overlap,
+            minimum_confidence: config.minimum_confidence,
+            pixel_stride: config.pixel_stride,
+        }
+    }
+}
+
+fn record_path(root: &Path) -> PathBuf {
+    root.join(INTAKE_RECORD_FILE)
+}
+
+fn write_intake_record(job: &IntakeJob) -> std::io::Result<()> {
+    let record = IntakeRecord {
+        schema: INTAKE_RECORD_SCHEMA.into(),
+        id: job.id,
+        video_name: job
+            .video
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .into(),
+        settings: job.settings.clone(),
+        outcome: job.outcome,
+    };
+    let path = record_path(&job.root);
+    let temporary = job.root.join(format!(".{INTAKE_RECORD_FILE}.tmp"));
+    fs::write(&temporary, serde_json::to_vec_pretty(&record)?)?;
+    fs::rename(temporary, path)
+}
+
+fn next_job_id(jobs_root: &Path) -> std::io::Result<u64> {
+    let mut maximum = 0_u64;
+    for entry in fs::read_dir(jobs_root)? {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(id) = name
+            .strip_prefix("job-")
+            .and_then(|value| value.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        maximum = maximum.max(id);
+    }
+    maximum
+        .checked_add(1)
+        .ok_or_else(|| std::io::Error::other("job id overflow"))
+}
+
+fn recover_latest_job(config: &IntakeConfig) -> std::io::Result<Option<IntakeJob>> {
+    let mut latest = None::<(u64, PathBuf, IntakeRecord)>;
+    for entry in fs::read_dir(&config.jobs_root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let root = entry.path();
+        let Ok(payload) = fs::read(record_path(&root)) else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_slice::<IntakeRecord>(&payload) else {
+            continue;
+        };
+        if record.schema != INTAKE_RECORD_SCHEMA || safe_video_name(&record.video_name).is_none() {
+            continue;
+        }
+        if latest.as_ref().is_none_or(|(id, _, _)| record.id > *id) {
+            latest = Some((record.id, root, record));
+        }
+    }
+    let Some((id, root, record)) = latest else {
+        return Ok(None);
+    };
+    let mut job = IntakeJob {
+        id,
+        video: root.join(&record.video_name),
+        scene: root.join("world.vestra"),
+        log: root.join("reconstruct.log"),
+        root,
+        settings: record.settings,
+        child: None,
+        viewer: None,
+        outcome: record.outcome,
+    };
+    if job.outcome == IntakeOutcome::Running || job.outcome == IntakeOutcome::CancelRequested {
+        job.outcome = IntakeOutcome::Interrupted;
+        write_intake_record(&job)?;
+    }
+    Ok(Some(job))
+}
+
+fn spawn_reconstruction(
+    config: &IntakeConfig,
+    job: &IntakeJob,
+    resume: bool,
+) -> Result<Child, String> {
+    let log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(resume)
+        .write(true)
+        .truncate(!resume)
+        .open(&job.log)
+        .map_err(|error| format!("could not create job log: {error}"))?;
+    let mut command = Command::new(&config.executable);
+    command
         .args([
             "reconstruct",
             "--video",
-            video.to_string_lossy().as_ref(),
+            job.video.to_string_lossy().as_ref(),
             "--model",
             config.model.to_string_lossy().as_ref(),
             "--output",
-            scene.to_string_lossy().as_ref(),
+            job.scene.to_string_lossy().as_ref(),
             "--frames",
-            &config.frames.to_string(),
+            &job.settings.frames.to_string(),
             "--width",
-            &config.width.to_string(),
+            &job.settings.width.to_string(),
             "--height",
-            &config.height.to_string(),
+            &job.settings.height.to_string(),
             "--chunk-size",
-            &config.chunk_size.to_string(),
+            &job.settings.chunk_size.to_string(),
             "--overlap",
-            &config.overlap.to_string(),
+            &job.settings.overlap.to_string(),
             "--minimum-confidence",
-            &config.minimum_confidence.to_string(),
+            &job.settings.minimum_confidence.to_string(),
             "--pixel-stride",
-            &config.pixel_stride.to_string(),
+            &job.settings.pixel_stride.to_string(),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::from(
@@ -271,24 +462,85 @@ fn start_intake_job(
                 .try_clone()
                 .map_err(|error| format!("could not clone job log: {error}"))?,
         ))
-        .stderr(Stdio::from(log_file))
+        .stderr(Stdio::from(log_file));
+    if resume {
+        command.arg("--resume");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command
         .spawn()
-        .map_err(|error| format!("could not start reconstruction: {error}"))?;
-    state
+        .map_err(|error| format!("could not start reconstruction: {error}"))
+}
+
+fn cancel_intake_job(state: &Arc<Mutex<IntakeState>>) -> Result<Vec<u8>, String> {
+    let mut guard = state
         .lock()
-        .map_err(|_| "intake state is unavailable".to_owned())?
-        .active = Some(IntakeJob {
-        id,
-        scene,
-        log,
-        child,
-        viewer: None,
-        outcome: IntakeOutcome::Running,
-    });
-    Ok(
-        serde_json::to_vec(&serde_json::json!({"job": id, "state": "running"}))
-            .expect("fixed intake response serializes"),
-    )
+        .map_err(|_| "intake state is unavailable".to_owned())?;
+    let Some(job) = guard.active.as_mut() else {
+        return Err("there is no active job to cancel".into());
+    };
+    if job.outcome != IntakeOutcome::Running {
+        return Err("only a running job can be canceled".into());
+    }
+    let child = job
+        .child
+        .as_mut()
+        .ok_or_else(|| "the running job process is unavailable".to_owned())?;
+    request_interrupt(child)
+        .map_err(|error| format!("could not interrupt reconstruction: {error}"))?;
+    job.outcome = IntakeOutcome::CancelRequested;
+    write_intake_record(job).map_err(|error| format!("could not persist cancellation: {error}"))?;
+    serde_json::to_vec(&serde_json::json!({"job": job.id, "state": "cancel_requested"}))
+        .map_err(|error| error.to_string())
+}
+
+fn resume_intake_job(state: &Arc<Mutex<IntakeState>>) -> Result<Vec<u8>, String> {
+    let mut guard = state
+        .lock()
+        .map_err(|_| "intake state is unavailable".to_owned())?;
+    let config = guard.config.clone();
+    let Some(job) = guard.active.as_mut() else {
+        return Err("there is no interrupted job to resume".into());
+    };
+    if !matches!(
+        job.outcome,
+        IntakeOutcome::Cancelled | IntakeOutcome::Interrupted | IntakeOutcome::Failed
+    ) {
+        return Err("only a canceled, interrupted, or failed job can be resumed".into());
+    }
+    if !job.video.is_file() {
+        return Err("the persisted video for this job is missing".into());
+    }
+    job.child = Some(spawn_reconstruction(&config, job, true)?);
+    job.outcome = IntakeOutcome::Running;
+    write_intake_record(job).map_err(|error| format!("could not persist resumed job: {error}"))?;
+    serde_json::to_vec(&serde_json::json!({"job": job.id, "state": "running", "resumed": true}))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(unix)]
+fn request_interrupt(child: &mut Child) -> std::io::Result<()> {
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    const SIGINT: i32 = 2;
+    let pid = i32::try_from(child.id()).map_err(|_| std::io::Error::other("child pid overflow"))?;
+    // The child starts a process group, so FFmpeg descendants receive the same
+    // graceful interrupt as the reconstruction process.
+    if unsafe { kill(-pid, SIGINT) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn request_interrupt(child: &mut Child) -> std::io::Result<()> {
+    child.kill()
 }
 
 fn intake_status(state: &Arc<Mutex<IntakeState>>) -> Vec<u8> {
@@ -300,29 +552,59 @@ fn intake_status(state: &Arc<Mutex<IntakeState>>) -> Vec<u8> {
     let Some(job) = guard.active.as_mut() else {
         return br#"{"state":"idle"}"#.to_vec();
     };
-    if job.outcome == IntakeOutcome::Running {
-        match job.child.try_wait() {
+    if matches!(
+        job.outcome,
+        IntakeOutcome::Running | IntakeOutcome::CancelRequested
+    ) {
+        let Some(child) = job.child.as_mut() else {
+            job.outcome = IntakeOutcome::Interrupted;
+            let _ = write_intake_record(job);
+            return intake_payload(job, &config);
+        };
+        match child.try_wait() {
             Ok(Some(status)) if status.success() => {
-                let viewer_port = config.port.saturating_add(1);
-                job.viewer = Command::new(&config.executable)
-                    .args([
-                        "serve",
-                        "--scene",
-                        job.scene.to_string_lossy().as_ref(),
-                        "--port",
-                        &viewer_port.to_string(),
-                    ])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                    .ok();
-                job.outcome = IntakeOutcome::Complete;
+                job.child = None;
+                job.outcome = if job.outcome == IntakeOutcome::CancelRequested {
+                    IntakeOutcome::Cancelled
+                } else {
+                    IntakeOutcome::Complete
+                };
             }
-            Ok(Some(_)) | Err(_) => job.outcome = IntakeOutcome::Failed,
+            Ok(Some(_)) | Err(_) => {
+                job.child = None;
+                job.outcome = if job.outcome == IntakeOutcome::CancelRequested {
+                    IntakeOutcome::Cancelled
+                } else {
+                    IntakeOutcome::Failed
+                };
+            }
             Ok(None) => {}
         }
+        let _ = write_intake_record(job);
     }
+    if job.outcome == IntakeOutcome::Complete && job.viewer.is_none() {
+        job.viewer = spawn_viewer(&config, &job.scene).ok();
+    }
+    intake_payload(job, &config)
+}
+
+fn spawn_viewer(config: &IntakeConfig, scene: &Path) -> std::io::Result<Child> {
+    let viewer_port = config.port.saturating_add(1);
+    Command::new(&config.executable)
+        .args([
+            "serve",
+            "--scene",
+            scene.to_string_lossy().as_ref(),
+            "--port",
+            &viewer_port.to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+}
+
+fn intake_payload(job: &IntakeJob, config: &IntakeConfig) -> Vec<u8> {
     let log_tail = fs::read_to_string(&job.log).ok().map(|log| {
         log.chars()
             .rev()
@@ -334,13 +616,18 @@ fn intake_status(state: &Arc<Mutex<IntakeState>>) -> Vec<u8> {
     });
     let state = match job.outcome {
         IntakeOutcome::Running => "running",
+        IntakeOutcome::CancelRequested => "cancel_requested",
+        IntakeOutcome::Cancelled => "cancelled",
+        IntakeOutcome::Interrupted => "interrupted",
         IntakeOutcome::Complete => "complete",
         IntakeOutcome::Failed => "failed",
     };
     serde_json::to_vec(&serde_json::json!({
         "job": job.id,
         "state": state,
-        "viewer": if job.outcome == IntakeOutcome::Complete { Some(format!("http://127.0.0.1:{}", config.port.saturating_add(1))) } else { None },
+        "viewer": if job.outcome == IntakeOutcome::Complete && job.viewer.is_some() { Some(format!("http://127.0.0.1:{}", config.port.saturating_add(1))) } else { None },
+        "can_cancel": job.outcome == IntakeOutcome::Running,
+        "can_resume": matches!(job.outcome, IntakeOutcome::Cancelled | IntakeOutcome::Interrupted | IntakeOutcome::Failed),
         "log_tail": log_tail,
     }))
     .expect("fixed intake status serializes")
@@ -753,6 +1040,61 @@ mod tests {
         assert!(safe_video_name("nested/room.mp4").is_none());
         assert!(safe_video_name("room.mkv").is_none());
         assert!(safe_video_name("../../scene.mov").is_none());
+    }
+
+    #[test]
+    fn recovered_running_job_is_marked_interrupted_without_losing_settings() {
+        let root = std::env::temp_dir().join(format!(
+            "vestra-intake-recovery-test-{}",
+            std::process::id()
+        ));
+        let job_root = root.join("job-000007");
+        fs::create_dir_all(&job_root).unwrap();
+        let settings = IntakeSettings {
+            frames: 24,
+            width: 504,
+            height: 336,
+            chunk_size: 12,
+            overlap: 3,
+            minimum_confidence: 0.5,
+            pixel_stride: 6,
+        };
+        let job = IntakeJob {
+            id: 7,
+            root: job_root.clone(),
+            video: job_root.join("room.mov"),
+            scene: job_root.join("world.vestra"),
+            log: job_root.join("reconstruct.log"),
+            settings: settings.clone(),
+            child: None,
+            viewer: None,
+            outcome: IntakeOutcome::Running,
+        };
+        fs::write(&job.video, b"fixture").unwrap();
+        write_intake_record(&job).unwrap();
+        let config = IntakeConfig {
+            executable: root.join("vestra"),
+            model: root.join("model.gguf"),
+            jobs_root: root.clone(),
+            port: 4317,
+            frames: 1,
+            width: 1,
+            height: 1,
+            chunk_size: 1,
+            overlap: 0,
+            minimum_confidence: 1.0,
+            pixel_stride: 1,
+        };
+        let recovered = recover_latest_job(&config).unwrap().unwrap();
+        assert_eq!(recovered.id, 7);
+        assert_eq!(recovered.outcome, IntakeOutcome::Interrupted);
+        assert_eq!(recovered.settings.frames, settings.frames);
+        assert_eq!(recovered.settings.pixel_stride, settings.pixel_stride);
+        let persisted: IntakeRecord =
+            serde_json::from_slice(&fs::read(record_path(&job_root)).unwrap()).unwrap();
+        assert_eq!(persisted.outcome, IntakeOutcome::Interrupted);
+        assert_eq!(next_job_id(&root).unwrap(), 8);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

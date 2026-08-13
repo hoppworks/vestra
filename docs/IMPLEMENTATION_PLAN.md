@@ -75,8 +75,8 @@ Remaining:
 Remaining:
 
 - WebGL2/WebGPU cinematic modes and a reproducible flythrough export
-- cancellation within one second, atomic finalization, and resumable job
-  lifecycle integration across CLI and Studio
+- browser-driven cancellation and resumable job lifecycle integration across
+  CLI and Studio (in progress)
 
 ## Slice 5 — CUDA and product performance
 
