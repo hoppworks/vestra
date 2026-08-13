@@ -1437,6 +1437,30 @@ mod tests {
     }
 
     #[test]
+    fn cpp_pr2_irls_recovers_known_similarity_without_trimming() {
+        let source = chunk(vec![
+            p(0, [0., 0., 0.]),
+            p(1, [1., 0., 0.]),
+            p(2, [0., 1., 0.]),
+            p(3, [0., 0., 1.]),
+            p(4, [1., 1., 1.]),
+        ]);
+        let target = chunk(vec![
+            p(0, [5., -3., 1.]),
+            p(1, [5., -1., 1.]),
+            p(2, [3., -3., 1.]),
+            p(3, [5., -3., 3.]),
+            p(4, [3., -1., 3.]),
+        ]);
+        let report = align_overlapping_windows_cpp_pr2(&source, &target).unwrap();
+        assert_eq!(report.correspondence_count, 5);
+        assert_eq!(report.inlier_count, 5);
+        assert!((report.transform.scale - 2.).abs() < 1e-4);
+        assert!(distance(report.transform.apply([1., 0., 0.]), [5., -1., 1.]) < 1e-4);
+        assert!(report.rms_residual < 1e-4);
+    }
+
+    #[test]
     fn sequential_fusion_rejects_an_extent_normalized_bad_seam() {
         let base = vec![
             p(0, [0.0, 0.0, 0.0]),

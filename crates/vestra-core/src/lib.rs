@@ -30,8 +30,8 @@ pub use pose_graph::{
 };
 pub use reconstruction::{
     FusionProgress, ReconstructionError, ReconstructionProgress, ReconstructionSettings,
-    capture_cpp_pr2_fixture, fuse_scene_bundle, fuse_scene_bundle_with_settings,
-    reconstruct_frames, stitch_cpp_pr2_fixture_as_vestra,
+    capture_cpp_pr2_fixture, cpp_pr2_fixture_alignment_reports, fuse_scene_bundle,
+    fuse_scene_bundle_with_settings, reconstruct_frames, stitch_cpp_pr2_fixture_as_vestra,
 };
 pub use revisit::{
     CameraCentreDirection, RevisitProposal, RevisitProposalSettings, WindowCameraPath,
@@ -44,9 +44,10 @@ pub use scene::{
 pub use stitch::{
     AlignmentReport, FusedPoint, FusedSceneChunk, FusedTopology, FusedWindowPose,
     LoopClosureSettings, LoopMeasurement, LoopMeasurementSettings, SimilarityTransform,
-    StitchError, StitchSettings, align_overlapping_windows, fused_topology, measure_loop_closure,
-    stitch_measured_windows, stitch_measured_windows_with_loop_closures,
-    stitch_measured_windows_with_settings, transform_points,
+    StitchError, StitchSettings, align_overlapping_windows, align_overlapping_windows_cpp_pr2,
+    fused_topology, measure_loop_closure, stitch_measured_windows,
+    stitch_measured_windows_with_loop_closures, stitch_measured_windows_with_settings,
+    transform_points,
 };
 pub use video::{
     CaptureDisposition, CaptureQuality, VideoExtractionSettings, VideoFrames, VideoInputError,

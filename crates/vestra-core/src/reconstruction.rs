@@ -5,10 +5,11 @@ use std::collections::BTreeMap;
 use vestra_engine::Engine;
 
 use crate::{
-    BackprojectionError, BackprojectionSettings, CameraCalibration, CppPr2Fixture, CppPr2Frame,
-    FrameWindow, FusedSceneChunk, MeasuredFrameChunk, MeasuredView, OwnedFrame, SceneBundle,
-    SceneBundleError, WindowMeasuredChunk, WindowSettings, backproject_measured_view,
-    infer_ordered_window, plan_windows, stitch_measured_windows_with_settings,
+    AlignmentReport, BackprojectionError, BackprojectionSettings, CameraCalibration, CppPr2Fixture,
+    CppPr2Frame, FrameWindow, FusedSceneChunk, MeasuredFrameChunk, MeasuredView, OwnedFrame,
+    SceneBundle, SceneBundleError, WindowMeasuredChunk, WindowSettings,
+    align_overlapping_windows_cpp_pr2, backproject_measured_view, infer_ordered_window,
+    plan_windows, stitch_measured_windows_with_settings,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -148,6 +149,35 @@ pub fn capture_cpp_pr2_fixture(
 pub fn stitch_cpp_pr2_fixture_as_vestra(
     fixture: &CppPr2Fixture,
 ) -> Result<FusedSceneChunk, ReconstructionError> {
+    let windows = cpp_pr2_fixture_windows(fixture)?;
+    let settings = crate::StitchSettings {
+        minimum_correspondences: fixture.minimum_overlap_points,
+        minimum_inlier_ratio: 0.0,
+        maximum_normalized_rms_residual: f32::INFINITY,
+        minimum_scale: 1e-9,
+        maximum_scale: 1e9,
+        loop_closure: None,
+    };
+    Ok(stitch_measured_windows_with_settings(&windows, settings)?)
+}
+
+/// Computes only the sequential PR #2 seam reports. This deliberately avoids
+/// Vestra's production outlier policy, global accumulation, and voxel fusion;
+/// consumers use it to compare identical local-to-previous-window transforms
+/// against the pinned C++ implementation.
+pub fn cpp_pr2_fixture_alignment_reports(
+    fixture: &CppPr2Fixture,
+) -> Result<Vec<AlignmentReport>, ReconstructionError> {
+    let windows = cpp_pr2_fixture_windows(fixture)?;
+    windows
+        .windows(2)
+        .map(|pair| Ok(align_overlapping_windows_cpp_pr2(&pair[1], &pair[0])?))
+        .collect()
+}
+
+fn cpp_pr2_fixture_windows(
+    fixture: &CppPr2Fixture,
+) -> Result<Vec<WindowMeasuredChunk>, ReconstructionError> {
     let mut windows = Vec::with_capacity(fixture.window_views.len());
     for (window_index, views) in fixture.window_views.iter().enumerate() {
         let start = window_index * (fixture.windows.chunk_size - fixture.windows.overlap);
@@ -198,15 +228,7 @@ pub fn stitch_cpp_pr2_fixture_as_vestra(
             views: measured_views,
         });
     }
-    let settings = crate::StitchSettings {
-        minimum_correspondences: fixture.minimum_overlap_points,
-        minimum_inlier_ratio: 0.0,
-        maximum_normalized_rms_residual: f32::INFINITY,
-        minimum_scale: 1e-9,
-        maximum_scale: 1e9,
-        loop_closure: None,
-    };
-    Ok(stitch_measured_windows_with_settings(&windows, settings)?)
+    Ok(windows)
 }
 
 /// Runs every deterministic window and immediately checkpoints direct evidence.

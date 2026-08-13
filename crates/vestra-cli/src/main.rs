@@ -10,9 +10,9 @@ use sha2::{Digest, Sha256};
 use vestra_core::{
     BackprojectionSettings, CppPr2Fixture, CppPr2StreamOutput, ReconstructionSettings, SceneBundle,
     SceneProvenance, VideoExtractionSettings, WindowSettings, capture_cpp_pr2_fixture,
-    export_camera_json, export_fused_glb, export_fused_ply, export_fused_splat,
-    extract_video_frames, fuse_scene_bundle, fused_topology, load_decoded_frame_cache,
-    load_decoded_rgb24_cache, plan_windows, reconstruct_frames, stitch_cpp_pr2_fixture_as_vestra,
+    cpp_pr2_fixture_alignment_reports, export_camera_json, export_fused_glb, export_fused_ply,
+    export_fused_splat, extract_video_frames, fuse_scene_bundle, fused_topology,
+    load_decoded_frame_cache, load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
 use vestra_studio::serve;
@@ -382,15 +382,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::OracleStitch { input } => {
             let mut input = BufReader::new(File::open(input)?);
             let fixture = CppPr2Fixture::read_vps1(&mut input)?;
-            let fused = stitch_cpp_pr2_fixture_as_vestra(&fixture)?;
+            let alignments = cpp_pr2_fixture_alignment_reports(&fixture)?;
             println!(
                 "{}",
                 serde_json::json!({
                     "schema": "vestra.cpp-pr2-transform-oracle/v1",
                     "frames": fixture.frame_count,
                     "windows": fixture.window_views.len(),
-                    "alignments": fused.alignments,
-                    "voxelized_points": fused.points.len(),
+                    "alignments": alignments,
                 })
             );
         }
