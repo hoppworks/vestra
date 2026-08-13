@@ -9,6 +9,7 @@ use vestra_engine::{Engine, EngineError, MultiViewInferOut, ViewInput};
 pub mod geometry;
 pub mod reconstruction;
 pub mod scene;
+pub mod stitch;
 pub mod video;
 
 pub use geometry::{
@@ -21,6 +22,9 @@ pub use reconstruction::{
 pub use scene::{
     MeasuredFrameChunk, SceneBundle, SceneBundleError, SceneManifest, SceneProvenance,
     WindowMeasuredChunk,
+};
+pub use stitch::{
+    AlignmentReport, SimilarityTransform, StitchError, align_overlapping_windows, transform_points,
 };
 pub use video::{VideoExtractionSettings, VideoFrames, VideoInputError, extract_video_frames};
 
