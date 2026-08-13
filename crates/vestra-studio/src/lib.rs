@@ -1129,6 +1129,11 @@ mod tests {
     }
 
     #[test]
+    fn studio_offers_a_non_mutating_return_to_capture_link() {
+        assert!(INDEX_HTML.contains("href=\"/\">← back to capture</a>"));
+    }
+
+    #[test]
     fn recovered_running_job_is_marked_interrupted_without_losing_settings() {
         let root = std::env::temp_dir().join(format!(
             "vestra-intake-recovery-test-{}",
