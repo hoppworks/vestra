@@ -11,7 +11,7 @@ claim.
 | Item | Value |
 | --- | --- |
 | Repository | `https://github.com/hoppworks/vestra-kernels` |
-| Revision | `688e2905f7bb8e4c9130e3d6faf5f8c4b1723508` |
+| Revision | `94391c4e25a677b0bc44634c6fa4b3afa9342358` |
 | Feature | `cuda` |
 | CUDA binding | `cudarc 0.19.9`, Driver API with dynamic loading and NVRTC |
 | Host | Workhorse — AMD Ryzen 9 9950X, NVIDIA GeForce RTX 5080 |
@@ -44,12 +44,13 @@ device-resident residual building block. The separate opt-in Engine parity
 slice below calls it, but the normal Engine path does not; therefore this
 evidence must not be used as a GPU performance result.
 
-Kernels revision `cf10a78ab08c31142955e2b89f632b339933093c` additionally
-provides device-resident F32 row-major GEMM through dynamically loaded
-CUBLAS. Its Workhorse oracle verified the hand-computed `2×3 × 3×2` product
-`[58, 64, 139, 154]`. The implementation invokes CUBLAS through the
-equivalent column-major identity `Cᵀ = Bᵀ × Aᵀ`, avoiding a host-side
-transpose. CUBLAS is isolated under
+Kernels revision `94391c4e25a677b0bc44634c6fa4b3afa9342358` additionally provides device-resident F32
+row-major GEMM through dynamically loaded CUBLAS and a native linear
+epilogue. Its Workhorse oracle verified the hand-computed `2×3 × 3×2`
+product `[58, 64, 139, 154]`, followed by `(C + bias) × gamma` with
+`bias=[1,-4]`, `gamma=[0.5,2]`, yielding `[29.5,120,70,300]` exactly. The
+implementation invokes CUBLAS through the equivalent column-major identity
+`Cᵀ = Bᵀ × Aᵀ`, avoiding a host-side transpose. CUBLAS is isolated under
 `/var/roothome/vestra-cuda-deps/nvidia/cublas/lib` alongside NVRTC.
 
 The first Engine-owned fixed-shape CUDA operator is recorded below. Every
