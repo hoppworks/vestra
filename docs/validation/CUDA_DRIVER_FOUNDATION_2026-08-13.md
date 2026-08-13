@@ -69,7 +69,7 @@ DA3-BASE shape parity fixture before it is used by inference.
 
 ## Engine integration evidence
 
-Vestra Engine revision `df6f8038e8bd1e44fcb904be0a07775c551a4439` enables
+Vestra Engine revision `7f82c3bd2ad87f8663ffa065217c609b7dfe381e` enables
 `cuda-residual-oracle`. Its integration test loads the same BASE-F32 GGUF
 twice, executes CPU inference once and an inference whose 24 transformer
 residual additions run through native CUDA once, then compares depth and
@@ -96,3 +96,34 @@ The same fixture also covers `infer_multi_view_ordered` with distinct
 `canyon.jpg` and `desk.jpg` views. It compares every returned depth and
 confidence map under the same numerical bounds, exercising PR #2's real
 local/global multi-view backbone control flow with CUDA residual execution.
+
+## Cached CUDA MLP oracle
+
+The same opt-in Engine feature now exposes a distinct `cuda_mlp_oracle`.
+During enablement it uploads and retains FC1/FC2 weights, biases, and FC2
+LayerScale values for all 12 DA3-BASE blocks. For every MLP branch it uploads
+the CPU LayerNorm output once, performs FC1 → bias/scale → exact-erf GELU →
+FC2 → bias/LayerScale entirely on the GPU, and downloads only the FC2 result
+for the still-CPU residual. Thus the 865×3072 FC1 activation never crosses
+PCIe. This is an integration/parity result, not an end-to-end GPU performance
+claim: LayerNorm, attention, and residuals still run on CPU in this mode.
+
+On the Workhorse, both strict real-model gates passed with depth and
+confidence MAE `<= 1e-6` and maximum absolute error `<= 1e-5`:
+
+```sh
+LD_LIBRARY_PATH=/var/roothome/vestra-cuda-deps/nvidia/cuda_nvrtc/lib:/var/roothome/vestra-cuda-deps/nvidia/cublas/lib \
+VESTRA_CUDA_MODEL=/var/roothome/da3-bench/models/depth-anything-base-f32.gguf \
+VESTRA_CUDA_IMAGE=/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg \
+RUSTFLAGS='-C target-cpu=znver5' \
+cargo test -p vestra-engine --features cuda-residual-oracle \
+  cuda_mlp_slice_matches_cpu_depth_and_confidence -- --nocapture
+```
+
+The ordered two-view gate used `canyon.jpg:desk.jpg` through
+`VESTRA_CUDA_IMAGES` and passed in 37.80 seconds in a debug test build:
+
+```sh
+cargo test -p vestra-engine --features cuda-residual-oracle \
+  cuda_mlp_slice_matches_cpu_ordered_multiview -- --nocapture
+```
