@@ -179,3 +179,31 @@ This closes the isolated numerical gate for the attention input preparation.
 It does not yet make CUDA attention an Engine execution path; that next slice
 must retain Q, K, V, Q/K normalization, RoPE, attention, and attention
 projection on the device before it can make an end-to-end speed claim.
+
+## Cached CUDA attention Engine slice
+
+Vestra Engine revision `b4a8f50` wires the complete qualified attention
+branch into inference: cached QKV weights, device QKV-to-head-major layout,
+Q/K normalization and RoPE, online attention, device head-major-to-token
+layout, and cached output projection. The CPU LayerNorm-1 input and the
+projected branch output remain explicit host boundaries; therefore this is a
+numerical integration gate and not a CUDA throughput claim.
+
+The actual single-view `mountains.jpg` gate and the ordered PR #2 multi-view
+gate with `canyon.jpg:desk.jpg` both passed on the RTX 5080 under the locked
+depth/confidence thresholds (MAE `<= 1e-6`, maximum absolute error `<= 1e-5`).
+The multi-view run exercised local per-view attention and flattened global
+attention and completed in 38.83 seconds in a debug test build:
+
+```sh
+LD_LIBRARY_PATH=/var/roothome/vestra-cuda-deps/nvidia/cuda_nvrtc/lib:/var/roothome/vestra-cuda-deps/nvidia/cublas/lib \
+VESTRA_CUDA_MODEL=/var/roothome/da3-bench/models/depth-anything-base-f32.gguf \
+VESTRA_CUDA_IMAGES=/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/canyon.jpg:/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/desk.jpg \
+RUSTFLAGS='-C target-cpu=znver5' \
+cargo test -p vestra-engine --features cuda-residual-oracle \
+  cuda_attention_slice_matches_cpu_ordered_multiview -- --nocapture
+```
+
+The next integration step is a single device-resident transformer-block
+executor that combines the qualified attention and MLP branches with both
+residual additions, eliminating their current host hand-off.
