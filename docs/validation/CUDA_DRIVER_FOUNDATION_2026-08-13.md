@@ -254,9 +254,9 @@ cargo test --lib --features cuda \
   driver_round_trip_preserves_f32_values_when_explicitly_enabled -- --nocapture
 ```
 
-Vestra Engine revision `88ebe75` consumes the kernel through a cached CUBLAS
-patch-projection plan, then uses the shared CPU CLS/register/position-token
-assembly. It passed both a single-image and the ordered `canyon.jpg:desk.jpg`
+Vestra Engine revision `388167c` consumes the kernel through a cached CUBLAS
+patch-projection plan and assembles DA3-BASE's CLS/position token sequence on
+the GPU before its temporary download to the CPU backbone. It passed both a single-image and the ordered `canyon.jpg:desk.jpg`
 multiview end-to-end Depth/Confidence oracle on the RTX 5080. CUBLAS changes
 the F32 reduction tree, so this narrow seam has its own explicit bound: MAE
 `<= 5e-6`, maximum absolute error `<= 1e-4`. This remains far tighter than
