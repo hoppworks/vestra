@@ -19,6 +19,12 @@ F32 host-to-device/device-to-host transfers. This was exercised on the
 Workhorse GPU. It also carries a device-resident F32 residual-add kernel, but
 the Engine does not yet route inference through it.
 
+Engine revision `c07e08dbf03b17d19bd0b341d21da228283ec156` adds an opt-in
+`cuda-residual-oracle` feature. It executes both residual additions in every
+transformer block through that native CUDA kernel, with explicit activation
+uploads/downloads. The mode exists to establish Engine integration and F32
+parity; it is deliberately not exposed as a performance backend.
+
 Calling the C++ PR implementation, a Python CLI, or a GPU viewer from Rust
 would make a useful demo but would not establish a native Vestra CUDA backend
 or support a fair Vestra-vs-reference speed claim.

@@ -44,6 +44,31 @@ device-resident residual building block. No Engine inference operation
 currently calls it; therefore this evidence must not be used as a GPU
 inference or performance result.
 
-The next implementation gate is an Engine-owned backend selection path plus
-one fixed-shape CUDA operator. That operator must have a CPU F32 oracle and
-the locked DA3-BASE shape parity fixture before it is used by inference.
+The first Engine-owned fixed-shape CUDA operator is recorded below. Every
+subsequent CUDA operator must likewise have a CPU F32 oracle and the locked
+DA3-BASE shape parity fixture before it is used by inference.
+
+## Engine integration evidence
+
+Vestra Engine revision `c07e08dbf03b17d19bd0b341d21da228283ec156` enables
+`cuda-residual-oracle`. Its integration test loads the same BASE-F32 GGUF
+twice, executes CPU inference once and an inference whose 24 transformer
+residual additions run through native CUDA once, then compares depth and
+confidence.
+
+On the Workhorse it passed for `mountains.jpg` with the thresholds MAE
+`<= 1e-6` and maximum absolute error `<= 1e-5` for both outputs:
+
+```sh
+LD_LIBRARY_PATH=/var/roothome/vestra-cuda-deps/nvidia/cuda_nvrtc/lib \
+VESTRA_CUDA_MODEL=/var/roothome/da3-bench/models/depth-anything-base-f32.gguf \
+VESTRA_CUDA_IMAGE=/var/roothome/da3-bench/src/depth-anything.cpp/assets/samples/mountains.jpg \
+RUSTFLAGS='-C target-cpu=znver5' \
+cargo test -p vestra-engine --features cuda-residual-oracle \
+  cuda_residual_slice_matches_cpu_depth_and_confidence -- --nocapture
+```
+
+The test took 19.79 seconds in a debug test build. That is expected and is
+not a timing study: each residual currently crosses PCIe in both directions.
+The next CUDA slice must keep adjacent activations and weights resident on
+device before a GPU performance benchmark is meaningful.
