@@ -1,0 +1,17 @@
+schema = 1
+captured_at = "2026-08-13"
+
+[engine]
+repository = "https://github.com/hoppworks/vestra-engine"
+revision = "420d167ab3a99d5acd98b77aab3ee80c34514439"
+local_path = "../vestra-engine"
+
+[kernels]
+repository = "https://github.com/hoppworks/vestra-kernels"
+revision = "022b85a0d3d43802963ba5a76ec5caabfcceca06"
+local_path = "../vestra-kernels"
+
+[cpp_oracle]
+repository = "https://github.com/localai-org/depth-anything.cpp"
+pull_request = 2
+revision = "f56e9be43a22c12ef575584d2fa57a6a5d5be7ae"

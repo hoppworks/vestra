@@ -1,0 +1,7 @@
+/target/
+Cargo.lock
+.DS_Store
+*.vestra/
+.vestra-cache/
+__pycache__/
+*.pyc
