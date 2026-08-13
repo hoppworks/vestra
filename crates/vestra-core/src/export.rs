@@ -130,6 +130,58 @@ pub fn export_fused_glb(
     Ok(count)
 }
 
+/// Writes the compact 32-byte-per-primitive `antimatter15` `.splat` layout:
+/// position, anisotropic scale, RGBA, then a unit quaternion. Vestra maps each
+/// measured surfel radius and normal into a thin oriented ellipsoid; this is a
+/// visualization export, never a claim that the world was Gaussian-trained.
+pub fn export_fused_splat(
+    bundle: &SceneBundle,
+    output: impl AsRef<Path>,
+) -> Result<usize, ExportError> {
+    let manifest = bundle.manifest()?;
+    let hash = manifest
+        .fused_chunk_hash
+        .ok_or(ExportError::MissingFusedWorld)?;
+    let fused = bundle.read_fused_scene(&hash)?;
+    let mut bytes = Vec::with_capacity(fused.points.len() * 32);
+    for point in &fused.points {
+        for value in point.position {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        let radius = point.radius.max(1e-6);
+        for value in [radius, radius, radius * 0.1] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&point.color_srgb);
+        bytes.push((point.confidence.clamp(0.0, 1.0) * 255.0).round() as u8);
+        bytes.extend_from_slice(&quaternion_from_z_axis(point.normal).map(unit_to_byte));
+    }
+    fs::write(output, bytes)?;
+    Ok(fused.points.len())
+}
+
+fn quaternion_from_z_axis(normal: [f32; 3]) -> [f32; 4] {
+    let length = normal.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if !length.is_finite() || length < 1e-6 {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    let [x, y, z] = normal.map(|value| value / length);
+    if z < -0.999_999 {
+        return [1.0, 0.0, 0.0, 0.0];
+    }
+    let quaternion = [-y, x, 0.0, 1.0 + z];
+    let q_length = quaternion
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+    quaternion.map(|value| value / q_length)
+}
+
+fn unit_to_byte(value: f32) -> u8 {
+    ((value.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255.0).round() as u8
+}
+
 fn pad_binary(bytes: &mut Vec<u8>) {
     while !bytes.len().is_multiple_of(4) {
         bytes.push(0);
@@ -235,6 +287,45 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(json).unwrap();
         assert_eq!(json["meshes"][0]["primitives"][0]["mode"], 0);
         assert_eq!(json["extras"]["vestra_scale"], "relative");
+        fs::remove_file(output).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn splat_export_has_one_compact_oriented_surfel_per_point() {
+        let root = std::env::temp_dir().join(format!("vestra-splat-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let output = root.with_extension("splat");
+        let bundle = SceneBundle::create(
+            &root,
+            SceneProvenance {
+                engine_revision: "test".into(),
+                kernel_revision: "test".into(),
+                model_fingerprint: "test".into(),
+                settings_fingerprint: "test".into(),
+            },
+        )
+        .unwrap();
+        bundle
+            .write_fused_scene(&FusedSceneChunk {
+                alignments: Vec::new(),
+                pose_graph: None,
+                voxel_size: 0.1,
+                points: vec![FusedPoint {
+                    position: [1.0, 2.0, 3.0],
+                    normal: [0.0, 0.0, 1.0],
+                    color_srgb: [4, 5, 6],
+                    confidence: 0.7,
+                    radius: 0.2,
+                    contributors: 3,
+                }],
+            })
+            .unwrap();
+        assert_eq!(export_fused_splat(&bundle, &output).unwrap(), 1);
+        let bytes = fs::read(&output).unwrap();
+        assert_eq!(bytes.len(), 32);
+        assert_eq!(f32::from_le_bytes(bytes[0..4].try_into().unwrap()), 1.0);
+        assert_eq!(&bytes[24..27], &[4, 5, 6]);
         fs::remove_file(output).unwrap();
         fs::remove_dir_all(root).unwrap();
     }

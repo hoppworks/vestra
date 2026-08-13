@@ -15,7 +15,7 @@ pub mod scene;
 pub mod stitch;
 pub mod video;
 
-pub use export::{ExportError, export_fused_glb, export_fused_ply};
+pub use export::{ExportError, export_fused_glb, export_fused_ply, export_fused_splat};
 pub use geometry::{
     BackprojectionError, BackprojectionSettings, CameraCalibration, MeasuredPoint, MeasuredView,
     backproject_measured_view,

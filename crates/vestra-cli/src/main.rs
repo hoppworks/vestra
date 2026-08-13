@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use vestra_core::{
     BackprojectionSettings, ReconstructionSettings, SceneBundle, SceneProvenance,
     VideoExtractionSettings, WindowSettings, export_fused_glb, export_fused_ply,
-    extract_video_frames, fuse_scene_bundle, plan_windows, reconstruct_frames,
+    export_fused_splat, extract_video_frames, fuse_scene_bundle, plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
 use vestra_studio::serve;
@@ -74,6 +74,13 @@ enum Command {
     },
     /// Export the fused relative-scale world as a glTF 2.0 point-cloud GLB.
     ExportGlb {
+        #[arg(long)]
+        scene: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Export the fused relative-scale world as compact oriented `.splat` surfels.
+    ExportSplat {
         #[arg(long)]
         scene: PathBuf,
         #[arg(long)]
@@ -240,6 +247,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 serde_json::json!({
                     "bundle": bundle.root(),
                     "format": "glb/gltf-2.0-points",
+                    "output": output,
+                    "points": points,
+                    "scale": "relative",
+                })
+            );
+        }
+        Command::ExportSplat { scene, output } => {
+            let bundle = SceneBundle::open(scene)?;
+            let points = export_fused_splat(&bundle, &output)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "bundle": bundle.root(),
+                    "format": "splat/antimatter15",
                     "output": output,
                     "points": points,
                     "scale": "relative",

@@ -172,6 +172,14 @@ For a glTF 2.0 point-cloud asset (positions, normals, and vertex colors), use:
 cargo run -p vestra-cli -- export-glb --scene room.vestra --output room.glb
 ```
 
+For compact oriented surfels compatible with the common 32-byte `.splat`
+layout, use `export-splat`. This is a visualization of measured surfels, not
+Gaussian-splat training or generated geometry.
+
+```bash
+cargo run -p vestra-cli -- export-splat --scene room.vestra --output room.splat
+```
+
 Each new surfel carries a world-space normal estimated from its local depth
 stencil. Fused normals are confidence-weighted; missing normals in older
 bundles are treated as unknown for backward compatibility.
