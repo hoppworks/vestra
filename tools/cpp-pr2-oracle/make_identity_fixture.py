@@ -20,20 +20,25 @@ def write_fixture(path: Path) -> None:
     extrinsics = (1.0, 0.0, 0.0, 0.0,
                   0.0, 1.0, 0.0, 0.0,
                   0.0, 0.0, 1.0, 0.0)
+    window_starts = (0, 2)
     with path.open("wb") as output:
         output.write(b"VPS1")
-        output.write(struct.pack("<IIIIII d f I", 1, frame_count, height, width,
+        output.write(struct.pack("<IIIIII d f I I", 2, frame_count, height, width,
                                  chunk, overlap, confidence_percentile,
-                                 point_size, min_overlap))
-        for frame in range(frame_count):
-            output.write(struct.pack("<9f", *intrinsics))
-            output.write(struct.pack("<12f", *extrinsics))
-            output.write(struct.pack(f"<{height * width}f", *([2.0] * (height * width))))
-            output.write(struct.pack(f"<{height * width}f", *([1.0] * (height * width))))
-            rgb = bytearray()
-            for pixel in range(height * width):
-                rgb.extend(((frame * 53) % 256, (pixel * 17) % 256, 127))
-            output.write(rgb)
+                                 point_size, min_overlap, len(window_starts)))
+        for start in window_starts:
+            views = min(chunk, frame_count - start)
+            output.write(struct.pack("<I", views))
+            for offset in range(views):
+                frame = start + offset
+                output.write(struct.pack("<9f", *intrinsics))
+                output.write(struct.pack("<12f", *extrinsics))
+                output.write(struct.pack(f"<{height * width}f", *([2.0] * (height * width))))
+                output.write(struct.pack(f"<{height * width}f", *([1.0] * (height * width))))
+                rgb = bytearray()
+                for pixel in range(height * width):
+                    rgb.extend(((frame * 53) % 256, (pixel * 17) % 256, 127))
+                output.write(rgb)
 
 
 if __name__ == "__main__":

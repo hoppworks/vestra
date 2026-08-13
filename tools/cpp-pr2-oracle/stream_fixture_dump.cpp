@@ -1,5 +1,5 @@
 // Model-free oracle for the exact PR #2 streaming stitcher.  It reads
-// precomputed per-frame DA3 outputs and invokes da::stream_points_core, so a
+// precomputed window-scoped DA3 outputs and invokes da::stream_points_core, so a
 // Vestra fixture can distinguish geometry/stitching differences from inference
 // differences.  The binary format is documented in README.md next to this file.
 #include "stream.hpp"
@@ -15,7 +15,7 @@
 
 namespace {
 
-constexpr std::uint32_t kFixtureVersion = 1;
+constexpr std::uint32_t kFixtureVersion = 2;
 constexpr std::uint32_t kOutputVersion = 1;
 constexpr char kFixtureMagic[4] = {'V', 'P', 'S', '1'};
 constexpr char kOutputMagic[4] = {'V', 'P', 'O', '1'};
@@ -59,19 +59,19 @@ bool checked_plane(std::uint32_t h, std::uint32_t w, std::size_t& plane) {
 }
 
 bool read_fixture(const std::string& path, std::uint32_t& frames, std::uint32_t& h, std::uint32_t& w,
-                  da::StreamParams& params, std::vector<FixtureFrame>& output, std::string& error) {
+                  da::StreamParams& params, std::vector<std::vector<FixtureFrame>>& output, std::string& error) {
     std::ifstream in(path, std::ios::binary);
     if (!in) { error = "cannot open fixture"; return false; }
     char magic[4]{};
     std::uint32_t version = 0;
-    std::uint32_t chunk = 0, overlap = 0, min_overlap = 0;
+    std::uint32_t chunk = 0, overlap = 0, min_overlap = 0, window_count = 0;
     double conf_pct = 0;
     float point_size = 0;
     if (!in.read(magic, 4) || std::string(magic, 4) != std::string(kFixtureMagic, 4) ||
         !read_exact(in, version) || version != kFixtureVersion ||
         !read_exact(in, frames) || !read_exact(in, h) || !read_exact(in, w) ||
         !read_exact(in, chunk) || !read_exact(in, overlap) || !read_exact(in, conf_pct) ||
-        !read_exact(in, point_size) || !read_exact(in, min_overlap)) {
+        !read_exact(in, point_size) || !read_exact(in, min_overlap) || !read_exact(in, window_count)) {
         error = "invalid VPS1 header"; return false;
     }
     std::size_t plane = 0;
@@ -87,13 +87,29 @@ bool read_fixture(const std::string& path, std::uint32_t& frames, std::uint32_t&
     params.global_budget = 0;
     params.icp_refine = false;
     params.loop_close = false;
-    output.resize(frames);
-    for (FixtureFrame& frame : output) {
-        if (!in.read(reinterpret_cast<char*>(frame.view.intr.data()), sizeof(float) * frame.view.intr.size()) ||
-            !in.read(reinterpret_cast<char*>(frame.view.ext.data()), sizeof(float) * frame.view.ext.size()) ||
-            !read_vector(in, frame.view.depth, plane) || !read_vector(in, frame.view.conf, plane) ||
-            !read_vector(in, frame.rgb, plane * 3)) {
-            error = "truncated VPS1 frame payload"; return false;
+    const std::uint32_t step = chunk - overlap;
+    std::uint32_t expected_windows = 0;
+    for (std::uint32_t w0 = 0; w0 < frames; w0 += step) {
+        ++expected_windows;
+        if (w0 + chunk >= frames) break;
+    }
+    if (window_count != expected_windows) { error = "VPS1 window count does not match schedule"; return false; }
+    output.resize(window_count);
+    for (std::uint32_t window = 0; window < window_count; ++window) {
+        std::uint32_t view_count = 0;
+        if (!read_exact(in, view_count)) { error = "truncated VPS1 window header"; return false; }
+        const std::uint32_t w0 = window * step;
+        const std::uint32_t expected_views = std::min(chunk, frames - w0);
+        if (view_count != expected_views) { error = "VPS1 view count does not match schedule"; return false; }
+        std::vector<FixtureFrame>& views = output[window];
+        views.resize(view_count);
+        for (FixtureFrame& frame : views) {
+            if (!in.read(reinterpret_cast<char*>(frame.view.intr.data()), sizeof(float) * frame.view.intr.size()) ||
+                !in.read(reinterpret_cast<char*>(frame.view.ext.data()), sizeof(float) * frame.view.ext.size()) ||
+                !read_vector(in, frame.view.depth, plane) || !read_vector(in, frame.view.conf, plane) ||
+                !read_vector(in, frame.rgb, plane * 3)) {
+                error = "truncated VPS1 view payload"; return false;
+            }
         }
     }
     if (in.peek() != std::char_traits<char>::eof()) { error = "trailing VPS1 bytes"; return false; }
@@ -136,7 +152,7 @@ int main(int argc, char** argv) {
     }
     std::uint32_t frames = 0, h = 0, w = 0;
     da::StreamParams params;
-    std::vector<FixtureFrame> fixture;
+    std::vector<std::vector<FixtureFrame>> fixture;
     std::string error;
     if (!read_fixture(argv[1], frames, h, w, params, fixture, error)) {
         std::cerr << "fixture error: " << error << '\n'; return 65;
@@ -146,9 +162,13 @@ int main(int argc, char** argv) {
                                          int& source_h, int& source_w, std::string&) {
         views.clear(); rgb.clear();
         source_h = static_cast<int>(h); source_w = static_cast<int>(w);
-        for (int frame = w0; frame < w1; ++frame) {
-            views.push_back(fixture.at(static_cast<std::size_t>(frame)).view);
-            rgb.push_back(fixture.at(static_cast<std::size_t>(frame)).rgb);
+        const int step = params.chunk_size - params.overlap;
+        const int window = w0 / step;
+        const std::vector<FixtureFrame>& supplied = fixture.at(static_cast<std::size_t>(window));
+        if (supplied.size() != static_cast<std::size_t>(w1 - w0)) return false;
+        for (const FixtureFrame& frame : supplied) {
+            views.push_back(frame.view);
+            rgb.push_back(frame.rgb);
         }
         return true;
     };

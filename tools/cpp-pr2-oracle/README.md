@@ -23,24 +23,28 @@ running a comparison.
 
 ## Fixture (`VPS1`)
 
-All integers and floats are little-endian. Frames are serialized in global video
-order. `depth`, `confidence`, and `RGB` use the exact same processed raster, so
-pixel `(u,v)` is a valid overlap correspondence across windows.
+All integers and floats are little-endian. `depth`, `confidence`, and `RGB`
+use the exact same processed raster, so pixel `(u,v)` is a valid overlap
+correspondence across windows. Payloads are window-scoped: an overlapping
+source frame is re-inferred in each DA3 multi-view window and must therefore
+not be represented by one global prediction.
 
 | Field | Type |
 | --- | --- |
 | magic | 4 bytes: `VPS1` |
-| version | `u32`, currently 1 |
+| version | `u32`, currently 2 |
 | frame count, height, width | three `u32` |
 | chunk size, overlap | two `u32` |
 | confidence percentile | `f64` |
 | point-size multiplier | `f32` |
 | minimum overlap points | `u32` |
-| per frame intrinsics | 9 × `f32`, row-major 3×3 |
-| per frame extrinsics | 12 × `f32`, row-major W2C 3×4 |
-| per frame depth | `height × width` × `f32` |
-| per frame confidence | `height × width` × `f32` |
-| per frame colour | `height × width × 3` bytes, RGB row-major |
+| window count | `u32`, must equal the schedule-derived count |
+| per window view count | `u32`, must equal that window's length |
+| per window/view intrinsics | 9 × `f32`, row-major 3×3 |
+| per window/view extrinsics | 12 × `f32`, row-major W2C 3×4 |
+| per window/view depth | `height × width` × `f32` |
+| per window/view confidence | `height × width` × `f32` |
+| per window/view colour | `height × width × 3` bytes, RGB row-major |
 
 The harness intentionally locks `global_budget=0`, `icp_refine=false`,
 `loop_close=false`, and `metric=false`. These belong to later oracle tiers. The

@@ -10,7 +10,7 @@ use crate::WindowSettings;
 
 const FIXTURE_MAGIC: [u8; 4] = *b"VPS1";
 const OUTPUT_MAGIC: [u8; 4] = *b"VPO1";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CppPr2Frame {
@@ -24,13 +24,16 @@ pub struct CppPr2Frame {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CppPr2Fixture {
+    pub frame_count: usize,
     pub width: usize,
     pub height: usize,
     pub windows: WindowSettings,
     pub confidence_percentile: f64,
     pub point_size: f32,
     pub minimum_overlap_points: usize,
-    pub frames: Vec<CppPr2Frame>,
+    /// One ordered inference result set per multi-view window. Overlap views
+    /// are intentionally repeated because DA3 re-infers them per window.
+    pub window_views: Vec<Vec<CppPr2Frame>>,
 }
 
 /// Raw `da::StreamCloud` output from the exact C++ stitcher, before optional
@@ -77,7 +80,7 @@ impl CppPr2Fixture {
         writer
             .write_all(&FIXTURE_MAGIC)
             .and_then(|()| write_u32(writer, VERSION))
-            .and_then(|()| write_u32(writer, self.frames.len() as u32))
+            .and_then(|()| write_u32(writer, self.frame_count as u32))
             .and_then(|()| write_u32(writer, self.height as u32))
             .and_then(|()| write_u32(writer, self.width as u32))
             .and_then(|()| write_u32(writer, self.windows.chunk_size as u32))
@@ -85,17 +88,21 @@ impl CppPr2Fixture {
             .and_then(|()| write_f64(writer, self.confidence_percentile))
             .and_then(|()| write_f32(writer, self.point_size))
             .and_then(|()| write_u32(writer, self.minimum_overlap_points as u32))
+            .and_then(|()| write_u32(writer, self.window_views.len() as u32))
             .map_err(io_error)?;
-        for frame in &self.frames {
-            for value in frame.intrinsics {
-                write_f32(writer, value).map_err(io_error)?;
+        for views in &self.window_views {
+            write_u32(writer, views.len() as u32).map_err(io_error)?;
+            for frame in views {
+                for value in frame.intrinsics {
+                    write_f32(writer, value).map_err(io_error)?;
+                }
+                for value in frame.world_to_camera {
+                    write_f32(writer, value).map_err(io_error)?;
+                }
+                write_f32s(writer, &frame.depth)?;
+                write_f32s(writer, &frame.confidence)?;
+                writer.write_all(&frame.rgb_hwc_u8).map_err(io_error)?;
             }
-            for value in frame.world_to_camera {
-                write_f32(writer, value).map_err(io_error)?;
-            }
-            write_f32s(writer, &frame.depth)?;
-            write_f32s(writer, &frame.confidence)?;
-            writer.write_all(&frame.rgb_hwc_u8).map_err(io_error)?;
         }
         Ok(())
     }
@@ -104,7 +111,8 @@ impl CppPr2Fixture {
         let Some(plane) = self.width.checked_mul(self.height) else {
             return Err(CppPr2OracleError::InvalidHeader);
         };
-        if self.frames.is_empty()
+        let expected_window_lengths = expected_window_lengths(self.frame_count, self.windows);
+        if self.frame_count == 0
             || self.windows.chunk_size < 2
             || self.windows.overlap >= self.windows.chunk_size
             || !self.confidence_percentile.is_finite()
@@ -114,26 +122,49 @@ impl CppPr2Fixture {
             || self.minimum_overlap_points > u32::MAX as usize
             || self.width > u32::MAX as usize
             || self.height > u32::MAX as usize
-            || self.frames.len() > u32::MAX as usize
+            || self.frame_count > u32::MAX as usize
+            || self.window_views.len() > u32::MAX as usize
             || self.windows.chunk_size > u32::MAX as usize
             || self.windows.overlap > u32::MAX as usize
             || plane.checked_mul(3).is_none()
         {
             return Err(CppPr2OracleError::InvalidHeader);
         }
-        if self.frames.iter().any(|frame| {
-            frame.depth.len() != plane
-                || frame.confidence.len() != plane
-                || frame.rgb_hwc_u8.len() != plane * 3
-                || !frame.intrinsics.iter().all(|value| value.is_finite())
-                || !frame.world_to_camera.iter().all(|value| value.is_finite())
-                || !frame.depth.iter().all(|value| value.is_finite())
-                || !frame.confidence.iter().all(|value| value.is_finite())
-        }) {
+        if self.window_views.len() != expected_window_lengths.len()
+            || self
+                .window_views
+                .iter()
+                .zip(expected_window_lengths)
+                .any(|(views, expected)| views.len() != expected)
+            || self.window_views.iter().flatten().any(|frame| {
+                frame.depth.len() != plane
+                    || frame.confidence.len() != plane
+                    || frame.rgb_hwc_u8.len() != plane * 3
+                    || !frame.intrinsics.iter().all(|value| value.is_finite())
+                    || !frame.world_to_camera.iter().all(|value| value.is_finite())
+                    || !frame.depth.iter().all(|value| value.is_finite())
+                    || !frame.confidence.iter().all(|value| value.is_finite())
+            })
+        {
             return Err(CppPr2OracleError::InconsistentPayload);
         }
         Ok(())
     }
+}
+
+fn expected_window_lengths(frame_count: usize, settings: WindowSettings) -> Vec<usize> {
+    if frame_count == 0 || settings.chunk_size < 2 || settings.overlap >= settings.chunk_size {
+        return Vec::new();
+    }
+    let step = settings.chunk_size - settings.overlap;
+    let mut lengths = Vec::new();
+    for start in (0..frame_count).step_by(step) {
+        lengths.push((frame_count - start).min(settings.chunk_size));
+        if start + settings.chunk_size >= frame_count {
+            break;
+        }
+    }
+    lengths
 }
 
 impl CppPr2StreamOutput {
@@ -280,6 +311,7 @@ mod tests {
             rgb_hwc_u8: vec![2; 12],
         };
         CppPr2Fixture {
+            frame_count: 3,
             width: 2,
             height: 2,
             windows: WindowSettings {
@@ -289,7 +321,10 @@ mod tests {
             confidence_percentile: 55.0,
             point_size: 1.2,
             minimum_overlap_points: 3,
-            frames: vec![frame.clone(), frame],
+            window_views: vec![
+                vec![frame.clone(), frame.clone()],
+                vec![frame.clone(), frame],
+            ],
         }
     }
 
@@ -298,9 +333,9 @@ mod tests {
         let mut bytes = Vec::new();
         fixture().write_vps1(&mut bytes).unwrap();
         assert_eq!(&bytes[..4], b"VPS1");
-        assert_eq!(&bytes[4..8], &1_u32.to_le_bytes());
+        assert_eq!(&bytes[4..8], &2_u32.to_le_bytes());
         let mut invalid = fixture();
-        invalid.frames[0].depth.pop();
+        invalid.window_views[0][0].depth.pop();
         assert_eq!(
             invalid.write_vps1(&mut Vec::new()),
             Err(CppPr2OracleError::InconsistentPayload)

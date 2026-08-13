@@ -7,6 +7,11 @@ record establishes a reproducible, model-free executable boundary around the
 actual `stream_points_core` implementation used by the reference project. The
 next milestone is a Vestra-generated fixture and a pre-voxel comparator.
 
+The original bootstrap interchange was corrected before it was used for a
+model-derived comparison: `VPS1` v2 stores outputs **per inference window**,
+not only per global frame. That distinction is required because DA3 computes
+overlap frames again in each multi-view window, with different context.
+
 ## Locked reference
 
 - Reference: `localai-org/depth-anything.cpp` PR #2 head
@@ -40,9 +45,9 @@ The final oracle output was:
 VPO1 points=48 windows=2 warnings=0 loops=0
 ```
 
-The fixture is four 3×4 calibrated plane views, with a 3-frame window and a
-one-frame overlap. It proves the versioned binary contract executes a valid
-identity Sim3 seam and preserves first-owner frame emission. It does **not**
+The fixture is four 3×4 calibrated plane views, with two 3-frame windows and a
+one-frame overlap. It proves the v2 window-scoped binary contract executes a
+valid identity Sim3 seam and preserves first-owner frame emission. It does **not**
 prove behaviour on model-generated geometry, translations, noise, failure
 seams, loop closures, ICP, TSDF, or metric scale.
 
