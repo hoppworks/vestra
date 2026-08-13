@@ -37,7 +37,7 @@ vestra reconstruct \
 - decoded frames: 4
 - measured windows: 2 (`[0..3)`, `[2..4)`)
 - measured points: 880
-- fused points: 697
+- fused points: 701
 - alignment reports: 1
 - fused voxel size: `0.0050612893` relative units
 - Studio served both `/manifest.json` and the content-addressed fused chunk
@@ -45,6 +45,10 @@ vestra reconstruct \
 
 The resulting manifest contains two immutable raw chunk hashes plus one
 `fused_chunk_hash`. This proves fusion does not overwrite evidence.
+
+The same run also exercised the bounded point-to-plane seam refinement added
+in Vestra commit `24e4345`. It is a wiring check only: repeated imagery does
+not provide an independent accuracy assessment of that refinement.
 
 ## Limits
 
