@@ -64,6 +64,67 @@ impl SimilarityTransform {
                 + self.rotation[8] * vector[2],
         ])
     }
+
+    /// Returns `self ∘ inner`: apply `inner` first, then this transform.
+    #[must_use]
+    pub fn compose(self, inner: Self) -> Self {
+        let rotation = matrix_mul_f32(self.rotation, inner.rotation);
+        let rotated_translation = matrix_vec_f32(self.rotation, inner.translation);
+        Self {
+            scale: self.scale * inner.scale,
+            rotation,
+            translation: [
+                rotated_translation[0] * self.scale + self.translation[0],
+                rotated_translation[1] * self.scale + self.translation[1],
+                rotated_translation[2] * self.scale + self.translation[2],
+            ],
+        }
+    }
+
+    /// Returns the exact inverse when the similarity scale is finite and
+    /// positive. Invalid transforms are never silently inverted.
+    pub fn inverse(self) -> Option<Self> {
+        if !self.scale.is_finite() || self.scale <= 0.0 {
+            return None;
+        }
+        let rotation = [
+            self.rotation[0],
+            self.rotation[3],
+            self.rotation[6],
+            self.rotation[1],
+            self.rotation[4],
+            self.rotation[7],
+            self.rotation[2],
+            self.rotation[5],
+            self.rotation[8],
+        ];
+        let translated = matrix_vec_f32(rotation, self.translation);
+        Some(Self {
+            scale: self.scale.recip(),
+            rotation,
+            translation: translated.map(|value| -value / self.scale),
+        })
+    }
+}
+
+fn matrix_mul_f32(left: [f32; 9], right: [f32; 9]) -> [f32; 9] {
+    let mut out = [0.0; 9];
+    for row in 0..3 {
+        for column in 0..3 {
+            out[row * 3 + column] = (0..3)
+                .map(|inner| left[row * 3 + inner] * right[inner * 3 + column])
+                .sum();
+        }
+    }
+    out
+}
+
+fn matrix_vec_f32(matrix: [f32; 9], vector: [f32; 3]) -> [f32; 3] {
+    [
+        matrix[0] * vector[0] + matrix[1] * vector[1] + matrix[2] * vector[2],
+        matrix[3] * vector[0] + matrix[4] * vector[1] + matrix[5] * vector[2],
+        matrix[6] * vector[0] + matrix[7] * vector[1] + matrix[8] * vector[2],
+    ]
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -783,6 +844,30 @@ mod tests {
         assert_eq!(transformed[0].position, [2.0, 0.0, 0.0]);
         assert_eq!(transformed[0].radius, 0.5);
         assert_eq!(transformed[0].normal, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn similarity_composition_and_inverse_preserve_points() {
+        let quarter_turn = SimilarityTransform {
+            scale: 2.0,
+            rotation: [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            translation: [3.0, -2.0, 1.0],
+        };
+        let inner = SimilarityTransform {
+            scale: 0.5,
+            translation: [-4.0, 2.0, 0.0],
+            ..SimilarityTransform::IDENTITY
+        };
+        let point = [2.0, -1.0, 3.0];
+        let composed = quarter_turn.compose(inner);
+        assert!(
+            distance(
+                composed.apply(point),
+                quarter_turn.apply(inner.apply(point))
+            ) < 1e-5
+        );
+        let recovered = composed.inverse().unwrap().apply(composed.apply(point));
+        assert!(distance(recovered, point) < 1e-5, "{recovered:?}");
     }
 
     #[test]
