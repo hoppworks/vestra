@@ -234,3 +234,26 @@ cargo test -p vestra-engine --features cuda-residual-oracle \
 The next CUDA work is therefore not another attention variant: it is an
 entire device-resident backbone lifetime (LN1 and token ping-pong buffers)
 followed by qualified DPT/pose-head operators.
+
+## Device-side patch lowering
+
+Vestra Kernels revision `493762a` adds the first input-side building block for
+that lifetime: `patchify_nchw_f32`. It lowers an NCHW image into row-major,
+non-overlapping patch rows in the exact `[channel, patch_y, patch_x]` order
+consumed by the model's OIHW patch-projection weights. The output is ready for
+a cached CUBLAS projection and avoids a host-side im2col allocation.
+
+This is a layout-only kernel, not a CUDA speed claim and not yet wired into
+Engine inference. Its explicit 3-channel, 4×4, patch-2 oracle passed on the
+RTX 5080:
+
+```sh
+LD_LIBRARY_PATH=/var/roothome/vestra-cuda-deps/nvidia/cuda_nvrtc/lib:/var/roothome/vestra-cuda-deps/nvidia/cublas/lib \
+VESTRA_CUDA_TEST=1 RUSTFLAGS='-C target-cpu=znver5' \
+cargo test --lib --features cuda \
+  driver_round_trip_preserves_f32_values_when_explicitly_enabled -- --nocapture
+```
+
+The next dependent slice is a cached patch-projection plan followed by
+device-side CLS/position-token assembly. It must be checked against the CPU
+F32 `prepare_tokens` output before it can feed a device-resident backbone.
