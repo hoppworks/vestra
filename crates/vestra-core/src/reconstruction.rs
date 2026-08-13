@@ -6,10 +6,11 @@ use vestra_engine::Engine;
 
 use crate::{
     AlignmentReport, BackprojectionError, BackprojectionSettings, CameraCalibration, CppPr2Fixture,
-    CppPr2Frame, FrameWindow, FusedSceneChunk, MeasuredFrameChunk, MeasuredView, OwnedFrame,
-    SceneBundle, SceneBundleError, WindowMeasuredChunk, WindowSettings,
-    align_overlapping_windows_cpp_pr2, backproject_measured_view, infer_ordered_window,
-    plan_windows, stitch_measured_windows_with_settings,
+    CppPr2Frame, FrameWindow, FusedPoint, FusedSceneChunk, FusedWindowPose, MeasuredFrameChunk,
+    MeasuredView, OwnedFrame, SceneBundle, SceneBundleError, SimilarityTransform,
+    WindowMeasuredChunk, WindowSettings, align_overlapping_windows_cpp_pr2,
+    backproject_measured_view, infer_ordered_window, plan_windows,
+    stitch_measured_windows_with_settings,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -35,6 +36,17 @@ pub struct FusionProgress {
     pub chunk_hash: String,
     pub aligned_windows: usize,
     pub points: usize,
+}
+
+/// Reference-only pre-voxel emission produced from a `VPS1` fixture using the
+/// pinned PR #2 schedule, confidence threshold, first-owner rule, and
+/// sequential local-to-global transforms.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CppPr2ReferenceCloud {
+    pub alignments: Vec<AlignmentReport>,
+    pub window_poses: Vec<FusedWindowPose>,
+    pub points: Vec<FusedPoint>,
+    pub frame_owned_points: Vec<i32>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -173,6 +185,93 @@ pub fn cpp_pr2_fixture_alignment_reports(
         .windows(2)
         .map(|pair| Ok(align_overlapping_windows_cpp_pr2(&pair[1], &pair[0])?))
         .collect()
+}
+
+/// Reproduces PR #2's base pre-voxel point emission from a fixture. It exists
+/// solely for differential validation; production reconstruction retains its
+/// stricter quality policy and independently defined surfel representation.
+pub fn emit_cpp_pr2_reference_cloud(
+    fixture: &CppPr2Fixture,
+) -> Result<CppPr2ReferenceCloud, ReconstructionError> {
+    let windows = cpp_pr2_fixture_windows(fixture)?;
+    let mut alignments = Vec::with_capacity(windows.len().saturating_sub(1));
+    let mut poses = Vec::with_capacity(windows.len());
+    poses.push(SimilarityTransform::IDENTITY);
+    for pair in windows.windows(2) {
+        let report = align_overlapping_windows_cpp_pr2(&pair[1], &pair[0])?;
+        let previous = *poses.last().expect("first reference pose exists");
+        poses.push(previous.compose(report.transform));
+        alignments.push(report);
+    }
+
+    let mut points = Vec::new();
+    let mut counts = vec![0_i32; fixture.frame_count];
+    let mut window_poses = Vec::with_capacity(windows.len());
+    for ((window, views), pose) in windows.iter().zip(&fixture.window_views).zip(&poses) {
+        window_poses.push(FusedWindowPose {
+            window_index: window.window.index,
+            local_to_world: *pose,
+        });
+        let confidences = views
+            .iter()
+            .flat_map(|view| view.confidence.iter().copied())
+            .collect::<Vec<_>>();
+        let threshold = cpp_pr2_percentile(&confidences, fixture.confidence_percentile);
+        let first_local_frame = if window.window.index == 0 {
+            0
+        } else {
+            fixture.windows.overlap.min(window.views.len())
+        };
+        for (local_index, frame) in window.views.iter().enumerate().skip(first_local_frame) {
+            for point in frame
+                .points
+                .iter()
+                .filter(|point| point.confidence >= threshold)
+            {
+                let source_pixel = point.source_pixel;
+                let pixel = source_pixel[1] as usize * fixture.width + source_pixel[0] as usize;
+                let depth = views[local_index].depth[pixel];
+                let fx = views[local_index].intrinsics[0];
+                let fy = views[local_index].intrinsics[4];
+                let mut radius = 0.5 * (depth / fx + depth / fy) * fixture.point_size * pose.scale;
+                if !radius.is_finite() || radius <= 0.0 {
+                    radius = 1e-4;
+                }
+                points.push(FusedPoint {
+                    position: pose.apply(point.position),
+                    normal: [0.0, 0.0, 1.0],
+                    color_srgb: point.color_srgb,
+                    confidence: point.confidence,
+                    radius,
+                    contributors: 1,
+                });
+                let frame_index = frame.frame_index;
+                counts[frame_index] = counts[frame_index]
+                    .checked_add(1)
+                    .expect("reference point count fits i32 fixture contract");
+            }
+        }
+    }
+    Ok(CppPr2ReferenceCloud {
+        alignments,
+        window_poses,
+        points,
+        frame_owned_points: counts,
+    })
+}
+
+fn cpp_pr2_percentile(values: &[f32], percentile: f64) -> f32 {
+    debug_assert!(!values.is_empty());
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f32::total_cmp);
+    if sorted.len() == 1 {
+        return sorted[0];
+    }
+    let index = percentile / 100.0 * (sorted.len() - 1) as f64;
+    let lower = index.floor() as usize;
+    let upper = index.ceil() as usize;
+    let fraction = index - lower as f64;
+    (f64::from(sorted[lower]) + fraction * f64::from(sorted[upper] - sorted[lower])) as f32
 }
 
 fn cpp_pr2_fixture_windows(
@@ -360,6 +459,13 @@ fn rgb_at_inference_resolution(frame: &OwnedFrame, width: usize, height: usize) 
 mod tests {
     use super::*;
     use crate::{MeasuredPoint, SceneProvenance};
+
+    #[test]
+    fn cpp_pr2_percentile_uses_linear_interpolation() {
+        assert_eq!(cpp_pr2_percentile(&[1.0, 3.0, 5.0, 9.0], 0.0), 1.0);
+        assert_eq!(cpp_pr2_percentile(&[1.0, 3.0, 5.0, 9.0], 100.0), 9.0);
+        assert_eq!(cpp_pr2_percentile(&[9.0, 1.0, 5.0, 3.0], 50.0), 4.0);
+    }
 
     #[test]
     fn color_resampling_retains_direct_source_pixel_values() {

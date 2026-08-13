@@ -29,9 +29,10 @@ pub use pose_graph::{
     optimize_relative_pose_graph, pose_edge_residual,
 };
 pub use reconstruction::{
-    FusionProgress, ReconstructionError, ReconstructionProgress, ReconstructionSettings,
-    capture_cpp_pr2_fixture, cpp_pr2_fixture_alignment_reports, fuse_scene_bundle,
-    fuse_scene_bundle_with_settings, reconstruct_frames, stitch_cpp_pr2_fixture_as_vestra,
+    CppPr2ReferenceCloud, FusionProgress, ReconstructionError, ReconstructionProgress,
+    ReconstructionSettings, capture_cpp_pr2_fixture, cpp_pr2_fixture_alignment_reports,
+    emit_cpp_pr2_reference_cloud, fuse_scene_bundle, fuse_scene_bundle_with_settings,
+    reconstruct_frames, stitch_cpp_pr2_fixture_as_vestra,
 };
 pub use revisit::{
     CameraCentreDirection, RevisitProposal, RevisitProposalSettings, WindowCameraPath,

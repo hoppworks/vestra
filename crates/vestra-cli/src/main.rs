@@ -10,9 +10,10 @@ use sha2::{Digest, Sha256};
 use vestra_core::{
     BackprojectionSettings, CppPr2Fixture, CppPr2StreamOutput, ReconstructionSettings, SceneBundle,
     SceneProvenance, VideoExtractionSettings, WindowSettings, capture_cpp_pr2_fixture,
-    cpp_pr2_fixture_alignment_reports, export_camera_json, export_fused_glb, export_fused_ply,
-    export_fused_splat, extract_video_frames, fuse_scene_bundle, fused_topology,
-    load_decoded_frame_cache, load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
+    cpp_pr2_fixture_alignment_reports, emit_cpp_pr2_reference_cloud, export_camera_json,
+    export_fused_glb, export_fused_ply, export_fused_splat, extract_video_frames,
+    fuse_scene_bundle, fused_topology, load_decoded_frame_cache, load_decoded_rgb24_cache,
+    plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
 use vestra_studio::serve;
@@ -157,6 +158,13 @@ enum Command {
     OracleStitch {
         #[arg(long)]
         input: PathBuf,
+    },
+    /// Compare Vestra's PR #2-compatible pre-voxel emission with one exact VPO1 cloud.
+    OracleCompare {
+        #[arg(long)]
+        fixture: PathBuf,
+        #[arg(long)]
+        reference: PathBuf,
     },
 }
 
@@ -390,6 +398,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "frames": fixture.frame_count,
                     "windows": fixture.window_views.len(),
                     "alignments": alignments,
+                })
+            );
+        }
+        Command::OracleCompare { fixture, reference } => {
+            let mut fixture_reader = BufReader::new(File::open(fixture)?);
+            let fixture = CppPr2Fixture::read_vps1(&mut fixture_reader)?;
+            let mut reference_reader = BufReader::new(File::open(reference)?);
+            let reference = CppPr2StreamOutput::read_vpo1(&mut reference_reader)?;
+            let rust = emit_cpp_pr2_reference_cloud(&fixture)?;
+            let shared = rust.points.len().min(reference.radius.len());
+            let mut position_absolute_sum = 0.0_f64;
+            let mut position_absolute_max = 0.0_f32;
+            let mut radius_absolute_sum = 0.0_f64;
+            let mut radius_absolute_max = 0.0_f32;
+            let mut rgb_mismatches = 0_usize;
+            for (index, point) in rust.points.iter().take(shared).enumerate() {
+                for axis in 0..3 {
+                    let delta = (point.position[axis] - reference.xyz[index * 3 + axis]).abs();
+                    position_absolute_sum += f64::from(delta);
+                    position_absolute_max = position_absolute_max.max(delta);
+                }
+                let radius_delta = (point.radius - reference.radius[index]).abs();
+                radius_absolute_sum += f64::from(radius_delta);
+                radius_absolute_max = radius_absolute_max.max(radius_delta);
+                if point.color_srgb != reference.rgb[index * 3..index * 3 + 3] {
+                    rgb_mismatches += 1;
+                }
+            }
+            let position_values = shared.saturating_mul(3);
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.cpp-pr2-raw-cloud-comparison/v1",
+                    "reference_points": reference.radius.len(),
+                    "rust_points": rust.points.len(),
+                    "point_count_matches": rust.points.len() == reference.radius.len(),
+                    "reference_frame_owned_points": reference.counts,
+                    "rust_frame_owned_points": rust.frame_owned_points,
+                    "frame_owned_points_match": rust.frame_owned_points == reference.counts,
+                    "shared_ordered_points": shared,
+                    "rgb_mismatches": rgb_mismatches,
+                    "position_mae": if position_values == 0 { 0.0 } else { position_absolute_sum / position_values as f64 },
+                    "position_max_abs": position_absolute_max,
+                    "radius_mae": if shared == 0 { 0.0 } else { radius_absolute_sum / shared as f64 },
+                    "radius_max_abs": radius_absolute_max,
+                    "alignments": rust.alignments,
                 })
             );
         }
