@@ -11,7 +11,7 @@ claim.
 | Item | Value |
 | --- | --- |
 | Repository | `https://github.com/hoppworks/vestra-kernels` |
-| Revision | `f3b0df00555e8132b2878568e9d374d05f3b090d` |
+| Revision | `e078b562d6e23d3a213b6a5858f54688c9fad6d3` |
 | Feature | `cuda` |
 | CUDA binding | `cudarc 0.19.9`, Driver API with dynamic loading and NVRTC |
 | Host | Workhorse — AMD Ryzen 9 9950X, NVIDIA GeForce RTX 5080 |
@@ -44,7 +44,7 @@ device-resident residual building block. The separate opt-in Engine parity
 slice below calls it, but the normal Engine path does not; therefore this
 evidence must not be used as a GPU performance result.
 
-Kernels revision `4d969547bbe3469a89ae378b048a37f497d6b887` additionally
+Kernels revision `e078b562d6e23d3a213b6a5858f54688c9fad6d3` additionally
 provides device-resident F32 row-major GEMM through dynamically loaded
 CUBLAS, a native linear epilogue, and the same exact-erf GELU approximation
 used by the CPU path. Its Workhorse oracle verified the hand-computed `2×3 ×
@@ -63,11 +63,13 @@ the second projection input. The final exact result is `[-58,-157]`. This is
 the first verified device-resident multi-operator chain, not an end-to-end
 inference or performance claim.
 
-It also provides a fixed-geometry CUDA LayerNorm primitive: one 256-thread
-block per token row, which covers DA3-BASE's 768-wide rows. Its Workhorse
-oracle compared a two-row F32 result against the CPU LayerNorm reference with
-absolute error `<= 2e-5`. It is not yet enabled in the Engine; only the
-complete Engine parity gate can promote it into the cached MLP chain.
+It also provides two CUDA LayerNorm routes. The parallel fixed-geometry
+version uses one 256-thread block per DA3-BASE token row and has a standalone
+two-row F32 error envelope `<= 2e-5`. It is deliberately **not** used by the
+Engine: in ordered multiview it produced depth MAE `1.1371911e-6`, exceeding
+the locked `1e-6` end-to-end limit. The accepted Engine route is the strict
+CPU-order oracle: one GPU thread per row with ascending column reductions,
+which preserves the reference numerical sequence.
 
 The first Engine-owned fixed-shape CUDA operator is recorded below. Every
 subsequent CUDA operator must likewise have a CPU F32 oracle and the locked
@@ -75,7 +77,7 @@ DA3-BASE shape parity fixture before it is used by inference.
 
 ## Engine integration evidence
 
-Vestra Engine revision `7f82c3bd2ad87f8663ffa065217c609b7dfe381e` enables
+Vestra Engine revision `9046c209565419d4b89266018659ab7db9748ba2` enables
 `cuda-residual-oracle`. Its integration test loads the same BASE-F32 GGUF
 twice, executes CPU inference once and an inference whose 24 transformer
 residual additions run through native CUDA once, then compares depth and
@@ -106,13 +108,14 @@ local/global multi-view backbone control flow with CUDA residual execution.
 ## Cached CUDA MLP oracle
 
 The same opt-in Engine feature now exposes a distinct `cuda_mlp_oracle`.
-During enablement it uploads and retains FC1/FC2 weights, biases, and FC2
-LayerScale values for all 12 DA3-BASE blocks. For every MLP branch it uploads
-the CPU LayerNorm output once, performs FC1 → bias/scale → exact-erf GELU →
-FC2 → bias/LayerScale entirely on the GPU, and downloads only the FC2 result
-for the still-CPU residual. Thus the 865×3072 FC1 activation never crosses
-PCIe. This is an integration/parity result, not an end-to-end GPU performance
-claim: LayerNorm, attention, and residuals still run on CPU in this mode.
+During enablement it uploads and retains strict LayerNorm, FC1/FC2, bias, and
+LayerScale parameters for all 12 DA3-BASE blocks. For every MLP branch it
+uploads the pre-MLP token tensor once, performs strict LayerNorm → FC1 →
+bias/scale → exact-erf GELU → FC2 → bias/LayerScale entirely on the GPU, and
+downloads only the FC2 result for the still-CPU residual. Thus the normalized
+865×768 tokens and 865×3072 FC1 activation never cross PCIe. This is an
+integration/parity result, not an end-to-end GPU performance claim: attention
+and residuals still run on CPU in this mode.
 
 On the Workhorse, both strict real-model gates passed with depth and
 confidence MAE `<= 1e-6` and maximum absolute error `<= 1e-5`:
@@ -127,7 +130,8 @@ cargo test -p vestra-engine --features cuda-residual-oracle \
 ```
 
 The ordered two-view gate used `canyon.jpg:desk.jpg` through
-`VESTRA_CUDA_IMAGES` and passed in 37.80 seconds in a debug test build:
+`VESTRA_CUDA_IMAGES` and passed in 37.45 seconds in a debug test build using
+the strict CPU-order LayerNorm route:
 
 ```sh
 cargo test -p vestra-engine --features cuda-residual-oracle \
