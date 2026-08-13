@@ -57,6 +57,9 @@ render a world progressively without waiting for a single huge JSON response.
 - Job identity derives from input content and normalized settings.
 - Each window is an independently durable checkpoint.
 - A crash cannot make a partial bundle appear complete.
+- CLI `SIGINT` exits with code `130` without publishing partial work; the
+  next provenance-compatible `reconstruct --resume` run reuses only durable
+  completed windows.
 - Re-running a completed fusion is deterministic and idempotent.
 - A seam needs direct shared-pixel evidence, non-degenerate geometry, and the
   configured correspondence/inlier/scale gate; there is no identity fallback.
