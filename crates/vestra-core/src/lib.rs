@@ -6,6 +6,13 @@
 use serde::{Deserialize, Serialize};
 use vestra_engine::{Engine, EngineError, MultiViewInferOut, ViewInput};
 
+pub mod geometry;
+
+pub use geometry::{
+    BackprojectionError, BackprojectionSettings, CameraCalibration, MeasuredPoint, MeasuredView,
+    backproject_measured_view,
+};
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ScheduleError {
     #[error("chunk size must be at least 2")]
