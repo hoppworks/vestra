@@ -18,7 +18,7 @@ marketing based on this result.
 - Inputs: PR fixtures `canyon.jpg` and `desk.jpg`, each 1024×680.
 - Model output: 504×336, two views.
 - Rust compilation: `RUSTFLAGS="-C target-cpu=znver5"`, release.
-- Vestra Engine revision: `2f400888c4b825318947905385d86c02c0f4af93`.
+- Vestra Engine revision: `4c74e1a0dc85cc3db379683c8b0c0f51a7499918`.
 - Vestra Kernels safe revision: `bde198958348fcb7a0a294e0d05cd8f2f7e93c5b`.
 
 ## Commands
@@ -59,7 +59,9 @@ tile path and completed repeated S=2 runs.
 
 ## Next debugging seam
 
-Before modifying the model math, capture matching intermediate tensors after
-each of the 12 multi-view transformer blocks for both implementations. The
-first divergent block, view, and tensor (`local_x`, global `x`, feature capture,
-or camera token) is the only authorised target for the next parity fix.
+Matching post-block tensors now establish that the numerical drift begins at
+block 0 (1,328,640 values; MAE `0.00246201`; max `0.0550864`) and grows
+monotonically to block 11 (MAE `0.11778764`; max `7.1549683`). This rules out a
+late head-only or output-ordering defect. The next authorised target is the
+first block's operator sequence: LayerNorm, QKV projection, QK norm/RoPE,
+attention, attention projection, FC1/GELU, and FC2/residual.
