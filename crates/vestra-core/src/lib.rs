@@ -7,14 +7,19 @@ use serde::{Deserialize, Serialize};
 use vestra_engine::{Engine, EngineError, MultiViewInferOut, ViewInput};
 
 pub mod geometry;
+pub mod reconstruction;
 pub mod scene;
 
 pub use geometry::{
     BackprojectionError, BackprojectionSettings, CameraCalibration, MeasuredPoint, MeasuredView,
     backproject_measured_view,
 };
+pub use reconstruction::{
+    ReconstructionError, ReconstructionProgress, ReconstructionSettings, reconstruct_frames,
+};
 pub use scene::{
-    SceneBundle, SceneBundleError, SceneManifest, SceneProvenance, WindowMeasuredChunk,
+    MeasuredFrameChunk, SceneBundle, SceneBundleError, SceneManifest, SceneProvenance,
+    WindowMeasuredChunk,
 };
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

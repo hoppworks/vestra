@@ -14,7 +14,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{FrameWindow, MeasuredPoint, ScaleStatus};
+use crate::{CameraCalibration, FrameWindow, MeasuredPoint, ScaleStatus};
 
 const MANIFEST_FILE: &str = "manifest.json";
 const CHUNKS_DIRECTORY: &str = "chunks";
@@ -40,6 +40,14 @@ pub struct SceneManifest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WindowMeasuredChunk {
     pub window: FrameWindow,
+    pub views: Vec<MeasuredFrameChunk>,
+}
+
+/// Measured evidence owned by one source frame inside an overlapping window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MeasuredFrameChunk {
+    pub frame_index: usize,
+    pub camera: CameraCalibration,
     pub points: Vec<MeasuredPoint>,
 }
 
@@ -219,12 +227,19 @@ mod tests {
                 start: 0,
                 end: 2,
             },
-            points: vec![MeasuredPoint {
-                position: [1.0, 2.0, 3.0],
-                color_srgb: [4, 5, 6],
-                confidence: 2.0,
-                radius: 0.1,
-                source_pixel: [7, 8],
+            views: vec![MeasuredFrameChunk {
+                frame_index: 0,
+                camera: CameraCalibration {
+                    world_to_camera: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                    intrinsics: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                },
+                points: vec![MeasuredPoint {
+                    position: [1.0, 2.0, 3.0],
+                    color_srgb: [4, 5, 6],
+                    confidence: 2.0,
+                    radius: 0.1,
+                    source_pixel: [7, 8],
+                }],
             }],
         };
         let first_hash = bundle.write_measured_window(&chunk).unwrap();
