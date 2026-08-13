@@ -19,12 +19,14 @@ It owns a selected device context, its default ordered stream, and explicit
 F32 host-to-device/device-to-host transfers. This was exercised on the
 Workhorse GPU. It also carries a device-resident F32 residual-add kernel.
 
-Engine revision `530c7ad26e9987963300677561305b330ef6678a` adds an opt-in
+Engine revision `2ec75271c06f3d9d43b134fd10362b871f3d68a` adds an opt-in
 `cuda-residual-oracle` feature with cached patch projection and a qualified
-transformer-tail core that can accept and return device-owned tokens. The
-currently routed adapter still has explicit activation uploads/downloads. The
-mode exists to establish Engine integration and F32 parity; it is deliberately
-not exposed as a performance backend.
+single-view transformer tail that retains its token state on device from the
+first Q/K-normalized block through the final block. Ordered multi-view still
+uses the transfer-bound adapter until it owns the reference/source scheduler
+and every view buffer on device. The mode exists to establish Engine
+integration and F32 parity; it is deliberately not exposed as a performance
+backend.
 
 Calling the C++ PR implementation, a Python CLI, or a GPU viewer from Rust
 would make a useful demo but would not establish a native Vestra CUDA backend

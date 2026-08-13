@@ -270,6 +270,19 @@ adapter deliberately remains transfer-bound and parity-only. The real-model
 single-view tail gate passed after this refactor in 17.13 seconds in a debug
 test build. This is architecture validation, **not** a GPU speed result.
 
+Vestra Kernels revision `0e2f8e3` adds ordered device-to-device activation
+copies and prefix overwrites. Vestra Engine revision `2ec7527` uses them for
+the first persistent CUDA backbone route: in **single-view** DA3-BASE, tokens
+remain on the GPU from the first qualified Q/K-normalized block through the
+last block. The route retains a device snapshot only when a subsequent global
+block needs `local_x`, applies the reference camera token on device, and
+downloads only DPT capture states plus the final token state. The real-model
+`mountains.jpg` Depth/Confidence CPU-F32 oracle passed on the RTX 5080 in
+17.65 seconds in a debug build. This validates the data lifetime and does not
+measure throughput. Ordered multi-view continues to use the earlier
+transfer-bound parity adapter until its reference/source token scheduler is
+equally device-owned.
+
 The next dependent slice is a device-resident backbone token lifetime. It
 must retain equivalent CPU-F32 oracle coverage before it can be treated as a
 production backend.
