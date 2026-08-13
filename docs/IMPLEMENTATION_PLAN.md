@@ -75,8 +75,9 @@ Remaining:
 Remaining:
 
 - WebGL2/WebGPU cinematic modes and a reproducible flythrough export
-- browser-driven cancellation and resumable job lifecycle integration across
-  CLI and Studio (in progress)
+- Workhorse validation of browser cancellation and restart/resume against a
+  real F32 room-video run; see
+  `docs/validation/RESUMABLE_STUDIO_JOBS_2026-08-13.md`
 
 ## Slice 5 — CUDA and product performance
 
