@@ -165,6 +165,12 @@ software:
 cargo run -p vestra-cli -- export --scene room.vestra --output room.ply
 ```
 
+For a glTF 2.0 point-cloud asset (positions, normals, and vertex colors), use:
+
+```bash
+cargo run -p vestra-cli -- export-glb --scene room.vestra --output room.glb
+```
+
 Each new surfel carries a world-space normal estimated from its local depth
 stencil. Fused normals are confidence-weighted; missing normals in older
 bundles are treated as unknown for backward compatibility.
