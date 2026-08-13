@@ -19,7 +19,7 @@ the reconstruction and scene pipeline are native Rust owned here.
   mode adds lighting, atmospheric depth, progressive reveal, and camera motion.
 - Processing is local and offline by default. A remote Workhorse mode is
   explicit and shows its destination and deletion policy.
-- CLI and browser studio drive the same resumable Rust job engine.
+- CLI and browser studio consume the same durable Rust scene contract.
 
 ## Sporting performance target
 
@@ -99,8 +99,10 @@ measured-layer fallback for inspection and recovery.
 A `.vestra` scene is a local directory while processing. Its manifest records
 the engine, kernel, model, and settings identities. Measured window chunks are
 immutable JSON payloads addressed by their SHA-256 content hash. The manifest
-is replaced atomically after a chunk is durable, which lets a job resume or a
-viewer reveal completed windows without confusing them with fused geometry.
+is replaced atomically after a chunk is durable, which lets a viewer reveal
+completed windows without confusing them with fused geometry. Automatic resume
+of an interrupted `reconstruct` command is a remaining job-lifecycle feature;
+persisted raw chunks are nevertheless retained for inspection and re-fusion.
 
 V1 scenes are explicitly relative-scale. A point's position is evidence from
 the depth map and camera calibration; it is not a claim in metres. Metric-scale

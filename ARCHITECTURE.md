@@ -41,7 +41,9 @@ types. It does not know about videos, scenes, GGUF metadata, or product jobs.
 A `.vestra` scene is a directory bundle during processing and may be archived
 for transport. Immutable content-addressed chunks are written first; the
 manifest is atomically replaced last. This supports progressive viewing,
-deduplication, checkpoint resume, partial reprocessing, and migrations.
+deduplication, re-fusion from durable raw checkpoints, and migrations.
+Automatic continuation of an interrupted inference job is a separate pending
+job-lifecycle feature.
 
 The manifest identifies source fingerprints, engine/kernel revisions, model
 and settings hashes, coordinate conventions, and its immutable measured and
