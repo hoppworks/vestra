@@ -271,7 +271,7 @@ pub fn measure_loop_closure(
             report: None,
         });
     }
-    let mut cells: HashMap<(i32, i32, i32), Vec<(usize, &MeasuredPoint)>> = HashMap::new();
+    let mut cells: HashMap<(i32, i32, i32), Vec<SpatialPointRef<'_>>> = HashMap::new();
     for (index, point) in earlier
         .views
         .iter()
@@ -361,6 +361,7 @@ struct Match {
 }
 
 type VoxelCell = (f32, [f32; 3], [f32; 3], [f32; 3], f32, u32);
+type SpatialPointRef<'a> = (usize, &'a MeasuredPoint);
 
 /// Fits the transform that maps `source` into `target` from shared
 /// `(frame_index, source_pixel)` observations. The returned transform is
@@ -947,8 +948,16 @@ pub fn stitch_measured_windows_with_loop_closures(
     radii.sort_by(f32::total_cmp);
     let voxel_size = (radii[radii.len() / 2] * 2.0).max(1e-6);
     let mut cells: HashMap<(i32, i32, i32), VoxelCell> = HashMap::new();
+    // Overlapping frames are retained in raw windows for direct sequential
+    // alignment, but one physical video frame must not become multiple
+    // confidence votes in the fused world. Schedule order makes ownership
+    // deterministic: the first completed window owns a source frame.
+    let mut emitted_source_frames = HashSet::new();
     for window in &global {
         for frame in &window.views {
+            if !emitted_source_frames.insert(frame.frame_index) {
+                continue;
+            }
             for point in &frame.points {
                 if !point.position.iter().all(|value| value.is_finite())
                     || !point.radius.is_finite()
@@ -1317,7 +1326,9 @@ mod tests {
         .unwrap();
         assert_eq!(raw[2].views[0].points[0].position, [-10.0, 0.0, 0.0]);
         assert_eq!(fused.alignments.len(), 2);
-        assert!(fused.points.iter().all(|point| point.contributors == 3));
+        // All three windows contain the same source frame. It is preserved
+        // three times in raw evidence but owns one fused observation.
+        assert!(fused.points.iter().all(|point| point.contributors == 1));
     }
 
     #[test]
@@ -1371,7 +1382,7 @@ mod tests {
         let report = fused.pose_graph.expect("loop graph should run");
         assert_eq!(report.loop_edges, 1);
         assert!(report.final_cost < 1e-9, "{report:?}");
-        assert!(fused.points.iter().all(|point| point.contributors == 3));
+        assert!(fused.points.iter().all(|point| point.contributors == 1));
     }
 
     #[test]
