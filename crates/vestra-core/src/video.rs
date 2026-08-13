@@ -169,6 +169,23 @@ fn load_decoded_frame_cache_with_duration(
     settings: VideoExtractionSettings,
     duration_seconds: f64,
 ) -> Result<VideoFrames, VideoInputError> {
+    let frames = load_decoded_rgb24_cache(decoded_directory, settings)?;
+    let capture_quality = assess_capture_quality(&frames);
+    Ok(VideoFrames {
+        duration_seconds,
+        frames,
+        decoded_directory: decoded_directory.to_path_buf(),
+        capture_quality,
+    })
+}
+
+/// Loads and validates canonical RGB24 PPM frames without probing the original
+/// video. This supports deterministic diagnostic replay after a capture file is
+/// unavailable; normal reconstruction still records the source duration.
+pub fn load_decoded_rgb24_cache(
+    decoded_directory: &Path,
+    settings: VideoExtractionSettings,
+) -> Result<Vec<OwnedFrame>, VideoInputError> {
     if !decoded_directory.is_dir() {
         return Err(VideoInputError::InvalidCache {
             path: decoded_directory.to_path_buf(),
@@ -204,13 +221,7 @@ fn load_decoded_frame_cache_with_duration(
             reason: format!("expected {}x{} RGB frames", settings.width, settings.height),
         });
     }
-    let capture_quality = assess_capture_quality(&frames);
-    Ok(VideoFrames {
-        duration_seconds,
-        frames,
-        decoded_directory: decoded_directory.to_path_buf(),
-        capture_quality,
-    })
+    Ok(frames)
 }
 
 /// Computes a deterministic low-cost warning signal before expensive model

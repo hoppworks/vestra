@@ -11,7 +11,8 @@ use vestra_core::{
     BackprojectionSettings, ReconstructionSettings, SceneBundle, SceneProvenance,
     VideoExtractionSettings, WindowSettings, capture_cpp_pr2_fixture, export_camera_json,
     export_fused_glb, export_fused_ply, export_fused_splat, extract_video_frames,
-    fuse_scene_bundle, fused_topology, load_decoded_frame_cache, plan_windows, reconstruct_frames,
+    fuse_scene_bundle, fused_topology, load_decoded_frame_cache, load_decoded_rgb24_cache,
+    plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
 use vestra_studio::serve;
@@ -122,8 +123,6 @@ enum Command {
     /// Capture window-scoped DA3 output for the pinned C++ PR #2 stitcher oracle.
     /// This is diagnostic evidence, not a production scene export.
     OracleFixture {
-        #[arg(long)]
-        video: PathBuf,
         #[arg(long)]
         model: PathBuf,
         /// Existing canonical RGB24 PPM cache, normally `<scene>/decoded`.
@@ -287,7 +286,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         Command::OracleFixture {
-            video,
             model,
             decoded,
             output,
@@ -310,8 +308,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .into());
             }
-            let decoded = load_decoded_frame_cache(
-                &video,
+            let frames = load_decoded_rgb24_cache(
                 &decoded,
                 VideoExtractionSettings {
                     width,
@@ -322,7 +319,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut engine = Engine::load(&model, QuantPref::PreferF32)?;
             let fixture = capture_cpp_pr2_fixture(
                 &mut engine,
-                &decoded.frames,
+                &frames,
                 WindowSettings {
                     chunk_size,
                     overlap,

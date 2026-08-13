@@ -51,6 +51,7 @@ pub use stitch::{
 pub use video::{
     CaptureDisposition, CaptureQuality, VideoExtractionSettings, VideoFrames, VideoInputError,
     assess_capture_quality, extract_video_frames, load_decoded_frame_cache,
+    load_decoded_rgb24_cache,
 };
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
