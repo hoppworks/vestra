@@ -85,8 +85,9 @@ world pipeline that do not depend on an unverified model claim:
     [motion-video](docs/validation/MOTION_VIDEO_SMOKE_2026-08-13.md) smokes
     remain narrower wiring evidence.
 12. Fused points are additionally persisted in ordered, content-addressed
-    chunks (50,000 surfels each). Studio streams and renders these chunks in
-    sequence; the canonical fused payload remains available for PLY export.
+    chunks (50,000 surfels each). Studio prefers compact 40-byte binary
+    surfel chunks for progressive GPU upload, while JSON chunks and the
+    canonical fused payload remain available for compatibility and export.
 
 The next hard gate is a real-video end-to-end run followed by validation of
 window alignment, revisit/loop handling, and dense fusion quality. Studio
