@@ -109,7 +109,6 @@ struct IntakeJob {
     log: PathBuf,
     settings: IntakeSettings,
     child: Option<Child>,
-    viewer: Option<Child>,
     outcome: IntakeOutcome,
 }
 
@@ -174,11 +173,8 @@ fn handle_intake(mut stream: TcpStream, state: &Arc<Mutex<IntakeState>>) -> std:
             _ => {}
         }
     }
-    if method == "GET" && (path == "/world" || path.starts_with("/world/")) {
-        let scene_path = match path.strip_prefix("/world").unwrap_or("/") {
-            "" | "/" => "/",
-            remainder => remainder,
-        };
+    if method == "GET" {
+        let scene_path = intake_world_path(path);
         let scene = state.lock().ok().and_then(|guard| {
             guard.active.as_ref().and_then(|job| {
                 (job.outcome == IntakeOutcome::Complete
@@ -186,15 +182,17 @@ fn handle_intake(mut stream: TcpStream, state: &Arc<Mutex<IntakeState>>) -> std:
                 .then(|| job.scene.clone())
             })
         });
-        return match scene {
-            Some(scene) => handle_scene_path(&mut stream, &scene, scene_path),
-            None => write_response(
-                &mut stream,
-                "404 Not Found",
-                "text/plain; charset=utf-8",
-                b"completed local world not found",
-            ),
-        };
+        if let Some(scene_path) = scene_path {
+            return match scene {
+                Some(scene) => handle_scene_path(&mut stream, &scene, scene_path),
+                None => write_response(
+                    &mut stream,
+                    "404 Not Found",
+                    "text/plain; charset=utf-8",
+                    b"completed local world not found",
+                ),
+            };
+        }
     }
     match (method, path) {
         ("GET", "/") | ("GET", "/index.html") => write_response(
@@ -326,7 +324,6 @@ fn start_intake_job(
         scene,
         log,
         settings,
-        viewer: None,
         outcome: IntakeOutcome::Running,
         child: None,
     };
@@ -431,7 +428,6 @@ fn recover_latest_job(config: &IntakeConfig) -> std::io::Result<Option<IntakeJob
         root,
         settings: record.settings,
         child: None,
-        viewer: None,
         outcome: record.outcome,
     };
     if job.outcome == IntakeOutcome::Running || job.outcome == IntakeOutcome::CancelRequested {
@@ -570,7 +566,6 @@ fn intake_status(state: &Arc<Mutex<IntakeState>>) -> Vec<u8> {
         Ok(guard) => guard,
         Err(_) => return br#"{"state":"unavailable"}"#.to_vec(),
     };
-    let config = guard.config.clone();
     let Some(job) = guard.active.as_mut() else {
         return br#"{"state":"idle"}"#.to_vec();
     };
@@ -604,26 +599,7 @@ fn intake_status(state: &Arc<Mutex<IntakeState>>) -> Vec<u8> {
         }
         let _ = write_intake_record(job);
     }
-    if job.outcome == IntakeOutcome::Complete && job.viewer.is_none() {
-        job.viewer = spawn_viewer(&config, &job.scene).ok();
-    }
     intake_payload(job)
-}
-
-fn spawn_viewer(config: &IntakeConfig, scene: &Path) -> std::io::Result<Child> {
-    let viewer_port = config.port.saturating_add(1);
-    Command::new(&config.executable)
-        .args([
-            "serve",
-            "--scene",
-            scene.to_string_lossy().as_ref(),
-            "--port",
-            &viewer_port.to_string(),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
 }
 
 fn intake_payload(job: &IntakeJob) -> Vec<u8> {
@@ -647,12 +623,28 @@ fn intake_payload(job: &IntakeJob) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "job": job.id,
         "state": state,
-        "viewer": if job.outcome == IntakeOutcome::Complete && job.viewer.is_some() { Some("/world/") } else { None },
+        "viewer": if job.outcome == IntakeOutcome::Complete && job.scene.join("manifest.json").is_file() { Some("/world/") } else { None },
         "can_cancel": job.outcome == IntakeOutcome::Running,
         "can_resume": matches!(job.outcome, IntakeOutcome::Cancelled | IntakeOutcome::Interrupted | IntakeOutcome::Failed),
         "log_tail": log_tail,
     }))
     .expect("fixed intake status serializes")
+}
+
+/// The Studio bundle uses root-relative asset paths. Keep those assets on the
+/// same localhost origin as the intake page so a single SSH tunnel can show a
+/// completed world without exposing or guessing a second port.
+fn intake_world_path(path: &str) -> Option<&str> {
+    if path == "/world" || path.starts_with("/world/") {
+        let remainder = path.strip_prefix("/world").expect("checked world prefix");
+        return Some(match remainder {
+            "" | "/" => "/",
+            _ => remainder,
+        });
+    }
+    matches!(path, "/manifest.json" | "/evidence.json")
+        .then_some(path)
+        .or_else(|| (path.starts_with("/chunks/") || path.starts_with("/sources/")).then_some(path))
 }
 
 fn write_response(
@@ -1069,6 +1061,27 @@ mod tests {
     }
 
     #[test]
+    fn intake_routes_completed_world_and_its_root_relative_assets() {
+        assert_eq!(intake_world_path("/world"), Some("/"));
+        assert_eq!(intake_world_path("/world/"), Some("/"));
+        assert_eq!(
+            intake_world_path("/world/manifest.json"),
+            Some("/manifest.json")
+        );
+        assert_eq!(intake_world_path("/manifest.json"), Some("/manifest.json"));
+        assert_eq!(
+            intake_world_path("/chunks/000001.bin"),
+            Some("/chunks/000001.bin")
+        );
+        assert_eq!(
+            intake_world_path("/sources/frame-000001.bmp"),
+            Some("/sources/frame-000001.bmp")
+        );
+        assert_eq!(intake_world_path("/api/job"), None);
+        assert_eq!(intake_world_path("/unknown"), None);
+    }
+
+    #[test]
     fn recovered_running_job_is_marked_interrupted_without_losing_settings() {
         let root = std::env::temp_dir().join(format!(
             "vestra-intake-recovery-test-{}",
@@ -1093,7 +1106,6 @@ mod tests {
             log: job_root.join("reconstruct.log"),
             settings: settings.clone(),
             child: None,
-            viewer: None,
             outcome: IntakeOutcome::Running,
         };
         fs::write(&job.video, b"fixture").unwrap();
