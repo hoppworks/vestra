@@ -39,11 +39,11 @@ pub use scene::{
     SceneManifest, SceneProvenance, WindowMeasuredChunk,
 };
 pub use stitch::{
-    AlignmentReport, FusedPoint, FusedSceneChunk, FusedWindowPose, LoopClosureSettings,
-    LoopMeasurement, LoopMeasurementSettings, SimilarityTransform, StitchError, StitchSettings,
-    align_overlapping_windows, measure_loop_closure, stitch_measured_windows,
-    stitch_measured_windows_with_loop_closures, stitch_measured_windows_with_settings,
-    transform_points,
+    AlignmentReport, FusedPoint, FusedSceneChunk, FusedTopology, FusedWindowPose,
+    LoopClosureSettings, LoopMeasurement, LoopMeasurementSettings, SimilarityTransform,
+    StitchError, StitchSettings, align_overlapping_windows, fused_topology, measure_loop_closure,
+    stitch_measured_windows, stitch_measured_windows_with_loop_closures,
+    stitch_measured_windows_with_settings, transform_points,
 };
 pub use video::{
     CaptureDisposition, CaptureQuality, VideoExtractionSettings, VideoFrames, VideoInputError,

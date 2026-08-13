@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use vestra_core::{
     BackprojectionSettings, ReconstructionSettings, SceneBundle, SceneProvenance,
     VideoExtractionSettings, WindowSettings, export_camera_json, export_fused_glb,
-    export_fused_ply, export_fused_splat, extract_video_frames, fuse_scene_bundle,
+    export_fused_ply, export_fused_splat, extract_video_frames, fuse_scene_bundle, fused_topology,
     load_decoded_frame_cache, plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
@@ -378,6 +378,9 @@ fn scene_report(bundle: &SceneBundle) -> Result<serde_json::Value, Box<dyn std::
                 && point.radius > 0.0
         })
     });
+    let topology = fused
+        .as_ref()
+        .map(|chunk| fused_topology(&chunk.points, chunk.voxel_size));
     let scene_state = match (&fused, finite_points) {
         (None, _) => "measured_only",
         (Some(_), false) => "invalid_fused_geometry",
@@ -405,6 +408,7 @@ fn scene_report(bundle: &SceneBundle) -> Result<serde_json::Value, Box<dyn std::
             "sequential_rms_residual": rms_residual,
             "sequential_inlier_ratio": inlier_ratio,
             "pose_graph": chunk.pose_graph,
+            "topology": topology,
         })),
         "interpretation": {
             "metric_accuracy": "not_claimed; v1 scenes use relative scale",

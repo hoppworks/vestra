@@ -6,7 +6,7 @@
 //! geometrically degenerate estimates are explicit errors: this module never
 //! invents an alignment.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
@@ -170,6 +170,78 @@ pub struct FusedSceneChunk {
     pub window_poses: Vec<FusedWindowPose>,
     pub voxel_size: f32,
     pub points: Vec<FusedPoint>,
+}
+
+/// Topology diagnostics over already fused relative-scale voxels. These are
+/// evidence signals for capture review, not a claim that a sparse surfel world
+/// should be a watertight mesh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FusedTopology {
+    pub component_count: usize,
+    pub largest_component_points: usize,
+    pub isolated_point_count: usize,
+}
+
+/// Groups surfels with a 26-neighbour voxel adjacency. The resolution is the
+/// fused scene's own relative voxel size, so no metric unit is implied.
+#[must_use]
+pub fn fused_topology(points: &[FusedPoint], voxel_size: f32) -> FusedTopology {
+    if !voxel_size.is_finite() || voxel_size <= 0.0 || points.is_empty() {
+        return FusedTopology {
+            component_count: 0,
+            largest_component_points: 0,
+            isolated_point_count: points.len(),
+        };
+    }
+    let mut occupied = HashSet::with_capacity(points.len());
+    for point in points {
+        if point.position.iter().all(|value| value.is_finite()) {
+            occupied.insert(voxel_key(point.position, voxel_size));
+        }
+    }
+    let mut remaining = occupied.clone();
+    let mut component_count = 0;
+    let mut largest_component_points = 0;
+    let mut isolated_point_count = 0;
+    while let Some(seed) = remaining.iter().next().copied() {
+        component_count += 1;
+        let mut queue = VecDeque::from([seed]);
+        remaining.remove(&seed);
+        let mut size = 0;
+        while let Some(cell) = queue.pop_front() {
+            size += 1;
+            for dz in -1..=1 {
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        if dx == 0 && dy == 0 && dz == 0 {
+                            continue;
+                        }
+                        let neighbor = (cell.0 + dx, cell.1 + dy, cell.2 + dz);
+                        if remaining.remove(&neighbor) {
+                            queue.push_back(neighbor);
+                        }
+                    }
+                }
+            }
+        }
+        largest_component_points = largest_component_points.max(size);
+        if size == 1 {
+            isolated_point_count += 1;
+        }
+    }
+    FusedTopology {
+        component_count,
+        largest_component_points,
+        isolated_point_count,
+    }
+}
+
+fn voxel_key(position: [f32; 3], voxel_size: f32) -> (i32, i32, i32) {
+    (
+        (position[0] / voxel_size).floor() as i32,
+        (position[1] / voxel_size).floor() as i32,
+        (position[2] / voxel_size).floor() as i32,
+    )
 }
 
 /// Product quality gates for one sequential overlap seam. The defaults are
@@ -1175,6 +1247,29 @@ mod tests {
         assert_eq!(transformed[0].position, [2.0, 0.0, 0.0]);
         assert_eq!(transformed[0].radius, 0.5);
         assert_eq!(transformed[0].normal, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn topology_reports_connected_and_isolated_relative_voxels() {
+        let point = |position| FusedPoint {
+            position,
+            normal: [0.0, 0.0, 1.0],
+            color_srgb: [0; 3],
+            confidence: 1.0,
+            radius: 0.1,
+            contributors: 1,
+        };
+        let topology = fused_topology(
+            &[
+                point([0.1, 0.1, 0.1]),
+                point([1.1, 0.1, 0.1]),
+                point([8.1, 0.1, 0.1]),
+            ],
+            1.0,
+        );
+        assert_eq!(topology.component_count, 2);
+        assert_eq!(topology.largest_component_points, 2);
+        assert_eq!(topology.isolated_point_count, 1);
     }
 
     #[test]
