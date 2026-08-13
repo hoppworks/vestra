@@ -11,7 +11,7 @@ claim.
 | Item | Value |
 | --- | --- |
 | Repository | `https://github.com/hoppworks/vestra-kernels` |
-| Revision | `f497add5b3ec3d74f3e2c1b4b6f86279ada59a7d` |
+| Revision | `48bc7b5b8fcd6b328e63c99bd7610cd30bb44f01` |
 | Feature | `cuda` |
 | CUDA binding | `cudarc 0.19.9`, Driver API with dynamic loading and NVRTC |
 | Host | Workhorse — AMD Ryzen 9 9950X, NVIDIA GeForce RTX 5080 |
@@ -73,13 +73,16 @@ which preserves the reference numerical sequence.
 
 ## CUDA attention oracle
 
-Kernels revision `f497add5b3ec3d74f3e2c1b4b6f86279ada59a7d` adds a
+Kernels revision `48bc7b5b8fcd6b328e63c99bd7610cd30bb44f01` adds a
 device-resident F32 online-softmax attention primitive for head-major
 `[heads,tokens,head_dim]` tensors with `head_dim <= 64`. It maps one GPU
 thread to each `(head, query)` row and uses the same 64-key online-softmax
 state machine as the CPU path: running maximum, correction, running sum, and
 value accumulator. The Workhorse RTX 5080 test compares a two-head, five-token
 case with the CPU attention oracle under an absolute error envelope `<= 5e-5`.
+It additionally passed the actual DA3-BASE geometry—12 heads × 865 tokens ×
+64 dimensions—against Vestra's production CPU attention path on the RTX 5080
+in 0.39 seconds, with MAE `<= 5e-5` and maximum error `<= 5e-4`.
 
 It is intentionally not wired into the Engine yet. DA3 has a specialised
 AVX-512 CPU attention path and optional Q/K normalization plus RoPE; the next
