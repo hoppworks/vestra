@@ -233,5 +233,10 @@ captured camera directions. They are derived from the stored window-local W2C
 calibrations plus their persisted final local-to-fused relative Sim(3) poses;
 they are diagnostic evidence, not a metric camera trajectory.
 
+When a fused world is present, **Show measured evidence** switches between the
+derived voxel-fused surfels and the immutable per-window measurements. This is
+a local diagnostic control: it makes seam or ghost inspection possible without
+presenting the fused layer as new source evidence.
+
 See [VISION.md](VISION.md), [ARCHITECTURE.md](ARCHITECTURE.md), and the ADRs in
 `docs/adr/` for the locked decisions and implementation order.
