@@ -74,7 +74,7 @@ Remaining:
 
 Remaining:
 
-- camera frustums and loop/seam overlays in Studio
+- loop/seam overlays in Studio
 - WebGL2/WebGPU cinematic modes and a reproducible flythrough export
 - cancellation within one second, atomic finalization, and resumable job
   lifecycle integration across CLI and Studio

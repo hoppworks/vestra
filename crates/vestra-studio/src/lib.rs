@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use vestra_core::{SceneBundle, SimilarityTransform, camera_centre_direction};
+use vestra_core::{CameraCalibration, SceneBundle, SimilarityTransform, camera_centre_direction};
 
 const INDEX_HTML: &str = include_str!("index.html");
 
@@ -105,11 +105,19 @@ fn evidence(root: &Path) -> (&'static str, &'static str, Vec<u8>) {
                 if !direction.iter().all(|value| value.is_finite()) {
                     continue;
                 }
+                let corners = camera_frustum_directions(view.camera)
+                    .map(|directions| {
+                        directions.map(|direction| rotate(pose.local_to_world, direction))
+                    })
+                    .filter(|directions| {
+                        directions.iter().flatten().all(|value| value.is_finite())
+                    });
                 camera_rays.push(serde_json::json!({
                     "window_index": window.window.index,
                     "frame_index": view.frame_index,
                     "origin": pose.local_to_world.apply(camera.centre_local),
                     "forward": direction,
+                    "corners": corners,
                 }));
             }
         }
@@ -127,6 +135,54 @@ fn evidence(root: &Path) -> (&'static str, &'static str, Vec<u8>) {
             b"scene evidence unavailable".to_vec(),
         ),
     }
+}
+
+/// Four normalized corner directions for a diagnostic image-plane frustum.
+/// `CameraCalibration` is W2C, so camera-space rays become local-world rays
+/// by multiplication with `Rᵀ`. The visualized frustum length is selected by
+/// Studio from the active relative-world extent, not from a metric claim.
+fn camera_frustum_directions(calibration: CameraCalibration) -> Option<[[f32; 3]; 4]> {
+    let matrix = calibration.world_to_camera;
+    let intrinsics = calibration.intrinsics;
+    let fx = intrinsics[0];
+    let fy = intrinsics[4];
+    let cx = intrinsics[2];
+    let cy = intrinsics[5];
+    if !matrix.iter().all(|value| value.is_finite())
+        || !intrinsics.iter().all(|value| value.is_finite())
+        || fx <= 0.0
+        || fy <= 0.0
+        || cx < 0.0
+        || cy < 0.0
+    {
+        return None;
+    }
+    let corners = [
+        [0.0, 0.0],
+        [2.0 * cx, 0.0],
+        [2.0 * cx, 2.0 * cy],
+        [0.0, 2.0 * cy],
+    ];
+    Some(corners.map(|[u, v]| {
+        normalize_direction([
+            matrix[0] * ((u - cx) / fx) + matrix[4] * ((v - cy) / fy) + matrix[8],
+            matrix[1] * ((u - cx) / fx) + matrix[5] * ((v - cy) / fy) + matrix[9],
+            matrix[2] * ((u - cx) / fx) + matrix[6] * ((v - cy) / fy) + matrix[10],
+        ])
+    }))
+}
+
+fn normalize_direction(direction: [f32; 3]) -> [f32; 3] {
+    let length = direction
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+    [
+        direction[0] / length,
+        direction[1] / length,
+        direction[2] / length,
+    ]
 }
 
 /// Converts one decoded RGB24 source frame into a browser-readable BMP only
@@ -349,6 +405,22 @@ mod tests {
             rotate(SimilarityTransform::IDENTITY, [0.0, 0.0, 1.0]),
             [0.0, 0.0, 1.0]
         );
+    }
+
+    #[test]
+    fn calibration_frustum_uses_w2c_transpose_and_intrinsic_image_corners() {
+        let corners = camera_frustum_directions(CameraCalibration {
+            world_to_camera: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            intrinsics: [2.0, 0.0, 1.0, 0.0, 2.0, 1.0, 0.0, 0.0, 1.0],
+        })
+        .unwrap();
+        let expected = 1.0 / 6.0_f32.sqrt();
+        assert!((corners[0][0] + expected).abs() < 1e-6);
+        assert!((corners[0][1] + expected).abs() < 1e-6);
+        assert!((corners[0][2] - 2.0 * expected).abs() < 1e-6);
+        assert!((corners[2][0] - expected).abs() < 1e-6);
+        assert!((corners[2][1] - expected).abs() < 1e-6);
+        assert!((corners[2][2] - 2.0 * expected).abs() < 1e-6);
     }
 
     #[test]

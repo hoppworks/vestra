@@ -37,6 +37,11 @@ then advanced from source frame `001 / 120` to `002 / 120`. The image was
 served from the bundle's existing decoded RGB24 cache through a numeric,
 loopback-only route; no source imagery was uploaded or committed.
 
+The calibrated camera overlay was then enabled for the same bundle. Studio
+reported `HIDE CAMERA RAYS` and rendered the camera directions together with
+their intrinsic image-plane frustums. The source panel was placed independently
+of the ledger so it did not obstruct either diagnostic control.
+
 ## Commands
 
 ```sh

@@ -233,9 +233,11 @@ The server binds only to `127.0.0.1:4317`. It serves no upload endpoint and
 never sends the scene to a remote service.
 
 Press `C` or use **Show camera rays** in the scene ledger to overlay the
-captured camera directions. They are derived from the stored window-local W2C
-calibrations plus their persisted final local-to-fused relative Sim(3) poses;
-they are diagnostic evidence, not a metric camera trajectory.
+captured camera directions and calibrated image-plane frustums. They are
+derived from the stored window-local W2C calibrations plus their persisted
+final local-to-fused relative Sim(3) poses. Their rendered length is scaled to
+the currently displayed relative world, so they are diagnostic evidence—not a
+metric camera trajectory.
 
 When a fused world is present, **Show measured evidence** switches between the
 derived voxel-fused surfels and the immutable per-window measurements. This is
