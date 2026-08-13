@@ -20,13 +20,6 @@ claim.
 
 ## Verified operation
 
-From a fresh checkout of the locked Kernels revision on the Workhorse:
-
-```sh
-VESTRA_CUDA_TEST=1 cargo test --lib --features cuda \
-  driver_round_trip_preserves_f32_values_when_explicitly_enabled -- --nocapture
-```
-
 The Workhorse intentionally has the NVIDIA Driver but no system-wide NVRTC.
 The isolated runtime compiler is installed at
 `/var/roothome/vestra-cuda-deps/nvidia/cuda_nvrtc/lib/libnvrtc.so.12`; it is
