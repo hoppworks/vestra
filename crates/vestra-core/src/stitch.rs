@@ -137,6 +137,11 @@ pub struct AlignmentReport {
     pub correspondence_count: usize,
     pub inlier_count: usize,
     pub rms_residual: f32,
+    /// RMS residual divided by the RMS spatial extent of the matched target
+    /// observations. This is dimensionless even though a Vestra scene keeps
+    /// relative rather than metric scale.
+    #[serde(default)]
+    pub normalized_rms_residual: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -252,6 +257,10 @@ fn voxel_key(position: [f32; 3], voxel_size: f32) -> (i32, i32, i32) {
 pub struct StitchSettings {
     pub minimum_correspondences: usize,
     pub minimum_inlier_ratio: f32,
+    /// Dimensionless seam residual relative to the matched overlap extent.
+    /// This prevents a numerically finite but visibly incoherent Sim(3) seam
+    /// from being silently fused.
+    pub maximum_normalized_rms_residual: f32,
     pub minimum_scale: f32,
     pub maximum_scale: f32,
     pub loop_closure: Option<LoopClosureSettings>,
@@ -295,6 +304,7 @@ impl Default for StitchSettings {
         Self {
             minimum_correspondences: 50,
             minimum_inlier_ratio: 0.6,
+            maximum_normalized_rms_residual: 0.1,
             // Depth scale is independently relative in every multiview
             // window. This gate therefore only rejects numerical collapse or
             // explosion; correspondence support and residual decide seam
@@ -477,12 +487,55 @@ pub fn align_overlapping_windows(
     }
     let count = matches.len();
     let (transform, inliers, rms_residual) = robust_similarity(&matches)?;
+    let normalized_rms_residual = normalized_rms_residual(&matches, &inliers, rms_residual)?;
     Ok(AlignmentReport {
         transform,
         correspondence_count: count,
         inlier_count: inliers.len(),
         rms_residual,
+        normalized_rms_residual,
     })
+}
+
+fn normalized_rms_residual(
+    matches: &[Match],
+    inliers: &[usize],
+    rms_residual: f32,
+) -> Result<f32, StitchError> {
+    if inliers.len() < 3 || !rms_residual.is_finite() {
+        return Err(StitchError::DegenerateGeometry);
+    }
+    let mut centre = [0.0_f64; 3];
+    for &index in inliers {
+        for (dimension, value) in centre.iter_mut().enumerate() {
+            *value += matches[index].target[dimension];
+        }
+    }
+    let count = inliers.len() as f64;
+    for value in &mut centre {
+        *value /= count;
+    }
+    let extent_squared = inliers
+        .iter()
+        .map(|&index| {
+            let delta = [
+                matches[index].target[0] - centre[0],
+                matches[index].target[1] - centre[1],
+                matches[index].target[2] - centre[2],
+            ];
+            dot(delta, delta)
+        })
+        .sum::<f64>()
+        / count;
+    let extent = extent_squared.sqrt();
+    if !extent.is_finite() || extent <= 1e-9 {
+        return Err(StitchError::DegenerateGeometry);
+    }
+    let normalized = f64::from(rms_residual) / extent;
+    if !normalized.is_finite() {
+        return Err(StitchError::DegenerateGeometry);
+    }
+    Ok(normalized as f32)
 }
 
 fn robust_similarity(
@@ -967,6 +1020,8 @@ pub fn stitch_measured_windows_with_loop_closures(
         let inlier_ratio = report.inlier_count as f32 / report.correspondence_count as f32;
         if report.correspondence_count < settings.minimum_correspondences
             || inlier_ratio < settings.minimum_inlier_ratio
+            || !report.normalized_rms_residual.is_finite()
+            || report.normalized_rms_residual > settings.maximum_normalized_rms_residual
             || report.transform.scale < settings.minimum_scale
             || report.transform.scale > settings.maximum_scale
         {
@@ -1226,6 +1281,33 @@ mod tests {
         let report = align_overlapping_windows(&source, &target).unwrap();
         assert!((report.transform.scale - 2.).abs() < 1e-4);
         assert!(distance(report.transform.apply([1., 0., 0.]), [5., -1., 1.]) < 1e-4);
+        assert!(report.normalized_rms_residual < 1e-5);
+    }
+
+    #[test]
+    fn sequential_fusion_rejects_an_extent_normalized_bad_seam() {
+        let base = vec![
+            p(0, [0.0, 0.0, 0.0]),
+            p(1, [1.0, 0.0, 0.0]),
+            p(2, [0.0, 1.0, 0.0]),
+            p(3, [0.0, 0.0, 1.0]),
+            p(4, [1.0, 1.0, 1.0]),
+        ];
+        let first = chunk(base.clone());
+        let mut second = chunk(base);
+        second.window.index = 1;
+        second.views[0].points[4].position = [5.0, -5.0, 4.0];
+        let result = stitch_measured_windows_with_settings(
+            &[first, second],
+            StitchSettings {
+                minimum_correspondences: 3,
+                minimum_inlier_ratio: 0.0,
+                maximum_normalized_rms_residual: 1e-6,
+                loop_closure: None,
+                ..StitchSettings::default()
+            },
+        );
+        assert!(matches!(result, Err(StitchError::QualityGate { .. })));
     }
 
     #[test]

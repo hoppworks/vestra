@@ -695,6 +695,7 @@ mod tests {
                     correspondence_count: 100,
                     inlier_count: 95,
                     rms_residual: 0.01,
+                    normalized_rms_residual: 0.01,
                 }],
                 pose_graph: None,
                 window_poses: Vec::new(),
