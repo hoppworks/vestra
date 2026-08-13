@@ -258,6 +258,12 @@ fn scene_report(bundle: &SceneBundle) -> Result<serde_json::Value, Box<dyn std::
         .iter()
         .map(|alignment| alignment.inlier_count)
         .sum::<usize>();
+    let scale = summarize(alignments.iter().map(|alignment| alignment.transform.scale));
+    let rms_residual = summarize(alignments.iter().map(|alignment| alignment.rms_residual));
+    let inlier_ratio = summarize(alignments.iter().filter_map(|alignment| {
+        (alignment.correspondence_count > 0)
+            .then_some(alignment.inlier_count as f32 / alignment.correspondence_count as f32)
+    }));
     let finite_points = fused.as_ref().is_none_or(|chunk| {
         chunk.points.iter().all(|point| {
             point.position.iter().all(|value| value.is_finite())
@@ -290,6 +296,9 @@ fn scene_report(bundle: &SceneBundle) -> Result<serde_json::Value, Box<dyn std::
             "sequential_alignment_count": alignments.len(),
             "sequential_correspondence_count": correspondence_count,
             "sequential_inlier_count": inlier_count,
+            "sequential_scale": scale,
+            "sequential_rms_residual": rms_residual,
+            "sequential_inlier_ratio": inlier_ratio,
             "pose_graph": chunk.pose_graph,
         })),
         "interpretation": {
@@ -298,6 +307,19 @@ fn scene_report(bundle: &SceneBundle) -> Result<serde_json::Value, Box<dyn std::
             "recommended_next_gate": "inspect the Studio result and validate a real room capture with known revisits"
         }
     }))
+}
+
+fn summarize(values: impl Iterator<Item = f32>) -> serde_json::Value {
+    let mut values = values.filter(|value| value.is_finite()).collect::<Vec<_>>();
+    values.sort_by(f32::total_cmp);
+    if values.is_empty() {
+        return serde_json::Value::Null;
+    }
+    serde_json::json!({
+        "min": values[0],
+        "median": values[values.len() / 2],
+        "max": values[values.len() - 1],
+    })
 }
 
 fn locked_revision(section: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -384,5 +406,14 @@ mod tests {
         assert_eq!(report["state"], "measured_only");
         assert!(report["fused"].is_null());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn summary_is_order_independent_and_ignores_non_finite_values() {
+        assert_eq!(
+            summarize([f32::NAN, 3.0, 1.0, f32::INFINITY, 2.0].into_iter()),
+            serde_json::json!({"min": 1.0, "median": 2.0, "max": 3.0})
+        );
+        assert!(summarize([f32::NAN].into_iter()).is_null());
     }
 }
