@@ -2,9 +2,9 @@
 
 ## Status
 
-**Transform-tier parity accepted; raw-cloud parity is not claimed yet.** This
-record establishes a reproducible, model-free executable boundary around the
-actual `stream_points_core` implementation used by the reference project.
+**Base-stream pre-voxel parity accepted; optional branches are not claimed.**
+This record establishes a reproducible, model-free executable boundary around
+the actual `stream_points_core` implementation used by the reference project.
 
 The original bootstrap interchange was corrected before it was used for a
 model-derived comparison: `VPS1` v2 stores outputs **per inference window**,
@@ -127,9 +127,31 @@ C++ log to its printed precision. The paired values are:
 | 99 | 0.8619 / 0.861860 | 0.02811 / 0.028110 |
 | 108 | 0.9499 / 0.949855 | 0.07767 / 0.077666 |
 
-This proves only the local, sequential transform tier. It does not yet prove
-the rotations/translations (the upstream stream API does not expose them),
-first-owner emission, emitted radius/color semantics, raw-point equality,
-voxelisation, loops, ICP, TSDF, metric scale, or visual quality. The next
-milestone is a pre-voxel raw-cloud comparator with a reference diagnostic that
-exports the otherwise internal per-window transforms and owner evidence.
+## Accepted raw-cloud result
+
+`6af0d7fae46ecbf9705e1b801271af5c7d12441f` adds a Rust-side reference-only
+emitter that applies the same per-window percentile threshold, first-owner
+frame policy, local-to-global Sim(3) composition, radius formula, and ordered
+pre-voxel accumulation as the pinned C++ base stream. The Workhorse ran it
+against the unchanged 278 MiB `VPS1` input and 180 MiB C++ `VPO1` output:
+
+| Check | Result |
+| --- | ---: |
+| Ordered pre-voxel point count | 9,931,557 / 9,931,557 — exact |
+| Per-frame first-owner counts | exact for all 120 frames |
+| RGB triplets | 0 mismatches |
+| Position MAE | `1.0073384563168364e-7` relative units |
+| Maximum absolute position error | `5.960464477539062e-7` relative units |
+| Radius MAE | `9.551295881469472e-11` relative units |
+| Maximum absolute radius error | `6.984919309616089e-10` relative units |
+
+The comparator is intentionally ordered, not nearest-neighbour-based: the
+count, ownership and colour checks first establish that both sides emitted the
+same direct observations, then every point/radius is compared at the same
+index. No points were removed or selected after observing the result.
+
+This accepts PR #2's **base relative-scale streaming tier** for this fixture:
+window scheduling, dense overlap evidence, Huber-IRLS sequential Sim(3),
+first-owner emission, color and radius. It does not claim optional ICP, loop
+closure/pose-graph correction, metric scale, TSDF/postprocessing, a mesh, or
+visual quality parity. Those remain separately gated features.
