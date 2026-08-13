@@ -9,6 +9,7 @@ use vestra_engine::{Engine, EngineError, MultiViewInferOut, ViewInput};
 pub mod geometry;
 pub mod reconstruction;
 pub mod scene;
+pub mod video;
 
 pub use geometry::{
     BackprojectionError, BackprojectionSettings, CameraCalibration, MeasuredPoint, MeasuredView,
@@ -21,6 +22,7 @@ pub use scene::{
     MeasuredFrameChunk, SceneBundle, SceneBundleError, SceneManifest, SceneProvenance,
     WindowMeasuredChunk,
 };
+pub use video::{VideoExtractionSettings, VideoFrames, VideoInputError, extract_video_frames};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ScheduleError {

@@ -1,5 +1,19 @@
+use std::{
+    fs::File,
+    io::{BufReader, Read},
+    path::PathBuf,
+};
+
 use clap::{Parser, Subcommand};
-use vestra_core::{WindowSettings, plan_windows};
+use sha2::{Digest, Sha256};
+use vestra_core::{
+    BackprojectionSettings, ReconstructionSettings, SceneBundle, SceneProvenance,
+    VideoExtractionSettings, WindowSettings, extract_video_frames, plan_windows,
+    reconstruct_frames,
+};
+use vestra_engine::{Engine, QuantPref};
+
+const VESTRA_LOCK: &str = include_str!("../../../vestra.lock.toml");
 
 #[derive(Debug, Parser)]
 #[command(name = "vestra", about = "Native video-to-world reconstruction")]
@@ -18,6 +32,29 @@ enum Command {
         chunk_size: usize,
         #[arg(long, default_value_t = 3)]
         overlap: usize,
+    },
+    /// Reconstruct a local relative-scale `.vestra` world from one video.
+    Reconstruct {
+        #[arg(long)]
+        video: PathBuf,
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value_t = 120)]
+        frames: usize,
+        #[arg(long, default_value_t = 504)]
+        width: usize,
+        #[arg(long, default_value_t = 336)]
+        height: usize,
+        #[arg(long, default_value_t = 12)]
+        chunk_size: usize,
+        #[arg(long, default_value_t = 3)]
+        overlap: usize,
+        #[arg(long, default_value_t = 1.0)]
+        minimum_confidence: f32,
+        #[arg(long, default_value_t = 1)]
+        pixel_stride: usize,
     },
 }
 
@@ -38,6 +75,154 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             println!("{}", serde_json::to_string_pretty(&windows)?);
         }
+        Command::Reconstruct {
+            video,
+            model,
+            output,
+            frames,
+            width,
+            height,
+            chunk_size,
+            overlap,
+            minimum_confidence,
+            pixel_stride,
+        } => {
+            let provenance = SceneProvenance {
+                engine_revision: locked_revision("engine")?,
+                kernel_revision: locked_revision("kernels")?,
+                model_fingerprint: sha256_file(&model)?,
+                settings_fingerprint: settings_fingerprint(
+                    &video,
+                    frames,
+                    width,
+                    height,
+                    chunk_size,
+                    overlap,
+                    minimum_confidence,
+                    pixel_stride,
+                )?,
+            };
+            let bundle = SceneBundle::create(&output, provenance)?;
+            let decoded = extract_video_frames(
+                &video,
+                output.join("decoded"),
+                VideoExtractionSettings {
+                    width,
+                    height,
+                    max_frames: frames,
+                },
+            )?;
+            if decoded.frames.is_empty() {
+                return Err("ffmpeg produced no frames".into());
+            }
+            eprintln!(
+                "decoded {} frames from {:.3}s of video",
+                decoded.frames.len(),
+                decoded.duration_seconds
+            );
+            let mut engine = Engine::load(&model, QuantPref::PreferF32)?;
+            let progress = reconstruct_frames(
+                &mut engine,
+                &decoded.frames,
+                &bundle,
+                ReconstructionSettings {
+                    windows: WindowSettings {
+                        chunk_size,
+                        overlap,
+                    },
+                    backprojection: BackprojectionSettings {
+                        minimum_confidence,
+                        pixel_stride,
+                        ..BackprojectionSettings::default()
+                    },
+                },
+            )?;
+            for checkpoint in &progress {
+                eprintln!(
+                    "checkpointed window {} [{}..{}) with {} measured points",
+                    checkpoint.window.index,
+                    checkpoint.window.start,
+                    checkpoint.window.end,
+                    checkpoint.measured_points
+                );
+            }
+            println!(
+                "{}",
+                serde_json::json!({
+                    "bundle": bundle.root(),
+                    "decoded_frames": decoded.frames.len(),
+                    "windows": progress.len(),
+                    "measured_points": progress.iter().map(|item| item.measured_points).sum::<usize>(),
+                })
+            );
+        }
     }
     Ok(())
+}
+
+fn locked_revision(section: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let section_header = format!("[{section}]");
+    let section_text = VESTRA_LOCK
+        .split(&section_header)
+        .nth(1)
+        .ok_or_else(|| format!("missing {section_header} in vestra.lock.toml"))?;
+    let revision_line = section_text
+        .lines()
+        .find(|line| line.trim_start().starts_with("revision ="))
+        .ok_or_else(|| format!("missing revision for {section}"))?;
+    revision_line
+        .split('"')
+        .nth(1)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("invalid revision for {section}").into())
+}
+
+fn sha256_file(path: &PathBuf) -> Result<String, Box<dyn std::error::Error>> {
+    let mut reader = BufReader::new(File::open(path)?);
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn settings_fingerprint(
+    video: &PathBuf,
+    frames: usize,
+    width: usize,
+    height: usize,
+    chunk_size: usize,
+    overlap: usize,
+    minimum_confidence: f32,
+    pixel_stride: usize,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let video_hash = sha256_file(video)?;
+    let settings = format!(
+        "video={video_hash};frames={frames};width={width};height={height};chunk={chunk_size};overlap={overlap};minimum_confidence={minimum_confidence:?};pixel_stride={pixel_stride}"
+    );
+    Ok(Sha256::digest(settings.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lock_parser_extracts_pinned_component_revisions() {
+        assert_eq!(locked_revision("engine").unwrap().len(), 40);
+        assert_eq!(locked_revision("kernels").unwrap().len(), 40);
+    }
 }
