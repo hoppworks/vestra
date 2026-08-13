@@ -65,12 +65,19 @@ world pipeline that do not depend on an unverified model claim:
 7. Each measured window can be written to an atomic, content-addressed
    `.vestra` bundle. Repeating an identical window write is idempotent; a
    crash cannot publish a partial manifest as a completed scene.
+8. C++ oracle parity for canonical RGB24 input is accepted for `S=2`, `S=3`,
+   and `S=12` multi-view windows, including depth, confidence, intrinsics, and
+   W2C camera poses. The durable evidence is in
+   [the validation record](docs/validation/MULTIVIEW_S2_2026-08-13.md).
+9. Overlapping measured windows can now be aligned by robust relative Sim(3),
+   then confidence-fused into a voxel-deduplicated surfel world. The derived
+   chunk is immutable, content-addressed, and atomically referenced by the
+   manifest; raw evidence is never overwritten.
 
-The next hard gate is real C++ oracle parity for multi-view windows of
-`S=2,3,12`. The first S=2 run is intentionally recorded as **not accepted**;
-see [the validation record](docs/validation/MULTIVIEW_S2_2026-08-13.md).
-Only after that gate will Vestra stitch overlapping windows, perform fusion,
-and present the result in the browser studio.
+The next hard gate is a real-video end-to-end run followed by validation of
+window alignment, revisit/loop handling, and dense fusion quality. Studio
+prefers the fused world when a manifest references one, while retaining the
+measured-layer fallback for inspection and recovery.
 
 ## Scene bundles
 
@@ -106,8 +113,15 @@ cargo run -p vestra-cli -- reconstruct \
 ```
 
 Vestra samples up to 120 frames at 504×336 by default, reconstructs each
-12/3 overlapping window, and checkpoints measured evidence as it goes. Open
-the result in the local browser studio:
+12/3 overlapping window, checkpoints measured evidence, then automatically
+publishes a derived fused world. To rebuild that derived layer without another
+model inference run:
+
+```bash
+cargo run -p vestra-cli -- fuse --scene room.vestra
+```
+
+Open the result in the local browser studio:
 
 ```bash
 cargo run -p vestra-cli -- serve --scene room.vestra

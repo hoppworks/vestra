@@ -6,7 +6,7 @@ use crate::{
     BackprojectionError, BackprojectionSettings, CameraCalibration, FrameWindow,
     MeasuredFrameChunk, MeasuredView, OwnedFrame, SceneBundle, SceneBundleError,
     WindowMeasuredChunk, WindowSettings, backproject_measured_view, infer_ordered_window,
-    plan_windows,
+    plan_windows, stitch_measured_windows,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -31,6 +31,15 @@ pub struct ReconstructionProgress {
     pub measured_points: usize,
 }
 
+/// Published result of deriving a relative-scale world from the immutable
+/// measured windows in a scene bundle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FusionProgress {
+    pub chunk_hash: String,
+    pub aligned_windows: usize,
+    pub points: usize,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ReconstructionError {
     #[error("engine inference failed: {0}")]
@@ -43,6 +52,27 @@ pub enum ReconstructionError {
     ViewCount { expected: usize, actual: usize },
     #[error("window planning failed: {0}")]
     Schedule(#[from] crate::ScheduleError),
+    #[error("window stitching failed: {0}")]
+    Stitch(#[from] crate::StitchError),
+}
+
+/// Rebuilds the derived world from the bundle's raw evidence in deterministic
+/// schedule order. It never mutates or removes a measured chunk.
+pub fn fuse_scene_bundle(bundle: &SceneBundle) -> Result<FusionProgress, ReconstructionError> {
+    let manifest = bundle.manifest()?;
+    let mut windows = manifest
+        .measured_chunk_hashes
+        .iter()
+        .map(|hash| bundle.read_measured_window(hash))
+        .collect::<Result<Vec<_>, _>>()?;
+    windows.sort_by_key(|chunk| chunk.window.index);
+    let fused = stitch_measured_windows(&windows)?;
+    let chunk_hash = bundle.write_fused_scene(&fused)?;
+    Ok(FusionProgress {
+        chunk_hash,
+        aligned_windows: windows.len(),
+        points: fused.points.len(),
+    })
 }
 
 /// Runs every deterministic window and immediately checkpoints direct evidence.
@@ -131,6 +161,7 @@ fn rgb_at_inference_resolution(frame: &OwnedFrame, width: usize, height: usize) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{MeasuredPoint, SceneProvenance};
 
     #[test]
     fn color_resampling_retains_direct_source_pixel_values() {
@@ -143,5 +174,80 @@ mod tests {
             rgb_at_inference_resolution(&frame, 4, 1),
             vec![1, 2, 3, 1, 2, 3, 4, 5, 6, 4, 5, 6]
         );
+    }
+
+    #[test]
+    fn fusion_reloads_raw_windows_in_schedule_order_and_publishes_a_derived_world() {
+        let root = std::env::temp_dir().join(format!(
+            "vestra-reconstruction-fuse-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let bundle = SceneBundle::create(
+            &root,
+            SceneProvenance {
+                engine_revision: "test".into(),
+                kernel_revision: "test".into(),
+                model_fingerprint: "test".into(),
+                settings_fingerprint: "test".into(),
+            },
+        )
+        .unwrap();
+        let point = |pixel, position| MeasuredPoint {
+            position,
+            color_srgb: [30, 40, 50],
+            confidence: 1.0,
+            radius: 0.25,
+            source_pixel: [pixel, 0],
+        };
+        let camera = CameraCalibration {
+            world_to_camera: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            intrinsics: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        };
+        let target = WindowMeasuredChunk {
+            window: FrameWindow {
+                index: 0,
+                start: 0,
+                end: 1,
+            },
+            views: vec![MeasuredFrameChunk {
+                frame_index: 0,
+                camera,
+                points: vec![
+                    point(0, [5.0, -3.0, 1.0]),
+                    point(1, [5.0, -1.0, 1.0]),
+                    point(2, [3.0, -3.0, 1.0]),
+                    point(3, [5.0, -3.0, 3.0]),
+                ],
+            }],
+        };
+        let source = WindowMeasuredChunk {
+            window: FrameWindow {
+                index: 1,
+                start: 0,
+                end: 1,
+            },
+            views: vec![MeasuredFrameChunk {
+                frame_index: 0,
+                camera,
+                points: vec![
+                    point(0, [0.0, 0.0, 0.0]),
+                    point(1, [1.0, 0.0, 0.0]),
+                    point(2, [0.0, 1.0, 0.0]),
+                    point(3, [0.0, 0.0, 1.0]),
+                ],
+            }],
+        };
+        bundle.write_measured_window(&source).unwrap();
+        bundle.write_measured_window(&target).unwrap();
+
+        let summary = fuse_scene_bundle(&bundle).unwrap();
+
+        assert_eq!(summary.aligned_windows, 2);
+        assert_eq!(summary.points, 4);
+        let manifest = bundle.manifest().unwrap();
+        assert_eq!(manifest.measured_chunk_hashes.len(), 2);
+        assert_eq!(manifest.fused_chunk_hash, Some(summary.chunk_hash));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

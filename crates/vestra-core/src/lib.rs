@@ -17,7 +17,8 @@ pub use geometry::{
     backproject_measured_view,
 };
 pub use reconstruction::{
-    ReconstructionError, ReconstructionProgress, ReconstructionSettings, reconstruct_frames,
+    FusionProgress, ReconstructionError, ReconstructionProgress, ReconstructionSettings,
+    fuse_scene_bundle, reconstruct_frames,
 };
 pub use scene::{
     MeasuredFrameChunk, SceneBundle, SceneBundleError, SceneManifest, SceneProvenance,

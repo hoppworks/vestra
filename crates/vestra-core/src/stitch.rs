@@ -120,9 +120,8 @@ pub fn align_overlapping_windows(
     }
     let count = matches.len();
     let mut inliers: Vec<usize> = (0..count).collect();
-    let mut transform = SimilarityTransform::IDENTITY;
     for _ in 0..3 {
-        transform = fit_similarity(&matches, &inliers)?;
+        let transform = fit_similarity(&matches, &inliers)?;
         let mut residuals = inliers
             .iter()
             .map(|&i| {
@@ -150,7 +149,7 @@ pub fn align_overlapping_windows(
         }
         inliers = next;
     }
-    transform = fit_similarity(&matches, &inliers)?;
+    let transform = fit_similarity(&matches, &inliers)?;
     let squared = inliers
         .iter()
         .map(|&i| {
@@ -366,9 +365,11 @@ pub fn stitch_measured_windows(
         for frame in &window.views {
             for point in &frame.points {
                 let key = (
-                    (point.position[0] / voxel_size).floor() as i32,
-                    (point.position[1] / voxel_size).floor() as i32,
-                    (point.position[2] / voxel_size).floor() as i32,
+                    // Alignment residuals around an exact boundary must not
+                    // turn one physical surfel into two adjacent voxels.
+                    (point.position[0] / voxel_size).round() as i32,
+                    (point.position[1] / voxel_size).round() as i32,
+                    (point.position[2] / voxel_size).round() as i32,
                 );
                 let cell = cells
                     .entry(key)

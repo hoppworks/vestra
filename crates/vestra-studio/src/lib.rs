@@ -76,12 +76,13 @@ fn read_file(path: PathBuf, content_type: &'static str) -> (&'static str, &'stat
 }
 
 fn safe_chunk_path(path: &str) -> bool {
-    let Some(hash) = path
+    let Some(name) = path
         .strip_prefix("/chunks/")
         .and_then(|value| value.strip_suffix(".json"))
     else {
         return false;
     };
+    let hash = name.strip_prefix("fused-").unwrap_or(name);
     hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
@@ -97,6 +98,7 @@ mod tests {
     fn only_sha256_chunk_paths_are_servable() {
         let hash = "a".repeat(64);
         assert!(safe_chunk_path(&format!("/chunks/{hash}.json")));
+        assert!(safe_chunk_path(&format!("/chunks/fused-{hash}.json")));
         assert!(!safe_chunk_path("/chunks/../../manifest.json"));
         assert!(!safe_chunk_path("/chunks/xyz.json"));
     }

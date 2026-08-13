@@ -14,7 +14,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{CameraCalibration, FrameWindow, MeasuredPoint, ScaleStatus};
+use crate::{CameraCalibration, FrameWindow, FusedSceneChunk, MeasuredPoint, ScaleStatus};
 
 const MANIFEST_FILE: &str = "manifest.json";
 const CHUNKS_DIRECTORY: &str = "chunks";
@@ -35,6 +35,10 @@ pub struct SceneManifest {
     pub coordinate_convention: String,
     pub provenance: SceneProvenance,
     pub measured_chunk_hashes: Vec<String>,
+    /// The derived, relative-scale world built from immutable measured chunks.
+    /// It is optional so v1 bundles created before fusion remain readable.
+    #[serde(default)]
+    pub fused_chunk_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -90,6 +94,7 @@ impl SceneBundle {
                 .to_owned(),
             provenance,
             measured_chunk_hashes: Vec::new(),
+            fused_chunk_hash: None,
         })?;
         Ok(bundle)
     }
@@ -150,6 +155,36 @@ impl SceneBundle {
             self.root
                 .join(CHUNKS_DIRECTORY)
                 .join(format!("{hash}.json")),
+        )?;
+        Ok(serde_json::from_slice(&payload)?)
+    }
+
+    /// Stores a derived fused world separately from the raw measurements and
+    /// atomically points the manifest at it. Repeating the same fusion is
+    /// idempotent; a later fusion replaces only this derived reference.
+    pub fn write_fused_scene(&self, chunk: &FusedSceneChunk) -> Result<String, SceneBundleError> {
+        let payload = serde_json::to_vec(chunk)?;
+        let hash = sha256_hex(&payload);
+        let chunk_path = self
+            .root
+            .join(CHUNKS_DIRECTORY)
+            .join(format!("fused-{hash}.json"));
+        if !chunk_path.exists() {
+            atomic_write(&chunk_path, &payload)?;
+        }
+        let mut manifest = self.manifest()?;
+        if manifest.fused_chunk_hash.as_deref() != Some(hash.as_str()) {
+            manifest.fused_chunk_hash = Some(hash.clone());
+            self.write_manifest(&manifest)?;
+        }
+        Ok(hash)
+    }
+
+    pub fn read_fused_scene(&self, hash: &str) -> Result<FusedSceneChunk, SceneBundleError> {
+        let payload = fs::read(
+            self.root
+                .join(CHUNKS_DIRECTORY)
+                .join(format!("fused-{hash}.json")),
         )?;
         Ok(serde_json::from_slice(&payload)?)
     }
@@ -260,5 +295,46 @@ mod tests {
             SceneBundle::open(&root),
             Err(SceneBundleError::MissingManifest(_))
         ));
+    }
+
+    #[test]
+    fn fused_scene_is_content_addressed_without_replacing_measured_evidence() {
+        let root = test_root();
+        let bundle = SceneBundle::create(&root, provenance()).unwrap();
+        let measured = WindowMeasuredChunk {
+            window: FrameWindow {
+                index: 0,
+                start: 0,
+                end: 1,
+            },
+            views: Vec::new(),
+        };
+        let measured_hash = bundle.write_measured_window(&measured).unwrap();
+        let fused = crate::FusedSceneChunk {
+            alignments: Vec::new(),
+            voxel_size: 0.25,
+            points: vec![crate::FusedPoint {
+                position: [1.0, 2.0, 3.0],
+                color_srgb: [4, 5, 6],
+                confidence: 0.7,
+                radius: 0.1,
+                contributors: 2,
+            }],
+        };
+
+        let fused_hash = bundle.write_fused_scene(&fused).unwrap();
+
+        let manifest = bundle.manifest().unwrap();
+        assert_eq!(manifest.measured_chunk_hashes, vec![measured_hash.clone()]);
+        assert_eq!(
+            manifest.fused_chunk_hash.as_deref(),
+            Some(fused_hash.as_str())
+        );
+        assert_eq!(
+            bundle.read_measured_window(&measured_hash).unwrap(),
+            measured
+        );
+        assert_eq!(bundle.read_fused_scene(&fused_hash).unwrap(), fused);
+        fs::remove_dir_all(root).unwrap();
     }
 }

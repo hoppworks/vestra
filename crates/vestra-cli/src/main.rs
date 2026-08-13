@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 use vestra_core::{
     BackprojectionSettings, ReconstructionSettings, SceneBundle, SceneProvenance,
-    VideoExtractionSettings, WindowSettings, extract_video_frames, plan_windows,
+    VideoExtractionSettings, WindowSettings, extract_video_frames, fuse_scene_bundle, plan_windows,
     reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
@@ -56,6 +56,11 @@ enum Command {
         minimum_confidence: f32,
         #[arg(long, default_value_t = 1)]
         pixel_stride: usize,
+    },
+    /// Rebuild the derived world from a bundle's immutable measured windows.
+    Fuse {
+        #[arg(long)]
+        scene: PathBuf,
     },
     /// Serve a local interactive browser studio for a `.vestra` bundle.
     Serve {
@@ -154,6 +159,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     checkpoint.measured_points
                 );
             }
+            let fusion = fuse_scene_bundle(&bundle)?;
+            eprintln!(
+                "fused {} measured windows into {} relative-scale points",
+                fusion.aligned_windows, fusion.points
+            );
             println!(
                 "{}",
                 serde_json::json!({
@@ -161,6 +171,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "decoded_frames": decoded.frames.len(),
                     "windows": progress.len(),
                     "measured_points": progress.iter().map(|item| item.measured_points).sum::<usize>(),
+                    "fused_chunk": fusion.chunk_hash,
+                    "fused_points": fusion.points,
+                })
+            );
+        }
+        Command::Fuse { scene } => {
+            let bundle = SceneBundle::open(scene)?;
+            let fusion = fuse_scene_bundle(&bundle)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "bundle": bundle.root(),
+                    "fused_chunk": fusion.chunk_hash,
+                    "windows": fusion.aligned_windows,
+                    "fused_points": fusion.points,
                 })
             );
         }
