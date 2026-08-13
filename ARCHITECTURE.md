@@ -11,7 +11,8 @@ video
   -> back-projection and confidence filtering
   -> robust weighted Sim3 window alignment
   -> bounded point-to-plane seam refinement
-  -> [next] loop detection and Sim3 pose-graph optimization
+  -> [next] revisit proposal and geometric loop measurement
+  -> optional verified-loop Sim3 pose-graph optimization
   -> confidence-weighted voxel surfel fusion
   -> [next] TSDF de-ghosting
   -> measured/fused scene chunks
@@ -55,6 +56,10 @@ is durable; raw evidence is never replaced.
 - Re-running a completed fusion is deterministic and idempotent.
 - A seam needs direct shared-pixel evidence, non-degenerate geometry, and the
   configured correspondence/inlier/scale gate; there is no identity fallback.
+- Raw windows remain local and immutable until all accepted pose constraints
+  have been applied. A pose graph is only run when it receives at least one
+  independently verified loop edge; otherwise sequential stitching is a
+  strict no-op equivalent.
 - PLY export preserves relative coordinates rather than asserting metres.
 
 ## Benchmark boundary
