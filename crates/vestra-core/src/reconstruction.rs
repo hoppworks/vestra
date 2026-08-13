@@ -9,19 +9,10 @@ use crate::{
     plan_windows, stitch_measured_windows_with_settings,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ReconstructionSettings {
     pub windows: WindowSettings,
     pub backprojection: BackprojectionSettings,
-}
-
-impl Default for ReconstructionSettings {
-    fn default() -> Self {
-        Self {
-            windows: WindowSettings::default(),
-            backprojection: BackprojectionSettings::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

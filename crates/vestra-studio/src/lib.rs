@@ -27,10 +27,8 @@ pub fn serve(scene_root: impl Into<PathBuf>, port: u16) -> Result<(), StudioErro
         ));
     }
     let listener = TcpListener::bind(("127.0.0.1", port))?;
-    for stream in listener.incoming() {
-        if let Ok(stream) = stream {
-            let _ = handle(stream, &scene_root);
-        }
+    for stream in listener.incoming().flatten() {
+        let _ = handle(stream, &scene_root);
     }
     Ok(())
 }

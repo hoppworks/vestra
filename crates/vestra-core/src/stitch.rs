@@ -115,6 +115,8 @@ struct Match {
     weight: f64,
 }
 
+type VoxelCell = (f32, [f32; 3], [f32; 3], f32, u32);
+
 /// Fits the transform that maps `source` into `target` from shared
 /// `(frame_index, source_pixel)` observations. The returned transform is
 /// relative-scale only; callers must retain both measured inputs unchanged.
@@ -313,6 +315,7 @@ fn fit_similarity(
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
+#[allow(clippy::needless_range_loop)] // Jacobi rotations update symmetric rows/columns in-place.
 fn largest_symmetric_eigenvector(mut matrix: [[f64; 4]; 4]) -> Result<[f64; 4], StitchError> {
     let mut vectors = [[0.0; 4]; 4];
     for i in 0..4 {
@@ -458,7 +461,7 @@ pub fn stitch_measured_windows_with_settings(
     }
     radii.sort_by(f32::total_cmp);
     let voxel_size = (radii[radii.len() / 2] * 2.0).max(1e-6);
-    let mut cells: HashMap<(i32, i32, i32), (f32, [f32; 3], [f32; 3], f32, u32)> = HashMap::new();
+    let mut cells: HashMap<(i32, i32, i32), VoxelCell> = HashMap::new();
     for window in &global {
         for frame in &window.views {
             for point in &frame.points {
