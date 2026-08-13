@@ -10,7 +10,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{MeasuredPoint, WindowMeasuredChunk};
+use crate::{
+    MeasuredPoint, PoseGraphEdge, PoseGraphError, PoseGraphReport, PoseGraphSettings,
+    RelativePoseGraph, WindowMeasuredChunk, optimize_relative_pose_graph,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SimilarityTransform {
@@ -149,6 +152,10 @@ pub struct FusedPoint {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FusedSceneChunk {
     pub alignments: Vec<AlignmentReport>,
+    /// Present only when independently verified loop constraints were supplied
+    /// and globally optimized before this fused derivative was published.
+    #[serde(default)]
+    pub pose_graph: Option<PoseGraphReport>,
     pub voxel_size: f32,
     pub points: Vec<FusedPoint>,
 }
@@ -184,6 +191,8 @@ pub enum StitchError {
     DegenerateGeometry,
     #[error("overlap seam does not meet the configured quality gate")]
     QualityGate,
+    #[error("relative pose graph optimization failed: {0}")]
+    PoseGraph(#[from] PoseGraphError),
 }
 
 #[derive(Clone, Copy)]
@@ -664,9 +673,24 @@ pub fn stitch_measured_windows_with_settings(
     windows: &[WindowMeasuredChunk],
     settings: StitchSettings,
 ) -> Result<FusedSceneChunk, StitchError> {
+    stitch_measured_windows_with_loop_closures(windows, settings, &[])
+}
+
+/// Fuses raw measured windows after optionally applying independently verified
+/// non-sequential pose constraints. Each supplied edge must use the convention
+/// documented by [`PoseGraphEdge`]: `from` is the earlier node and its
+/// measurement maps `to` local coordinates into `from` local coordinates.
+///
+/// Empty loop input is deliberately a strict sequential-path no-op.
+pub fn stitch_measured_windows_with_loop_closures(
+    windows: &[WindowMeasuredChunk],
+    settings: StitchSettings,
+    loop_closures: &[PoseGraphEdge],
+) -> Result<FusedSceneChunk, StitchError> {
     let Some(first) = windows.first() else {
         return Ok(FusedSceneChunk {
             alignments: Vec::new(),
+            pose_graph: None,
             voxel_size: 0.0,
             points: Vec::new(),
         });
@@ -678,6 +702,7 @@ pub fn stitch_measured_windows_with_settings(
     let mut poses = vec![SimilarityTransform::IDENTITY];
     let mut previous_global = transform_window(first, SimilarityTransform::IDENTITY);
     let mut alignments = Vec::new();
+    let mut sequential_edges = Vec::new();
     for window in &windows[1..] {
         let report = align_overlapping_windows(window, &previous_global)?;
         let inlier_ratio = report.inlier_count as f32 / report.correspondence_count as f32;
@@ -688,10 +713,36 @@ pub fn stitch_measured_windows_with_settings(
         {
             return Err(StitchError::QualityGate);
         }
+        let previous_pose = *poses.last().expect("first pose exists");
+        let relative = previous_pose
+            .inverse()
+            .expect("validated sequential similarity is invertible")
+            .compose(report.transform);
+        sequential_edges.push(PoseGraphEdge {
+            from: poses.len() - 1,
+            to: poses.len(),
+            measurement: relative,
+            information: 1.0,
+            loop_closure: false,
+        });
         previous_global = transform_window(window, report.transform);
         poses.push(report.transform);
         alignments.push(report);
     }
+    let pose_graph = if loop_closures.is_empty() {
+        None
+    } else {
+        let mut edges = sequential_edges;
+        edges.extend_from_slice(loop_closures);
+        let mut graph = RelativePoseGraph {
+            nodes: poses,
+            edges,
+            fixed: Vec::new(),
+        };
+        let report = optimize_relative_pose_graph(&mut graph, PoseGraphSettings::default())?;
+        poses = graph.nodes;
+        Some(report)
+    };
     let global = windows
         .iter()
         .zip(poses)
@@ -707,6 +758,7 @@ pub fn stitch_measured_windows_with_settings(
     if radii.is_empty() {
         return Ok(FusedSceneChunk {
             alignments,
+            pose_graph,
             voxel_size: 0.0,
             points: Vec::new(),
         });
@@ -769,6 +821,7 @@ pub fn stitch_measured_windows_with_settings(
     });
     Ok(FusedSceneChunk {
         alignments,
+        pose_graph,
         voxel_size,
         points,
     })
@@ -990,6 +1043,60 @@ mod tests {
         .unwrap();
         assert_eq!(raw[2].views[0].points[0].position, [-10.0, 0.0, 0.0]);
         assert_eq!(fused.alignments.len(), 2);
+        assert!(fused.points.iter().all(|point| point.contributors == 3));
+    }
+
+    #[test]
+    fn verified_loop_constraints_are_optimized_before_deferred_fusion() {
+        let base = vec![
+            p(0, [0.0, 0.0, 0.0]),
+            p(1, [1.0, 0.0, 0.0]),
+            p(2, [0.0, 1.0, 0.0]),
+            p(3, [0.0, 0.0, 1.0]),
+        ];
+        let first = chunk(base.clone());
+        let mut second = chunk(
+            base.iter()
+                .copied()
+                .map(|mut point| {
+                    point.position[0] -= 5.0;
+                    point
+                })
+                .collect(),
+        );
+        second.window.index = 1;
+        let mut third = chunk(
+            base.iter()
+                .copied()
+                .map(|mut point| {
+                    point.position[0] -= 10.0;
+                    point
+                })
+                .collect(),
+        );
+        third.window.index = 2;
+        let fused = stitch_measured_windows_with_loop_closures(
+            &[first, second, third],
+            StitchSettings {
+                minimum_correspondences: 3,
+                minimum_inlier_ratio: 0.5,
+                ..StitchSettings::default()
+            },
+            &[PoseGraphEdge {
+                from: 0,
+                to: 2,
+                measurement: SimilarityTransform {
+                    translation: [10.0, 0.0, 0.0],
+                    ..SimilarityTransform::IDENTITY
+                },
+                information: 1.0,
+                loop_closure: true,
+            }],
+        )
+        .unwrap();
+        let report = fused.pose_graph.expect("loop graph should run");
+        assert_eq!(report.loop_edges, 1);
+        assert!(report.final_cost < 1e-9, "{report:?}");
         assert!(fused.points.iter().all(|point| point.contributors == 3));
     }
 }

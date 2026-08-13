@@ -33,8 +33,8 @@ pub use scene::{
 };
 pub use stitch::{
     AlignmentReport, FusedPoint, FusedSceneChunk, SimilarityTransform, StitchError, StitchSettings,
-    align_overlapping_windows, stitch_measured_windows, stitch_measured_windows_with_settings,
-    transform_points,
+    align_overlapping_windows, stitch_measured_windows, stitch_measured_windows_with_loop_closures,
+    stitch_measured_windows_with_settings, transform_points,
 };
 pub use video::{
     CaptureDisposition, CaptureQuality, VideoExtractionSettings, VideoFrames, VideoInputError,

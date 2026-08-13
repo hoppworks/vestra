@@ -330,6 +330,7 @@ mod tests {
         let measured_hash = bundle.write_measured_window(&measured).unwrap();
         let fused = crate::FusedSceneChunk {
             alignments: Vec::new(),
+            pose_graph: None,
             voxel_size: 0.25,
             points: vec![crate::FusedPoint {
                 position: [1.0, 2.0, 3.0],

@@ -74,6 +74,7 @@ mod tests {
         bundle
             .write_fused_scene(&FusedSceneChunk {
                 alignments: Vec::new(),
+                pose_graph: None,
                 voxel_size: 0.1,
                 points: vec![FusedPoint {
                     position: [1.0, 2.0, 3.0],
