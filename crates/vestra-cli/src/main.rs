@@ -12,6 +12,7 @@ use vestra_core::{
     reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
+use vestra_studio::serve;
 
 const VESTRA_LOCK: &str = include_str!("../../../vestra.lock.toml");
 
@@ -55,6 +56,13 @@ enum Command {
         minimum_confidence: f32,
         #[arg(long, default_value_t = 1)]
         pixel_stride: usize,
+    },
+    /// Serve a local interactive browser studio for a `.vestra` bundle.
+    Serve {
+        #[arg(long)]
+        scene: PathBuf,
+        #[arg(long, default_value_t = 4317)]
+        port: u16,
     },
 }
 
@@ -155,6 +163,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "measured_points": progress.iter().map(|item| item.measured_points).sum::<usize>(),
                 })
             );
+        }
+        Command::Serve { scene, port } => {
+            let _bundle = SceneBundle::open(&scene)?;
+            eprintln!("Vestra Studio is listening at http://127.0.0.1:{port}");
+            serve(scene, port)?;
         }
     }
     Ok(())

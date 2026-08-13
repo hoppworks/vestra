@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/vestra-core", "crates/vestra-cli"]
+members = ["crates/vestra-core", "crates/vestra-cli", "crates/vestra-studio"]
 
 [workspace.package]
 version = "0.1.0"

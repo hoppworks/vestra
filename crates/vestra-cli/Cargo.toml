@@ -14,3 +14,4 @@ serde_json.workspace = true
 sha2.workspace = true
 vestra-engine.workspace = true
 vestra-core = { path = "../vestra-core" }
+vestra-studio = { path = "../vestra-studio" }

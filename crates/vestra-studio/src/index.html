@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vestra Studio</title>
+  <style>
+    :root { --ink:#11100e; --paper:#e6dfd2; --muted:#958e82; --line:#39362f; --ember:#e6653e; --signal:#69d2c4; }
+    * { box-sizing:border-box; } body { margin:0; overflow:hidden; color:var(--paper); background:var(--ink); font-family:ui-monospace, Menlo, monospace; }
+    body:before { content:""; position:fixed; inset:0; pointer-events:none; opacity:.18; background-image:radial-gradient(#fff 0.45px, transparent .6px); background-size:5px 5px; mix-blend-mode:soft-light; }
+    canvas { position:fixed; inset:0; width:100vw; height:100vh; cursor:grab; } canvas:active { cursor:grabbing; }
+    header { position:fixed; top:0; left:0; right:0; display:flex; align-items:flex-start; justify-content:space-between; padding:28px 32px; pointer-events:none; }
+    .brand { font: 700 clamp(2rem,4vw,4.7rem)/.78 Georgia,serif; letter-spacing:-.07em; animation:arrive .8s both; } .brand span { color:var(--ember); }
+    .sub { margin-top:14px; color:var(--muted); font-size:10px; letter-spacing:.14em; text-transform:uppercase; }
+    .hud { width:255px; padding:16px; border:1px solid var(--line); background:rgba(17,16,14,.72); backdrop-filter:blur(12px); pointer-events:auto; animation:arrive .8s .13s both; }
+    .hud h2 { margin:0 0 12px; font:700 12px Georgia,serif; letter-spacing:.06em; text-transform:uppercase; } .row { display:flex; justify-content:space-between; padding:7px 0; border-top:1px solid var(--line); font-size:10px; } .row b { color:var(--signal); font-weight:500; }
+    .badge { display:inline-flex; gap:7px; align-items:center; padding:7px 9px; background:#1b2421; border:1px solid #345c57; color:var(--signal); font-size:9px; text-transform:uppercase; letter-spacing:.12em; }
+    .dot { width:6px; height:6px; border-radius:50%; background:var(--signal); box-shadow:0 0 12px var(--signal); }
+    footer { position:fixed; bottom:27px; left:32px; right:32px; display:flex; justify-content:space-between; color:var(--muted); font-size:10px; letter-spacing:.08em; text-transform:uppercase; pointer-events:none; }
+    .loading { position:fixed; inset:0; display:grid; place-items:center; background:var(--ink); z-index:2; transition:opacity .55s; } .loading p { color:var(--signal); letter-spacing:.2em; font-size:10px; animation:pulse 1s infinite alternate; }
+    @keyframes arrive { from { opacity:0; transform:translateY(-10px); } to { opacity:1; transform:none; } } @keyframes pulse { to { opacity:.35; } }
+  </style>
+</head>
+<body>
+  <canvas id="world"></canvas>
+  <div class="loading" id="loading"><p>assembling measured evidence</p></div>
+  <header><div><div class="brand">ves<span>t</span>ra</div><div class="sub">Coherent World / Measured Layer</div></div><aside class="hud"><h2>Scene ledger</h2><div class="badge"><i class="dot"></i> measured evidence</div><div class="row"><span>points</span><b id="points">—</b></div><div class="row"><span>windows</span><b id="windows">—</b></div><div class="row"><span>scale</span><b id="scale">relative</b></div><div class="row"><span>controls</span><b>drag · scroll</b></div></aside></header>
+  <footer><span>Vestra Studio / Local only</span><span id="status">loading chunks</span></footer>
+  <script>
+  const canvas=document.querySelector('#world'), gl=canvas.getContext('webgl',{antialias:true,alpha:false});
+  const vertex=`attribute vec3 p; attribute vec3 c; uniform mat4 m; uniform float s; varying vec3 v; void main(){gl_Position=m*vec4(p,1.);gl_PointSize=s;v=c;}`;
+  const fragment=`precision mediump float; varying vec3 v; void main(){vec2 q=gl_PointCoord-.5;if(dot(q,q)>.25)discard;gl_FragColor=vec4(v,1.);}`;
+  function shader(t,s){const x=gl.createShader(t);gl.shaderSource(x,s);gl.compileShader(x);return x} const prog=gl.createProgram();gl.attachShader(prog,shader(gl.VERTEX_SHADER,vertex));gl.attachShader(prog,shader(gl.FRAGMENT_SHADER,fragment));gl.linkProgram(prog);gl.useProgram(prog);
+  let yaw=.65,pitch=-.2,distance=3,drag=null,positions=[],colors=[],center=[0,0,0],extent=1;
+  function multiply(a,b){let o=new Float32Array(16);for(let r=0;r<4;r++)for(let c=0;c<4;c++)for(let k=0;k<4;k++)o[r*4+c]+=a[r*4+k]*b[k*4+c];return o}
+  function perspective(f,a,n,f2){let q=1/Math.tan(f/2),d=1/(n-f2);return new Float32Array([q/a,0,0,0,0,q,0,0,0,0,(f2+n)*d,-1,0,0,2*f2*n*d,0])}
+  function view(){let cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch),e=[center[0]+distance*cp*sy,center[1]+distance*sp,center[2]+distance*cp*cy],z=[e[0]-center[0],e[1]-center[1],e[2]-center[2]],l=Math.hypot(...z);z=z.map(v=>v/l);let x=[z[2],0,-z[0]],xl=Math.hypot(...x);x=x.map(v=>v/xl);let y=[z[1]*x[2]-z[2]*x[1],z[2]*x[0]-z[0]*x[2],z[0]*x[1]-z[1]*x[0]];return new Float32Array([x[0],y[0],z[0],0,x[1],y[1],z[1],0,x[2],y[2],z[2],0,-(x[0]*e[0]+x[1]*e[1]+x[2]*e[2]),-(y[0]*e[0]+y[1]*e[1]+y[2]*e[2]),-(z[0]*e[0]+z[1]*e[1]+z[2]*e[2]),1])}
+  async function boot(){let manifest=await (await fetch('/manifest.json')).json(),chunks=await Promise.all(manifest.measured_chunk_hashes.map(h=>fetch('/chunks/'+h+'.json').then(r=>r.json())));let lo=[Infinity,Infinity,Infinity],hi=[-Infinity,-Infinity,-Infinity];for(const ch of chunks)for(const v of ch.views)for(const p of v.points){positions.push(...p.position);colors.push(...p.color_srgb.map(x=>x/255));for(let i=0;i<3;i++){lo[i]=Math.min(lo[i],p.position[i]);hi[i]=Math.max(hi[i],p.position[i])}}center=lo.map((v,i)=>(v+hi[i])/2);extent=Math.max(...hi.map((v,i)=>v-lo[i]),.1);distance=extent*1.8;document.querySelector('#points').textContent=(positions.length/3).toLocaleString();document.querySelector('#windows').textContent=chunks.length;document.querySelector('#scale').textContent=manifest.scale;document.querySelector('#status').textContent='drag to orbit';let pb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,pb);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(positions),gl.STATIC_DRAW);let pa=gl.getAttribLocation(prog,'p');gl.enableVertexAttribArray(pa);gl.vertexAttribPointer(pa,3,gl.FLOAT,false,0,0);let cb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,cb);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(colors),gl.STATIC_DRAW);let ca=gl.getAttribLocation(prog,'c');gl.enableVertexAttribArray(ca);gl.vertexAttribPointer(ca,3,gl.FLOAT,false,0,0);document.querySelector('#loading').style.opacity=0;setTimeout(()=>document.querySelector('#loading').remove(),600);render()}
+  function render(){canvas.width=innerWidth*devicePixelRatio;canvas.height=innerHeight*devicePixelRatio;gl.viewport(0,0,canvas.width,canvas.height);gl.clearColor(.067,.063,.055,1);gl.clear(gl.COLOR_BUFFER_BIT);gl.uniformMatrix4fv(gl.getUniformLocation(prog,'m'),false,multiply(perspective(.9,canvas.width/canvas.height,.01,extent*20),view()));gl.uniform1f(gl.getUniformLocation(prog,'s'),Math.max(1.2,3.5*devicePixelRatio));gl.drawArrays(gl.POINTS,0,positions.length/3);requestAnimationFrame(render)}
+  canvas.onpointerdown=e=>drag=[e.clientX,e.clientY];addEventListener('pointerup',()=>drag=null);addEventListener('pointermove',e=>{if(!drag)return;yaw+=(e.clientX-drag[0])*.008;pitch=Math.max(-1.45,Math.min(1.45,pitch+(e.clientY-drag[1])*.008));drag=[e.clientX,e.clientY]});canvas.onwheel=e=>{distance*=Math.exp(e.deltaY*.001);distance=Math.max(extent*.18,Math.min(extent*12,distance));e.preventDefault()},{passive:false});boot().catch(e=>{document.querySelector('#loading').innerHTML='<p>could not load scene: '+e.message+'</p>';console.error(e)});
+  </script>
+</body></html>
