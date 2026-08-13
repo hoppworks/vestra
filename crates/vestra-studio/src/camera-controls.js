@@ -7,7 +7,7 @@
   function rotate(quaternion, vector) { return quaternionMultiply(quaternionMultiply(quaternion, [vector[0], vector[1], vector[2], 0]), [-quaternion[0], -quaternion[1], -quaternion[2], quaternion[3]]).slice(0, 3); }
   // backward points target → camera, so forward is -backward.
   function cameraBasis(orientation) { const backward = normalize(rotate(orientation, [0, 0, 1])), rotatedUp = normalize(rotate(orientation, [0, 1, 0])), right = normalize(cross(rotatedUp, backward)), up = normalize(cross(backward, right)); return { right, up, backward, forward: backward.map(value => -value) }; }
-  function move(center, orientation, distance, command) { const basis = cameraBasis(orientation), step = Math.max(distance * .06, .01), direction = {forward:basis.forward, backward:basis.backward, left:basis.right.map(value => -value), right:basis.right, up:[0,1,0], down:[0,-1,0]}[command]; return direction ? center.map((value, axis) => value + direction[axis] * step) : center.slice(); }
+  function move(center, orientation, distance, command, ratio = .06) { const basis = cameraBasis(orientation), step = Math.max(distance * ratio, .01), direction = {forward:basis.forward, backward:basis.backward, left:basis.right.map(value => -value), right:basis.right, up:[0,1,0], down:[0,-1,0]}[command]; return direction ? center.map((value, axis) => value + direction[axis] * step) : center.slice(); }
   function commandForKey(key) { return {ArrowUp:'forward',ArrowDown:'backward',ArrowLeft:'left',ArrowRight:'right',e:'up',E:'up',d:'down',D:'down'}[key] || null; }
   root.VestraCameraControls = { cameraBasis, commandForKey, move };
 }(typeof window === 'undefined' ? globalThis : window));
