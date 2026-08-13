@@ -79,7 +79,7 @@ pub enum PoseGraphError {
 /// The residual is `log(Z⁻¹ ∘ G_from⁻¹ ∘ G_to)`, with three translation,
 /// three rotation, and one log-scale component. Jacobians use central finite
 /// differences so the implementation stays auditable while the graph remains
-/// small (the default 120-frame capture creates fourteen window nodes).
+/// small (the default 120-frame capture creates thirteen window nodes).
 pub fn optimize_relative_pose_graph(
     graph: &mut RelativePoseGraph,
     settings: PoseGraphSettings,

@@ -4,6 +4,9 @@ Date: 2026-08-13
 Scope: local browser rendering of the existing private `IMG_2269` reconstruction bundle.  
 Scale: relative; this is not a metric accuracy claim.
 
+> This is a historical browser validation of the pre-correction 14-window
+> bundle. It remains UI evidence only; it is not a PR #2 geometry-parity run.
+
 ## Environment
 
 - Studio source: Vestra root checkout, served by `vestra-cli serve` on a loopback-only address.

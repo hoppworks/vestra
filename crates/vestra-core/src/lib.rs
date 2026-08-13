@@ -96,8 +96,9 @@ impl FrameWindow {
     }
 }
 
-/// Reproduces PR #2's `for (w0 = 0; w0 < F; w0 += chunk-overlap)` schedule,
-/// including its final partial window.
+/// Reproduces PR #2's `for (w0 = 0; w0 < F; w0 += chunk-overlap)` schedule.
+/// A window that reaches the final source frame is terminal; it is not followed
+/// by a redundant trailing overlap-only partial window.
 pub fn plan_windows(
     frame_count: usize,
     settings: WindowSettings,
@@ -109,15 +110,21 @@ pub fn plan_windows(
         return Err(ScheduleError::OverlapTooLarge);
     }
     let step = settings.chunk_size - settings.overlap;
-    Ok((0..frame_count)
-        .step_by(step)
-        .enumerate()
-        .map(|(index, start)| FrameWindow {
-            index,
+    let mut windows = Vec::new();
+    let mut start = 0;
+    while start < frame_count {
+        let end = (start + settings.chunk_size).min(frame_count);
+        windows.push(FrameWindow {
+            index: windows.len(),
             start,
-            end: (start + settings.chunk_size).min(frame_count),
-        })
-        .collect())
+            end,
+        });
+        if end == frame_count {
+            break;
+        }
+        start += step;
+    }
+    Ok(windows)
 }
 
 #[derive(Debug, Clone)]
@@ -202,10 +209,10 @@ mod tests {
     }
 
     #[test]
-    fn sporting_workload_has_fourteen_windows_and_partial_tail() {
+    fn sporting_workload_matches_the_cpp_terminal_window_rule() {
         let windows = plan_windows(120, WindowSettings::default()).unwrap();
-        assert_eq!(windows.len(), 14);
-        assert_eq!(windows.last().unwrap().start, 117);
+        assert_eq!(windows.len(), 13);
+        assert_eq!(windows.last().unwrap().start, 108);
         assert_eq!(windows.last().unwrap().end, 120);
     }
 
