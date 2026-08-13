@@ -2,10 +2,9 @@
 
 ## Status
 
-**Infrastructure accepted; Vestra geometry parity is not claimed yet.** This
+**Transform-tier parity accepted; raw-cloud parity is not claimed yet.** This
 record establishes a reproducible, model-free executable boundary around the
-actual `stream_points_core` implementation used by the reference project. The
-next milestone is a Vestra-generated fixture and a pre-voxel comparator.
+actual `stream_points_core` implementation used by the reference project.
 
 The original bootstrap interchange was corrected before it was used for a
 model-derived comparison: `VPS1` v2 stores outputs **per inference window**,
@@ -72,8 +71,8 @@ force superficial equality.
 
 ## First real fixture: IMG_2269
 
-**Status: model evidence and the C++ reference stream ran successfully; Sim(3)
-parity is not accepted.** The run used the existing canonical 120-frame FFmpeg
+**Status: model evidence and the C++ reference stream ran successfully.** The
+run used the existing canonical 120-frame FFmpeg
 RGB24 cache at 504×336, the BASE F32 model, 12-frame chunks and 3-frame overlap
 on the AMD Ryzen 9 9950X Workhorse with 16 Rust worker threads.
 
@@ -97,16 +96,40 @@ The first transform-tier Rust replay initially filtered seam evidence by the
 overlap points for Sim(3), with confidence only as a weight, and applies the
 percentile gate only when emitting the final cloud. `94b2742` corrects that
 oracle path. Both implementations then use the same 508,032 direct pixel
-correspondences per seam, but their transforms still differ materially.
+correspondences per seam. `093b538` adds a separately named reference-only
+estimator: weighted Horn/Umeyama followed by eight confidence-weighted
+Huber-IRLS iterations, with no product trimming or point-to-plane refinement.
+The production seam policy remains unchanged.
 
-The remaining concrete mismatch is algorithmic and intentional in the current
-Vestra product path:
+## Accepted transform-tier result
 
-- PR #2: weighted Umeyama followed by eight confidence-weighted Huber-IRLS
-  iterations; no point-to-plane correction in the base stream tier.
-- Vestra: trimmed robust similarity followed by point-to-plane refinement.
+The 2026-08-13 Workhorse replay used Vestra root
+`093b5383438e2ac1bdb04b37b7916ddf0af6c660`, Vestra Engine `e6c8d0f`, Vestra
+Kernels `9740a98`, `-C target-cpu=znver5`, and the unchanged `VPS1` fixture.
+It ran `oracle-stitch` (Rust) and the pinned C++ fixture dump independently;
+neither command reran model inference.
 
-The next required implementation is a separately named PR #2-compatible
-weighted Huber-IRLS Sim(3) estimator, selected only by the oracle/parity path.
-It must be validated against synthetic known transforms and this fixture before
-changing the product's stricter seam policy or claiming reconstruction parity.
+For all twelve sequential seams, Rust's scale and weighted RMS matched the
+C++ log to its printed precision. The paired values are:
+
+| Window start | C++ / Rust scale | C++ / Rust RMS |
+| ---: | ---: | ---: |
+| 9 | 1.3972 / 1.397189 | 0.1592 / 0.159190 |
+| 18 | 1.0230 / 1.023044 | 0.06893 / 0.068929 |
+| 27 | 0.5997 / 0.599664 | 0.09592 / 0.095915 |
+| 36 | 0.8180 / 0.817988 | 0.05732 / 0.057319 |
+| 45 | 1.0497 / 1.049686 | 0.09536 / 0.095361 |
+| 54 | 0.4315 / 0.431534 | 0.1550 / 0.155032 |
+| 63 | 1.0244 / 1.024417 | 0.06848 / 0.068476 |
+| 72 | 0.8718 / 0.871792 | 0.06436 / 0.064365 |
+| 81 | 0.9592 / 0.959247 | 0.03892 / 0.038915 |
+| 90 | 0.6992 / 0.699201 | 0.09391 / 0.093906 |
+| 99 | 0.8619 / 0.861860 | 0.02811 / 0.028110 |
+| 108 | 0.9499 / 0.949855 | 0.07767 / 0.077666 |
+
+This proves only the local, sequential transform tier. It does not yet prove
+the rotations/translations (the upstream stream API does not expose them),
+first-owner emission, emitted radius/color semantics, raw-point equality,
+voxelisation, loops, ICP, TSDF, metric scale, or visual quality. The next
+milestone is a pre-voxel raw-cloud comparator with a reference diagnostic that
+exports the otherwise internal per-window transforms and owner evidence.
