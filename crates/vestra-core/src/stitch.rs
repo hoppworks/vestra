@@ -172,6 +172,25 @@ pub struct StitchSettings {
     pub maximum_scale: f32,
 }
 
+/// Gates for measuring a non-sequential revisit in local window coordinates.
+/// `match_distance` is relative-scale geometry, never metres.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LoopMeasurementSettings {
+    pub match_distance: f32,
+    pub minimum_correspondences: usize,
+    pub minimum_inlier_ratio: f32,
+    pub maximum_rms_residual: f32,
+    pub information: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LoopMeasurement {
+    pub edge: PoseGraphEdge,
+    pub correspondence_count: usize,
+    pub inlier_count: usize,
+    pub rms_residual: f32,
+}
+
 impl Default for StitchSettings {
     fn default() -> Self {
         Self {
@@ -193,6 +212,92 @@ pub enum StitchError {
     QualityGate,
     #[error("relative pose graph optimization failed: {0}")]
     PoseGraph(#[from] PoseGraphError),
+}
+
+/// Measures a proposed revisit from `later` local coordinates into `earlier`
+/// local coordinates. The supplied seed comes from the sequential trajectory;
+/// it is only used to establish tight spatial candidates, never accepted as a
+/// loop measurement itself.
+pub fn measure_loop_closure(
+    earlier: &WindowMeasuredChunk,
+    later: &WindowMeasuredChunk,
+    seed_later_to_earlier: SimilarityTransform,
+    settings: LoopMeasurementSettings,
+) -> Result<LoopMeasurement, StitchError> {
+    if !settings.match_distance.is_finite()
+        || settings.match_distance <= 0.0
+        || !settings.maximum_rms_residual.is_finite()
+        || settings.maximum_rms_residual <= 0.0
+        || !settings.information.is_finite()
+        || settings.information <= 0.0
+    {
+        return Err(StitchError::QualityGate);
+    }
+    let mut cells: HashMap<(i32, i32, i32), Vec<&MeasuredPoint>> = HashMap::new();
+    for point in earlier.views.iter().flat_map(|view| &view.points) {
+        if point.position.iter().all(|value| value.is_finite()) {
+            cells
+                .entry(spatial_cell(point.position, settings.match_distance))
+                .or_default()
+                .push(point);
+        }
+    }
+    let mut matches = Vec::new();
+    for point in later.views.iter().flat_map(|view| &view.points) {
+        let seeded = seed_later_to_earlier.apply(point.position);
+        let mut nearest: Option<(&MeasuredPoint, f32)> = None;
+        let base = spatial_cell(seeded, settings.match_distance);
+        for x in (base.0 - 1)..=(base.0 + 1) {
+            for y in (base.1 - 1)..=(base.1 + 1) {
+                for z in (base.2 - 1)..=(base.2 + 1) {
+                    for candidate in cells.get(&(x, y, z)).into_iter().flatten() {
+                        let residual = distance(seeded, candidate.position);
+                        if residual <= settings.match_distance
+                            && nearest.is_none_or(|(_, best)| residual < best)
+                        {
+                            nearest = Some((candidate, residual));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((candidate, _)) = nearest {
+            matches.push(Match {
+                source: point.position.map(f64::from),
+                target: candidate.position.map(f64::from),
+                target_normal: candidate.normal.map(f64::from),
+                weight: f64::from(point.confidence.min(candidate.confidence).max(0.0)),
+            });
+        }
+    }
+    let correspondence_count = matches.len();
+    if correspondence_count < settings.minimum_correspondences {
+        return Err(StitchError::InsufficientCorrespondences);
+    }
+    let (transform, inliers, rms_residual) = robust_similarity(&matches)?;
+    let inlier_ratio = inliers.len() as f32 / correspondence_count as f32;
+    if inlier_ratio < settings.minimum_inlier_ratio || rms_residual > settings.maximum_rms_residual
+    {
+        return Err(StitchError::QualityGate);
+    }
+    // Revisits are weak scale observations, especially across planar walls.
+    // Preserve the chained relative scale and optimize only rigid loop closure.
+    let measurement = SimilarityTransform {
+        scale: 1.0,
+        ..transform
+    };
+    Ok(LoopMeasurement {
+        edge: PoseGraphEdge {
+            from: earlier.window.index,
+            to: later.window.index,
+            measurement,
+            information: settings.information,
+            loop_closure: true,
+        },
+        correspondence_count,
+        inlier_count: inliers.len(),
+        rms_residual,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -235,9 +340,22 @@ pub fn align_overlapping_windows(
         return Err(StitchError::InsufficientCorrespondences);
     }
     let count = matches.len();
+    let (transform, inliers, rms_residual) = robust_similarity(&matches)?;
+    Ok(AlignmentReport {
+        transform,
+        correspondence_count: count,
+        inlier_count: inliers.len(),
+        rms_residual,
+    })
+}
+
+fn robust_similarity(
+    matches: &[Match],
+) -> Result<(SimilarityTransform, Vec<usize>, f32), StitchError> {
+    let count = matches.len();
     let mut inliers: Vec<usize> = (0..count).collect();
     for _ in 0..3 {
-        let transform = fit_similarity(&matches, &inliers)?;
+        let transform = fit_similarity(matches, &inliers)?;
         let mut residuals = inliers
             .iter()
             .map(|&i| {
@@ -265,7 +383,7 @@ pub fn align_overlapping_windows(
         }
         inliers = next;
     }
-    let transform = refine_point_to_plane(fit_similarity(&matches, &inliers)?, &matches, &inliers);
+    let transform = refine_point_to_plane(fit_similarity(matches, &inliers)?, matches, &inliers);
     let squared = inliers
         .iter()
         .map(|&i| {
@@ -276,12 +394,16 @@ pub fn align_overlapping_windows(
             d * d
         })
         .sum::<f32>();
-    Ok(AlignmentReport {
-        transform,
-        correspondence_count: count,
-        inlier_count: inliers.len(),
-        rms_residual: (squared / inliers.len() as f32).sqrt(),
-    })
+    let rms_residual = (squared / inliers.len() as f32).sqrt();
+    Ok((transform, inliers, rms_residual))
+}
+
+fn spatial_cell(position: [f32; 3], cell_size: f32) -> (i32, i32, i32) {
+    (
+        (position[0] / cell_size).floor() as i32,
+        (position[1] / cell_size).floor() as i32,
+        (position[2] / cell_size).floor() as i32,
+    )
 }
 
 fn fit_similarity(
@@ -1098,5 +1220,75 @@ mod tests {
         assert_eq!(report.loop_edges, 1);
         assert!(report.final_cost < 1e-9, "{report:?}");
         assert!(fused.points.iter().all(|point| point.contributors == 3));
+    }
+
+    #[test]
+    fn spatial_revisit_measurement_recovers_known_rigid_loop() {
+        let earlier = chunk(vec![
+            p(0, [0.0, 0.0, 0.0]),
+            p(1, [1.0, 0.0, 0.0]),
+            p(2, [0.0, 1.0, 0.0]),
+            p(3, [0.0, 0.0, 1.0]),
+        ]);
+        let mut later = chunk(
+            earlier.views[0]
+                .points
+                .iter()
+                .copied()
+                .map(|mut point| {
+                    point.position[0] -= 4.0;
+                    point
+                })
+                .collect(),
+        );
+        later.window.index = 2;
+        let measured = measure_loop_closure(
+            &earlier,
+            &later,
+            SimilarityTransform {
+                translation: [4.0, 0.0, 0.0],
+                ..SimilarityTransform::IDENTITY
+            },
+            LoopMeasurementSettings {
+                match_distance: 0.01,
+                minimum_correspondences: 3,
+                minimum_inlier_ratio: 0.75,
+                maximum_rms_residual: 0.001,
+                information: 1.0,
+            },
+        )
+        .unwrap();
+        assert_eq!((measured.edge.from, measured.edge.to), (0, 2));
+        assert_eq!(measured.edge.measurement.scale, 1.0);
+        assert!((measured.edge.measurement.translation[0] - 4.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn unrelated_windows_do_not_create_a_loop_measurement() {
+        let earlier = chunk(vec![
+            p(0, [0.0, 0.0, 0.0]),
+            p(1, [1.0, 0.0, 0.0]),
+            p(2, [0.0, 1.0, 0.0]),
+        ]);
+        let later = chunk(vec![
+            p(0, [100.0, 0.0, 0.0]),
+            p(1, [101.0, 0.0, 0.0]),
+            p(2, [100.0, 1.0, 0.0]),
+        ]);
+        assert_eq!(
+            measure_loop_closure(
+                &earlier,
+                &later,
+                SimilarityTransform::IDENTITY,
+                LoopMeasurementSettings {
+                    match_distance: 0.01,
+                    minimum_correspondences: 3,
+                    minimum_inlier_ratio: 0.75,
+                    maximum_rms_residual: 0.001,
+                    information: 1.0,
+                },
+            ),
+            Err(StitchError::InsufficientCorrespondences)
+        );
     }
 }
