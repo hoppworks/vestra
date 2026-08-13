@@ -44,7 +44,7 @@ device-resident residual building block. The separate opt-in Engine parity
 slice below calls it, but the normal Engine path does not; therefore this
 evidence must not be used as a GPU performance result.
 
-Kernels revision `f3b0df00555e8132b2878568e9d374d05f3b090d` additionally
+Kernels revision `4d969547bbe3469a89ae378b048a37f497d6b887` additionally
 provides device-resident F32 row-major GEMM through dynamically loaded
 CUBLAS, a native linear epilogue, and the same exact-erf GELU approximation
 used by the CPU path. Its Workhorse oracle verified the hand-computed `2×3 ×
@@ -62,6 +62,12 @@ when a plan is prepared; the first projection output stays on the device as
 the second projection input. The final exact result is `[-58,-157]`. This is
 the first verified device-resident multi-operator chain, not an end-to-end
 inference or performance claim.
+
+It also provides a fixed-geometry CUDA LayerNorm primitive: one 256-thread
+block per token row, which covers DA3-BASE's 768-wide rows. Its Workhorse
+oracle compared a two-row F32 result against the CPU LayerNorm reference with
+absolute error `<= 2e-5`. It is not yet enabled in the Engine; only the
+complete Engine parity gate can promote it into the cached MLP chain.
 
 The first Engine-owned fixed-shape CUDA operator is recorded below. Every
 subsequent CUDA operator must likewise have a CPU F32 oracle and the locked
