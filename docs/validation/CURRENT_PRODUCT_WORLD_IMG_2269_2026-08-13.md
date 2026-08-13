@@ -65,6 +65,25 @@ This confirms the current Rust pipeline publishes a browser-consumable local
 relative-scale surfel world. Visual/semantic quality remains capture-dependent
 and is not inferred from these delivery checks.
 
+## Browser intake success path
+
+The `vestra app` flow was additionally exercised on the Workhorse after the
+current product run. It received the same local `IMG_2269.MOV` over its
+loopback-only `POST /api/job` stream, copied it into a job-owned directory,
+spawned the ordinary Rust `reconstruct` command, polled its log state, and
+started a separate loopback Studio viewer on success. A deliberately short
+two-frame diagnostic used the same 504×336 raster and BASE-F32 model:
+
+| Check | Result |
+| --- | --- |
+| Browser intake job | accepted and completed |
+| Reconstruction output | one measured window, 5,292 measured points, 5,285 fused surfels |
+| Viewer endpoint | `vestra.scene/v1` manifest with one binary fused chunk |
+
+The test server processes were stopped after verification. This proves the
+browser selection/streaming orchestration path; the 120-frame result above is
+the representative world-quality and delivery run.
+
 ## Relationship to the C++ oracle
 
 The same corrected 120-frame / 13-window model evidence was independently run
