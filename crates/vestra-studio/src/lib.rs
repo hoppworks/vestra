@@ -14,6 +14,7 @@ use vestra_core::{CameraCalibration, SceneBundle, SimilarityTransform, camera_ce
 
 const INDEX_HTML: &str = include_str!("index.html");
 const INTAKE_HTML: &str = include_str!("intake.html");
+const CAMERA_CONTROLS_JS: &str = include_str!("camera-controls.js");
 
 /// Local process-launch configuration for the browser intake. The server never
 /// accepts a destination or executable from HTTP; both are fixed by the CLI
@@ -642,9 +643,12 @@ fn intake_world_path(path: &str) -> Option<&str> {
             _ => remainder,
         });
     }
-    matches!(path, "/manifest.json" | "/evidence.json")
-        .then_some(path)
-        .or_else(|| (path.starts_with("/chunks/") || path.starts_with("/sources/")).then_some(path))
+    matches!(
+        path,
+        "/manifest.json" | "/evidence.json" | "/camera-controls.js"
+    )
+    .then_some(path)
+    .or_else(|| (path.starts_with("/chunks/") || path.starts_with("/sources/")).then_some(path))
 }
 
 fn write_response(
@@ -675,6 +679,11 @@ fn handle_scene_path(stream: &mut TcpStream, root: &Path, path: &str) -> std::io
             "200 OK",
             "text/html; charset=utf-8",
             INDEX_HTML.as_bytes().to_vec(),
+        ),
+        "/camera-controls.js" => (
+            "200 OK",
+            "text/javascript; charset=utf-8",
+            CAMERA_CONTROLS_JS.as_bytes().to_vec(),
         ),
         "/manifest.json" => read_file(root.join("manifest.json"), "application/json"),
         "/evidence.json" => evidence(root),
@@ -1069,6 +1078,10 @@ mod tests {
             Some("/manifest.json")
         );
         assert_eq!(intake_world_path("/manifest.json"), Some("/manifest.json"));
+        assert_eq!(
+            intake_world_path("/camera-controls.js"),
+            Some("/camera-controls.js")
+        );
         assert_eq!(
             intake_world_path("/chunks/000001.bin"),
             Some("/chunks/000001.bin")
