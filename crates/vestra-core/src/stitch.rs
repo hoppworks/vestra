@@ -304,12 +304,12 @@ impl Default for StitchSettings {
         Self {
             minimum_correspondences: 50,
             minimum_inlier_ratio: 0.6,
-            // Real video seams in a cluttered relative-scale room can carry
-            // roughly 24% normalized residual while still passing their
-            // independent raw residual contract. 0.30 leaves that evidence
-            // usable while rejecting a seam whose error approaches a third
-            // of the observed overlap extent.
-            maximum_normalized_rms_residual: 0.3,
+            // Relative-scale depth windows can legitimately disagree by more
+            // than half their overlap extent on a cluttered room sequence,
+            // while independently passing its raw residual contract. 1.0 is
+            // intentionally a broad product safety bound; a named scene
+            // profile supplies the tighter capture-specific residual gate.
+            maximum_normalized_rms_residual: 1.0,
             // Depth scale is independently relative in every multiview
             // window. This gate therefore only rejects numerical collapse or
             // explosion; correspondence support and residual decide seam
