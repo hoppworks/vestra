@@ -152,7 +152,15 @@ pub struct FusedPoint {
     pub color_srgb: [u8; 3],
     pub confidence: f32,
     pub radius: f32,
+    /// First source-video frame that observed this surface. `-1` preserves
+    /// compatibility with legacy chunks that did not retain reveal provenance.
+    #[serde(default = "unknown_first_observing_frame")]
+    pub first_observing_frame: i32,
     pub contributors: u32,
+}
+
+const fn unknown_first_observing_frame() -> i32 {
+    -1
 }
 
 /// One raw multiview window's final local-to-world transform. It records the
@@ -464,7 +472,7 @@ struct Match {
     weight: f64,
 }
 
-type VoxelCell = (f32, [f32; 3], [f32; 3], [f32; 3], f32, u32);
+type VoxelCell = (f32, [f32; 3], [f32; 3], [f32; 3], f32, u32, i32);
 type SpatialPointRef<'a> = (usize, &'a MeasuredPoint);
 
 /// Fits the transform that maps `source` into `target` from shared
@@ -1296,9 +1304,15 @@ pub fn stitch_measured_windows_with_loop_closures(
                     (point.position[1] / voxel_size).round() as i32,
                     (point.position[2] / voxel_size).round() as i32,
                 );
-                let cell = cells
-                    .entry(key)
-                    .or_insert((0.0, [0.0; 3], [0.0; 3], [0.0; 3], 0.0, 0));
+                let cell = cells.entry(key).or_insert((
+                    0.0,
+                    [0.0; 3],
+                    [0.0; 3],
+                    [0.0; 3],
+                    0.0,
+                    0,
+                    frame.frame_index as i32,
+                ));
                 let weight = point.confidence.max(0.0);
                 cell.0 += weight;
                 for d in 0..3 {
@@ -1308,22 +1322,26 @@ pub fn stitch_measured_windows_with_loop_closures(
                 }
                 cell.4 += point.radius;
                 cell.5 += 1;
+                cell.6 = cell.6.min(frame.frame_index as i32);
             }
         }
     }
     let mut points = cells
         .into_values()
-        .map(|(weight, position, color, normal, radius, contributors)| {
-            let d = weight.max(1e-6);
-            FusedPoint {
-                position: position.map(|v| v / d),
-                normal: normalize(normal.map(|v| v / d)),
-                color_srgb: color.map(|v| (v / d).round().clamp(0.0, 255.0) as u8),
-                confidence: weight / contributors as f32,
-                radius: radius / contributors as f32,
-                contributors,
-            }
-        })
+        .map(
+            |(weight, position, color, normal, radius, contributors, first_observing_frame)| {
+                let d = weight.max(1e-6);
+                FusedPoint {
+                    position: position.map(|v| v / d),
+                    normal: normalize(normal.map(|v| v / d)),
+                    color_srgb: color.map(|v| (v / d).round().clamp(0.0, 255.0) as u8),
+                    confidence: weight / contributors as f32,
+                    radius: radius / contributors as f32,
+                    first_observing_frame,
+                    contributors,
+                }
+            },
+        )
         .collect::<Vec<_>>();
     points.sort_by(|a, b| {
         a.position[0]
@@ -1538,6 +1556,7 @@ mod tests {
             color_srgb: [0; 3],
             confidence: 1.0,
             radius: 0.1,
+            first_observing_frame: -1,
             contributors: 1,
         };
         let topology = fused_topology(

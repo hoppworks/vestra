@@ -172,7 +172,7 @@ pub(crate) fn refine_point_to_plane(
     })
 }
 
-fn estimate_normals(points: &[[f32; 3]], radius: f32) -> Vec<[f32; 3]> {
+pub(crate) fn estimate_normals(points: &[[f32; 3]], radius: f32) -> Vec<[f32; 3]> {
     let hash = SpatialHash::new(points, radius);
     points
         .iter()

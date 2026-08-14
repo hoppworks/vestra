@@ -15,6 +15,7 @@ pub mod reconstruction;
 pub mod revisit;
 pub mod scene;
 pub mod stitch;
+pub mod tsdf;
 pub mod video;
 
 pub use cpp_pr2_oracle::{
@@ -55,6 +56,7 @@ pub use stitch::{
     stitch_measured_windows_with_loop_closures, stitch_measured_windows_with_settings,
     transform_points,
 };
+pub use tsdf::{TsdfObservation, TsdfSettings, TsdfSurfel, fuse_normal_space_tsdf};
 pub use video::{
     CaptureDisposition, CaptureQuality, VideoExtractionSettings, VideoFrames, VideoInputError,
     assess_capture_quality, extract_video_frames, load_decoded_frame_cache,

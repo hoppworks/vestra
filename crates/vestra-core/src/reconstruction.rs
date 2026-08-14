@@ -314,6 +314,7 @@ fn emit_cpp_pr2_cloud_with_poses(
                     color_srgb: point.color_srgb,
                     confidence: point.confidence,
                     radius,
+                    first_observing_frame: frame.frame_index as i32,
                     contributors: 1,
                 });
                 let frame_index = frame.frame_index;

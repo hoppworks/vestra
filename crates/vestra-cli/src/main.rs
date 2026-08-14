@@ -978,6 +978,7 @@ mod tests {
                     color_srgb: [0; 3],
                     confidence: 1.0,
                     radius: 0.1,
+                    first_observing_frame: -1,
                     contributors: 1,
                 }],
             })

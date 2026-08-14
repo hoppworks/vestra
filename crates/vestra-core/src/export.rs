@@ -301,6 +301,7 @@ mod tests {
                     color_srgb: [4, 5, 6],
                     confidence: 0.7,
                     radius: 0.2,
+                    first_observing_frame: -1,
                     contributors: 3,
                 }],
             })
@@ -342,6 +343,7 @@ mod tests {
                     color_srgb: [4, 5, 6],
                     confidence: 0.7,
                     radius: 0.2,
+                    first_observing_frame: -1,
                     contributors: 3,
                 }],
             })
@@ -387,6 +389,7 @@ mod tests {
                     color_srgb: [4, 5, 6],
                     confidence: 0.7,
                     radius: 0.2,
+                    first_observing_frame: -1,
                     contributors: 3,
                 }],
             })
