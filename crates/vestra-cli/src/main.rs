@@ -212,6 +212,18 @@ enum Command {
         #[arg(long)]
         tsdf: bool,
     },
+    /// Run Vestra's pinned PR #2 geometry oracle without comparison I/O.
+    ///
+    /// This exists for fair geometry-only benchmarking against the equivalent
+    /// C++ oracle harness: it parses the same VPS1 evidence and performs the
+    /// same selected raw-cloud or TSDF work, then emits only a tiny summary.
+    OracleRun {
+        #[arg(long)]
+        fixture: PathBuf,
+        /// Run PR #2 normal-space TSDF fusion after trajectory optimization.
+        #[arg(long)]
+        tsdf: bool,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -570,6 +582,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "frame_forward_mae": frame_forward_mae,
                     "frame_forward_max_abs": frame_forward_max_abs,
                     "alignments": rust.alignments,
+                })
+            );
+        }
+        Command::OracleRun { fixture, tsdf } => {
+            let mut fixture_reader = BufReader::new(File::open(fixture)?);
+            let fixture = CppPr2Fixture::read_vps1(&mut fixture_reader)?;
+            let cloud = if tsdf {
+                emit_cpp_pr2_tsdf_reference_cloud(&fixture)?
+            } else if fixture.branches.loop_close {
+                emit_cpp_pr2_loop_closed_reference_cloud(&fixture)?
+            } else {
+                emit_cpp_pr2_reference_cloud(&fixture)?
+            };
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.cpp-pr2-oracle-run/v1",
+                    "frames": fixture.frame_count,
+                    "windows": fixture.window_views.len(),
+                    "tsdf": tsdf,
+                    "points": cloud.points.len(),
+                    "frame_owned_points": cloud.frame_owned_points,
+                    "alignment_count": cloud.alignments.len(),
                 })
             );
         }
