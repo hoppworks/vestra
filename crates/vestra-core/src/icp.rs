@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 
+use rayon::prelude::*;
+
 use crate::SimilarityTransform;
 
 #[derive(Debug, Clone, Copy)]
@@ -175,7 +177,7 @@ pub(crate) fn refine_point_to_plane(
 pub(crate) fn estimate_normals(points: &[[f32; 3]], radius: f32) -> Vec<[f32; 3]> {
     let hash = SpatialHash::new(points, radius);
     points
-        .iter()
+        .par_iter()
         .map(|&point| {
             let neighbours = hash.radius(point, radius);
             if neighbours.len() < 3 {
