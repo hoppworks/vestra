@@ -7,14 +7,36 @@ use std::{
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
-use vestra_core::{CameraCalibration, SceneBundle, SimilarityTransform, camera_centre_direction};
+use vestra_core::{
+    CameraCalibration, MeasuredPoint, SceneBundle, SimilarityTransform, WindowMeasuredChunk,
+    camera_centre_direction,
+};
 
 const INDEX_HTML: &str = include_str!("index.html");
 const INTAKE_HTML: &str = include_str!("intake.html");
 const CAMERA_CONTROLS_JS: &str = include_str!("camera-controls.js");
+const REPLAY_MAGIC: [u8; 4] = *b"VRPL";
+const REPLAY_VERSION: u16 = 1;
+
+/// One measured window is sufficient for sequential replay: a source frame is
+/// owned by its earliest window, and the browser requests frames in video
+/// order. Keeping only that window prevents a replay from repeatedly parsing
+/// a 23 MiB immutable evidence chunk for every animation tick.
+#[derive(Debug)]
+struct ReplayCache {
+    root: PathBuf,
+    bundle: SceneBundle,
+    measured_hashes: Vec<String>,
+    first_window_end: usize,
+    window_step: usize,
+    current_hash: String,
+    current_window: WindowMeasuredChunk,
+}
+
+static REPLAY_CACHE: OnceLock<Mutex<Option<ReplayCache>>> = OnceLock::new();
 
 /// Local process-launch configuration for the browser intake. The server never
 /// accepts a destination or executable from HTTP; both are fixed by the CLI
@@ -675,7 +697,12 @@ fn intake_world_path(path: &str) -> Option<&str> {
         "/manifest.json" | "/evidence.json" | "/camera-controls.js" | "/input-video"
     )
     .then_some(path)
-    .or_else(|| (path.starts_with("/chunks/") || path.starts_with("/sources/")).then_some(path))
+    .or_else(|| {
+        (path.starts_with("/chunks/")
+            || path.starts_with("/sources/")
+            || path.starts_with("/replay/frames/"))
+        .then_some(path)
+    })
 }
 
 fn write_response(
@@ -714,6 +741,9 @@ fn handle_scene_path(stream: &mut TcpStream, root: &Path, path: &str) -> std::io
         ),
         "/manifest.json" => read_file(root.join("manifest.json"), "application/json"),
         "/evidence.json" => evidence(root),
+        _ if path.starts_with("/replay/frames/") && path.ends_with(".bin") => {
+            replay_frame(root, path)
+        }
         _ if path.starts_with("/chunks/") && path.ends_with(".json") && safe_chunk_path(path) => {
             read_file(root.join(&path[1..]), "application/json")
         }
@@ -937,6 +967,134 @@ fn source_frame_path(root: &Path, frame_index: usize) -> PathBuf {
         "frame-{:06}.ppm",
         frame_index.checked_add(1).unwrap_or(usize::MAX)
     ))
+}
+
+/// Returns the real, sparse depth samples for one reconstructed source frame.
+/// These are not synthesized from the input video: every returned pixel/color
+/// pair originates from `MeasuredPoint` evidence emitted by the engine.
+fn replay_frame(root: &Path, request_path: &str) -> (&'static str, &'static str, Vec<u8>) {
+    let Some(frame_index) = replay_frame_index(request_path) else {
+        return not_found();
+    };
+    let payload = (|| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let cache = REPLAY_CACHE.get_or_init(|| Mutex::new(None));
+        let mut cache = cache.lock().map_err(|_| "replay cache unavailable")?;
+        if cache.as_ref().is_none_or(|entry| entry.root != root) {
+            let bundle = SceneBundle::open(root)?;
+            let manifest = bundle.manifest()?;
+            let first_hash = manifest
+                .measured_chunk_hashes
+                .first()
+                .ok_or("scene has no measured evidence")?
+                .clone();
+            let first_window = bundle.read_measured_window(&first_hash)?;
+            let window_step = manifest
+                .measured_chunk_hashes
+                .get(1)
+                .map(|hash| bundle.read_measured_window(hash))
+                .transpose()?
+                .map_or(first_window.window.len(), |second| {
+                    second
+                        .window
+                        .start
+                        .saturating_sub(first_window.window.start)
+                });
+            if window_step == 0 {
+                return Err("replay window schedule has no forward progress".into());
+            }
+            *cache = Some(ReplayCache {
+                root: root.to_path_buf(),
+                bundle,
+                measured_hashes: manifest.measured_chunk_hashes,
+                first_window_end: first_window.window.end,
+                window_step,
+                current_hash: first_hash,
+                current_window: first_window,
+            });
+        }
+        let entry = cache.as_mut().expect("replay cache initialized");
+        let window_index =
+            replay_window_index(frame_index, entry.first_window_end, entry.window_step)
+                .ok_or("source frame precedes the reconstruction")?;
+        let hash = entry
+            .measured_hashes
+            .get(window_index)
+            .ok_or("source frame is outside the reconstruction")?;
+        if entry.current_hash != *hash {
+            entry.current_window = entry.bundle.read_measured_window(hash)?;
+            entry.current_hash = hash.clone();
+        }
+        let view = entry
+            .current_window
+            .views
+            .iter()
+            .find(|view| view.frame_index == frame_index)
+            .ok_or("source frame has no measured depth samples")?;
+        Ok(encode_replay_points(&view.points))
+    })();
+    match payload {
+        Ok(body) => ("200 OK", "application/octet-stream", body),
+        Err(_) => not_found(),
+    }
+}
+
+fn replay_frame_index(request_path: &str) -> Option<usize> {
+    request_path
+        .strip_prefix("/replay/frames/")?
+        .strip_suffix(".bin")?
+        .parse::<usize>()
+        .ok()
+}
+
+fn replay_window_index(
+    frame_index: usize,
+    first_window_end: usize,
+    window_step: usize,
+) -> Option<usize> {
+    if window_step == 0 {
+        return None;
+    }
+    Some(if frame_index < first_window_end {
+        0
+    } else {
+        1 + (frame_index - first_window_end) / window_step
+    })
+}
+
+/// `VRPL` v1: magic, version, reserved, sample count, raster width, raster
+/// height, then `[x:u16, y:u16, r:u8, g:u8, b:u8]` per real depth sample.
+fn encode_replay_points(points: &[MeasuredPoint]) -> Vec<u8> {
+    let samples = points
+        .iter()
+        .filter(|point| {
+            u16::try_from(point.source_pixel[0]).is_ok()
+                && u16::try_from(point.source_pixel[1]).is_ok()
+        })
+        .collect::<Vec<_>>();
+    let width = samples
+        .iter()
+        .map(|point| point.source_pixel[0] as u16 + 1)
+        .max()
+        .unwrap_or(1);
+    let height = samples
+        .iter()
+        .map(|point| point.source_pixel[1] as u16 + 1)
+        .max()
+        .unwrap_or(1);
+    let count = u32::try_from(samples.len()).expect("bounded measured point payload");
+    let mut payload = Vec::with_capacity(16 + samples.len() * 7);
+    payload.extend_from_slice(&REPLAY_MAGIC);
+    payload.extend_from_slice(&REPLAY_VERSION.to_le_bytes());
+    payload.extend_from_slice(&0_u16.to_le_bytes());
+    payload.extend_from_slice(&count.to_le_bytes());
+    payload.extend_from_slice(&width.to_le_bytes());
+    payload.extend_from_slice(&height.to_le_bytes());
+    for point in samples {
+        payload.extend_from_slice(&(point.source_pixel[0] as u16).to_le_bytes());
+        payload.extend_from_slice(&(point.source_pixel[1] as u16).to_le_bytes());
+        payload.extend_from_slice(&point.color_srgb);
+    }
+    payload
 }
 
 fn ppm_to_bmp(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -1163,11 +1321,46 @@ mod tests {
     #[test]
     fn studio_replay_uses_the_completed_local_input_video() {
         assert_eq!(intake_world_path("/input-video"), Some("/input-video"));
+        assert_eq!(
+            intake_world_path("/replay/frames/42.bin"),
+            Some("/replay/frames/42.bin")
+        );
         assert!(INDEX_HTML.contains("id=\"input-video\""));
-        assert!(INDEX_HTML.contains("id=\"processed-video\""));
+        assert!(INDEX_HTML.contains("id=\"replay-points\""));
         assert!(INDEX_HTML.contains("src=\"/input-video\""));
-        assert!(INDEX_HTML.contains("function synchronizeReplay()"));
+        assert!(INDEX_HTML.contains("function updateReplay()"));
         assert!(INDEX_HTML.contains("function setReplay(open)"));
+    }
+
+    #[test]
+    fn replay_payload_contains_only_real_measured_sample_pixels() {
+        let payload = encode_replay_points(&[
+            MeasuredPoint {
+                position: [0.0; 3],
+                normal: [0.0, 0.0, 1.0],
+                color_srgb: [7, 8, 9],
+                confidence: 1.0,
+                radius: 0.1,
+                source_pixel: [4, 2],
+            },
+            MeasuredPoint {
+                position: [0.0; 3],
+                normal: [0.0, 0.0, 1.0],
+                color_srgb: [10, 11, 12],
+                confidence: 1.0,
+                radius: 0.1,
+                source_pixel: [500, 332],
+            },
+        ]);
+        assert_eq!(&payload[..4], b"VRPL");
+        assert_eq!(u16::from_le_bytes(payload[4..6].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
+        assert_eq!(u16::from_le_bytes(payload[12..14].try_into().unwrap()), 501);
+        assert_eq!(u16::from_le_bytes(payload[14..16].try_into().unwrap()), 333);
+        assert_eq!(&payload[16..23], &[4, 0, 2, 0, 7, 8, 9]);
+        assert_eq!(replay_frame_index("/replay/frames/42.bin"), Some(42));
+        assert_eq!(replay_window_index(20, 12, 9), Some(1));
+        assert_eq!(replay_window_index(21, 12, 9), Some(2));
     }
 
     #[test]
