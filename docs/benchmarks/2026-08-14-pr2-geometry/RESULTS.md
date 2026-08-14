@@ -118,3 +118,27 @@ Profile the Rust TSDF stage separately from seam/loop/emit work before changing
 algorithms. The F64 TSDF cell-boundary port has closed output parity, but this
 result shows that its implementation and/or normal-estimation execution path
 needs a measured optimization campaign before any end-to-end speed claim.
+
+## Follow-up: deterministic spatial-grid hasher
+
+The current phase profile showed that the normal-estimation spatial grid still
+used Rust's cryptographic default `SipHash`, although its only keys are private
+finite `(i32, i32, i32)` voxel coordinates. The pinned C++ reference uses a
+non-cryptographic numeric voxel hash. Vestra now uses a local deterministic
+FNV-1a hasher for that private grid only; equality checks, cell vectors,
+neighbour traversal and floating-point accumulation order are unchanged.
+
+This is a smoke A/B, not a replacement for the full 10× study. Both release
+builds used `-C target-cpu=znver5`, the same `VPS1` closed-loop+TSDF fixture,
+and `RAYON_NUM_THREADS=16` on the idle Ryzen 9 9950X. Three profiled runs per
+arm reported:
+
+| Arm | PCA normals mean (ms) | TSDF total mean (ms) | Output surfels |
+| --- | ---: | ---: | ---: |
+| `0738451` baseline | 581.09 | 822.51 | 25,434 |
+| `dbb16fb` fast grid hash | 556.81 | 794.24 | 25,434 |
+
+The candidate reduces the measured PCA phase by **4.18%** and the full TSDF
+phase by **3.44%**. All 70 `vestra-core` tests passed; the exact shared-VPS1
+C++ geometry oracle remains the correctness gate. A full randomized 10× study
+is required before claiming an end-to-end performance improvement.
