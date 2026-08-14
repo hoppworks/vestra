@@ -394,11 +394,15 @@ pub fn emit_cpp_pr2_loop_closed_reference_cloud(
 pub fn emit_cpp_pr2_loop_closed_tsdf_reference_cloud(
     fixture: &CppPr2Fixture,
 ) -> Result<CppPr2ReferenceCloud, ReconstructionError> {
+    let profile = std::env::var_os("VESTRA_ORACLE_PROFILE").is_some();
+    let started = std::time::Instant::now();
     let windows = cpp_pr2_fixture_windows(fixture)?;
+    let windows_at = std::time::Instant::now();
     let alignments = windows
         .windows(2)
         .map(|pair| Ok(align_overlapping_windows_cpp_pr2(&pair[1], &pair[0])?))
         .collect::<Result<Vec<_>, ReconstructionError>>()?;
+    let seams_at = std::time::Instant::now();
     let sequential = sequential_poses_from_alignments(&alignments);
     let keys = windows
         .iter()
@@ -410,6 +414,7 @@ pub fn emit_cpp_pr2_loop_closed_tsdf_reference_cloud(
         .enumerate()
         .map(|(index, window)| cpp_pr2_fixture_camera_path(fixture, index, window))
         .collect::<Vec<_>>();
+    let evidence_at = std::time::Instant::now();
     let oracle = cpp_pr2_loop_oracle_from_sequential(
         &windows,
         fixture.branches.loop_close,
@@ -417,12 +422,28 @@ pub fn emit_cpp_pr2_loop_closed_tsdf_reference_cloud(
         &paths,
         sequential,
     )?;
+    let loop_at = std::time::Instant::now();
     let poses = oracle
         .optimized_window_poses
         .iter()
         .map(|pose| pose.local_to_world)
         .collect::<Vec<_>>();
-    emit_cpp_pr2_tsdf_cloud_with_poses(fixture, &windows, alignments, poses)
+    let cloud = emit_cpp_pr2_tsdf_cloud_with_poses(fixture, &windows, alignments, poses)?;
+    if profile {
+        eprintln!(
+            "vestra_closed_loop_profile windows_ms={:.3} seams_ms={:.3} evidence_ms={:.3} loop_and_graph_ms={:.3} emit_and_tsdf_ms={:.3} total_ms={:.3}",
+            windows_at.duration_since(started).as_secs_f64() * 1_000.0,
+            seams_at.duration_since(windows_at).as_secs_f64() * 1_000.0,
+            evidence_at.duration_since(seams_at).as_secs_f64() * 1_000.0,
+            loop_at.duration_since(evidence_at).as_secs_f64() * 1_000.0,
+            std::time::Instant::now()
+                .duration_since(loop_at)
+                .as_secs_f64()
+                * 1_000.0,
+            started.elapsed().as_secs_f64() * 1_000.0,
+        );
+    }
+    Ok(cloud)
 }
 
 /// Applies the PR #2 TSDF profile to either a sequential or loop-closed
