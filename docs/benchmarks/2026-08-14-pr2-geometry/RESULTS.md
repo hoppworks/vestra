@@ -166,3 +166,23 @@ frame ownership; position MAE is `3.05e-7`, with a maximum of `0.0010701`.
 This accepts the representation change for the locked fixture. It remains a
 three-run smoke result; the full fresh-process randomized 10× C++/Rust study
 is still required for a product-performance claim.
+
+## Full confirmation after packed-grid optimization
+
+The promised full series is now retained in
+[`after-packed-grid/raw.jsonl`](after-packed-grid/raw.jsonl), with exact source,
+binary, fixture, CPU and protocol provenance in its adjacent
+[`metadata.json`](after-packed-grid/metadata.json). Each arm had one excluded
+fresh-process warm-up, followed by ten fresh process invocations in a single
+randomized sequence (seed `20260814`). No samples were removed.
+
+| Arm | n | Mean (ms) | Median (ms) | 95% t CI of mean (ms) |
+| --- | --: | --: | --: | ---: |
+| C++ PR #2 | 10 | 866.205 | 867.098 | [863.745, 868.664] |
+| Vestra Rust | 10 | 964.487 | 962.225 | [959.329, 969.645] |
+
+For this locked geometry-plus-TSDF tier, Rust is now **1.113×** C++ wall time
+(11.35% slower). Relative to the initial 1840.159 ms Rust series, this is a
+**47.59% reduction**. The confidence interval still sits entirely above the
+C++ interval, so this is not a speed win, but it is a fair and reproducible
+improvement with exact C++ TSDF-output validation.
