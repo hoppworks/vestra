@@ -142,3 +142,27 @@ The candidate reduces the measured PCA phase by **4.18%** and the full TSDF
 phase by **3.44%**. All 70 `vestra-core` tests passed; the exact shared-VPS1
 C++ geometry oracle remains the correctness gate. A full randomized 10× study
 is required before claiming an end-to-end performance improvement.
+
+## Follow-up: packed spatial-grid keys
+
+The C++ PR #2 spatial hash uses one packed 21-bit-per-axis integer key rather
+than a compound key. Vestra now uses the same bounded relative-coordinate key
+layout and filters radius candidates as each populated neighbour cell is read,
+without changing the 27-cell traversal order or any floating-point operation.
+
+On the same quiet Workhorse, release build (`-C target-cpu=znver5`), closed
+`VPS1` fixture and `RAYON_NUM_THREADS=16`, three fresh profiled invocations
+reported:
+
+| Revision | PCA normals mean (ms) | TSDF total mean (ms) | Output surfels |
+| --- | ---: | ---: | ---: |
+| `dbb16fb` FNV grid hash | 556.81 | 794.24 | 25,434 |
+| `13d8fa2` packed keys | 486.62 | 726.07 | 25,434 |
+
+This is a further **12.61%** reduction in the PCA phase and **8.58%** in the
+complete TSDF phase versus the accepted FNV-hash revision. The exact C++ TSDF
+oracle still has 25,434 ordered surfels, zero RGB mismatches and identical
+frame ownership; position MAE is `3.05e-7`, with a maximum of `0.0010701`.
+This accepts the representation change for the locked fixture. It remains a
+three-run smoke result; the full fresh-process randomized 10× C++/Rust study
+is still required for a product-performance claim.
