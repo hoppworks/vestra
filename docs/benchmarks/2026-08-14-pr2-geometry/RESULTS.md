@@ -79,6 +79,27 @@ Rust is now **1.414×** the C++ wall time in this defined tier, a total
 work should focus on the now-measured loop/ICP trajectory work and the PCA
 normal kernel; no comparison outcome has been weakened to obtain this result.
 
+## Follow-up: parallel seam estimation
+
+The six adjacent-window seam estimates are mathematically independent; only
+their ordered Sim(3) composition is sequential. Computing the reports with
+Rayon, then retaining their indexed order for composition, lowers the measured
+seam phase from about 200 ms to about 60 ms without changing the reference
+cloud.
+
+The 10× confirmation is retained in
+[`after-parallel-seams/raw.jsonl`](after-parallel-seams/raw.jsonl):
+
+| Arm | n | Mean (ms) | Median (ms) | 95% t CI of mean (ms) |
+| --- | --: | --: | --: | ---: |
+| C++ PR #2 | 10 | 865.517 | 864.325 | [861.881, 869.153] |
+| Vestra Rust | 10 | 1083.438 | 1079.696 | [1074.107, 1092.770] |
+
+Vestra is now **41.12% faster than the original Rust geometry baseline**
+(1840.159 ms → 1083.438 ms), while still **1.252×** the pinned C++ reference.
+The next serious candidate is the remaining ~600 ms PCA normal-estimation
+kernel, not another seam or allocation tweak.
+
 ## Next action
 
 Profile the Rust TSDF stage separately from seam/loop/emit work before changing
