@@ -1099,56 +1099,62 @@ fn cpp_pr2_percentile(values: &[f32], percentile: f64) -> f32 {
 fn cpp_pr2_fixture_windows(
     fixture: &CppPr2Fixture,
 ) -> Result<Vec<WindowMeasuredChunk>, ReconstructionError> {
-    let mut windows = Vec::with_capacity(fixture.window_views.len());
-    for (window_index, views) in fixture.window_views.iter().enumerate() {
-        let start = window_index * (fixture.windows.chunk_size - fixture.windows.overlap);
-        let measured_views = views
-            .iter()
-            .enumerate()
-            .map(|(offset, view)| {
-                let points = backproject_frame_cpp_pr2_f32(
-                    view,
-                    fixture.width,
-                    fixture.height,
-                    BackprojectionSettings {
-                        // PR #2 uses dense, finite positive-depth overlap
-                        // observations for Sim(3), with confidence as a weight.
-                        // Its percentile threshold applies only to final point
-                        // emission, not to seam correspondences.
-                        minimum_confidence: -f32::MAX,
-                        pixel_stride: 1,
-                        // Position and confidence are the only inputs to the
-                        // sequential fit; C++ radius parity is a later raw tier.
-                        surfel_radius_pixels: 1.0,
-                    },
-                )?;
-                Ok(MeasuredFrameChunk {
-                    frame_index: start + offset,
-                    camera: CameraCalibration {
-                        world_to_camera: view.world_to_camera,
-                        intrinsics: view.intrinsics,
-                    },
-                    points,
+    // Fixture windows are immutable, independent depth backprojections. Keep
+    // their indexed collection order so every following PR #2 seam, loop and
+    // first-owner emission operation remains exactly sequential/deterministic.
+    fixture
+        .window_views
+        .par_iter()
+        .enumerate()
+        .map(|(window_index, views)| {
+            let start = window_index * (fixture.windows.chunk_size - fixture.windows.overlap);
+            let measured_views = views
+                .iter()
+                .enumerate()
+                .map(|(offset, view)| {
+                    let points = backproject_frame_cpp_pr2_f32(
+                        view,
+                        fixture.width,
+                        fixture.height,
+                        BackprojectionSettings {
+                            // PR #2 uses dense, finite positive-depth overlap
+                            // observations for Sim(3), with confidence as a weight.
+                            // Its percentile threshold applies only to final point
+                            // emission, not to seam correspondences.
+                            minimum_confidence: -f32::MAX,
+                            pixel_stride: 1,
+                            // Position and confidence are the only inputs to the
+                            // sequential fit; C++ radius parity is a later raw tier.
+                            surfel_radius_pixels: 1.0,
+                        },
+                    )?;
+                    Ok(MeasuredFrameChunk {
+                        frame_index: start + offset,
+                        camera: CameraCalibration {
+                            world_to_camera: view.world_to_camera,
+                            intrinsics: view.intrinsics,
+                        },
+                        points,
+                    })
                 })
+                .collect::<Result<Vec<_>, ReconstructionError>>()?;
+            Ok(WindowMeasuredChunk {
+                window: FrameWindow {
+                    index: window_index,
+                    start,
+                    end: start + measured_views.len(),
+                },
+                views: measured_views,
+                cpp_pr2_emission_confidence_threshold: Some(cpp_pr2_percentile(
+                    &views
+                        .iter()
+                        .flat_map(|view| view.confidence.iter().copied())
+                        .collect::<Vec<_>>(),
+                    fixture.confidence_percentile,
+                )),
             })
-            .collect::<Result<Vec<_>, ReconstructionError>>()?;
-        windows.push(WindowMeasuredChunk {
-            window: FrameWindow {
-                index: window_index,
-                start,
-                end: start + measured_views.len(),
-            },
-            views: measured_views,
-            cpp_pr2_emission_confidence_threshold: Some(cpp_pr2_percentile(
-                &views
-                    .iter()
-                    .flat_map(|view| view.confidence.iter().copied())
-                    .collect::<Vec<_>>(),
-                fixture.confidence_percentile,
-            )),
-        });
-    }
-    Ok(windows)
+        })
+        .collect()
 }
 
 /// Runs every deterministic window and immediately checkpoints direct evidence.
