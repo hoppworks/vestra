@@ -100,6 +100,13 @@ Vestra is now **41.12% faster than the original Rust geometry baseline**
 The next serious candidate is the remaining ~600 ms PCA normal-estimation
 kernel, not another seam or allocation tweak.
 
+## Rejected experiment
+
+A fixed-shape 3×3 maximum-pivot Jacobi kernel was bitwise-identical to the
+previous generic solver, but its Workhorse phase profile was approximately
+1053 ms versus approximately 1047 ms for the established path. It was reverted
+in `9987c0d`; no unproven microkernel is retained as an optimization.
+
 ## Next action
 
 Profile the Rust TSDF stage separately from seam/loop/emit work before changing
