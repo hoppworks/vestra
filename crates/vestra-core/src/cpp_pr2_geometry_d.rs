@@ -6,7 +6,10 @@
 //! VPS/VPO differential suite can distinguish an upstream geometry mismatch
 //! from a later Sim(3), ICP, or pose-graph mismatch.
 
-use crate::{CameraCentreDirection, CppPr2Frame};
+use crate::{
+    BackprojectionError, BackprojectionSettings, CameraCalibration, CameraCentreDirection,
+    CppPr2Frame, MeasuredPoint, MeasuredView, backproject_measured_view,
+};
 
 /// C++ `inv3`: F64 cofactors, followed by the reference F32 rounding boundary.
 pub(crate) fn inv3_cpp_pr2(matrix: [f32; 9]) -> Option<[f32; 9]> {
@@ -171,6 +174,43 @@ pub(crate) fn backproject_positions_cpp_pr2_f64(
         }
     }
     Some(positions)
+}
+
+/// Uses Vestra's evidence/normal policy while replacing its rigid-pose point
+/// coordinates with the pinned C++ inverse and backprojection contract. The
+/// final cast is intentional: the current public measured-window schema is
+/// F32, so this slice isolates inversion/backprojection before the F64
+/// measured-window migration.
+pub(crate) fn backproject_frame_cpp_pr2_f32(
+    frame: &CppPr2Frame,
+    width: usize,
+    height: usize,
+    settings: BackprojectionSettings,
+) -> Result<Vec<MeasuredPoint>, BackprojectionError> {
+    let mut points = backproject_measured_view(
+        MeasuredView {
+            rgb_hwc_u8: &frame.rgb_hwc_u8,
+            depth: &frame.depth,
+            confidence: &frame.confidence,
+            width,
+            height,
+            camera: CameraCalibration {
+                world_to_camera: frame.world_to_camera,
+                intrinsics: frame.intrinsics,
+            },
+        },
+        settings,
+    )?;
+    let positions =
+        backproject_positions_cpp_pr2_f64(frame, width, height, settings.minimum_confidence)
+            .ok_or(BackprojectionError::NonInvertibleCalibration)?;
+    if points.len() != positions.len() {
+        return Err(BackprojectionError::NonInvertibleCalibration);
+    }
+    for (point, position) in points.iter_mut().zip(positions) {
+        point.position = position.map(|value| value as f32);
+    }
+    Ok(points)
 }
 
 #[cfg(test)]

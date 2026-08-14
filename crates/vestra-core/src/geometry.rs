@@ -78,6 +78,8 @@ pub enum BackprojectionError {
     InvalidFocalLength,
     #[error("camera intrinsics and pose values must be finite")]
     NonFiniteCalibration,
+    #[error("camera calibration matrix is not invertible")]
+    NonInvertibleCalibration,
     #[error("backprojection settings must be finite, with a non-negative surfel radius")]
     InvalidSettings,
 }

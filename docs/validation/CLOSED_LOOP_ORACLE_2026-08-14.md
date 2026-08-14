@@ -50,11 +50,12 @@ PR #2 parity.
 The dedicated Rust oracle now accepts the same two edges (`0<->5`, `0<->6`)
 after first-owner key sampling, many-to-one seed matching, scale-locked
 Umeyama, and iterative rank-truncated point-to-plane ICP. Its pose-graph cost
-is `0.158411 -> 0.014370`. The graph now keeps its solver state in F64 and the
-trajectory extractor uses PR #2's generic F64 `inv4` calculation with the
-same F32 inverse-rounding boundary as C++. This improves the closed-fixture
-pre-voxel point MAE to `0.0036881`; it is still not numerical parity because
-seam/loop measurements and raw backprojection remain F32 in Vestra. Exact
+is `0.158411 -> 0.014370`. The graph now keeps its solver state in F64, and
+the fixture adapter uses PR #2's generic F64 `inv4` calculation with the same
+F32 inverse-rounding boundary as C++ for both trajectory extraction and
+measured-point coordinates. This improves the closed-fixture pre-voxel point
+MAE to `0.0036880`; it is still not numerical parity because seam/loop
+measurements and composed transforms remain F32 in Vestra. Exact
 trajectory/point tolerances are the next gate. This is oracle-tier evidence
 only; it is not wired into Vestra's product reconstruction settings yet.
 
@@ -62,7 +63,7 @@ The deferred pre-voxel cloud comparison on the same artifact reports:
 
 - 921,600 points on both sides;
 - identical ordered per-frame ownership counts and zero RGB mismatches;
-- position MAE `0.0036881`, maximum absolute position delta `0.0219855`;
+- position MAE `0.0036880`, maximum absolute position delta `0.0219852`;
 - window trajectory MAE `0.0042974`, frame trajectory MAE `0.0040109`;
 - radius MAE `0.000002129`, maximum delta `0.000006696`.
 

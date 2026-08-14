@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use vestra_engine::Engine;
 
 use crate::cpp_pr2_f64::optimize_cpp_pr2_pose_graph_f64;
-use crate::cpp_pr2_geometry_d::camera_centre_direction_cpp_pr2;
+use crate::cpp_pr2_geometry_d::{backproject_frame_cpp_pr2_f32, camera_centre_direction_cpp_pr2};
 use crate::{
     AlignmentReport, BackprojectionError, BackprojectionSettings, CameraCalibration, CppPr2Fixture,
     CppPr2Frame, CppPr2StreamBranches, FrameWindow, FusedPoint, FusedSceneChunk, FusedWindowPose,
@@ -937,18 +937,10 @@ fn cpp_pr2_fixture_windows(
             .iter()
             .enumerate()
             .map(|(offset, view)| {
-                let points = backproject_measured_view(
-                    MeasuredView {
-                        rgb_hwc_u8: &view.rgb_hwc_u8,
-                        depth: &view.depth,
-                        confidence: &view.confidence,
-                        width: fixture.width,
-                        height: fixture.height,
-                        camera: CameraCalibration {
-                            world_to_camera: view.world_to_camera,
-                            intrinsics: view.intrinsics,
-                        },
-                    },
+                let points = backproject_frame_cpp_pr2_f32(
+                    view,
+                    fixture.width,
+                    fixture.height,
                     BackprojectionSettings {
                         // PR #2 uses dense, finite positive-depth overlap
                         // observations for Sim(3), with confidence as a weight.
