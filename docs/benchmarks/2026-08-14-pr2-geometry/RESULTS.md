@@ -186,3 +186,31 @@ For this locked geometry-plus-TSDF tier, Rust is now **1.113×** C++ wall time
 **47.59% reduction**. The confidence interval still sits entirely above the
 C++ interval, so this is not a speed win, but it is a fair and reproducible
 improvement with exact C++ TSDF-output validation.
+
+## Full confirmation after parallel window backprojection
+
+The prior phase comparison exposed 60 ms of sequential, independent fixture
+backprojection. Building each immutable window in Rayon while collecting by
+index preserves the C++ schedule and the ordered downstream trajectory, but
+releases the available 16-thread CPU budget for that phase. A representative
+profile reduced it from 60.715 ms to 11.290 ms; the exact C++ TSDF differential
+remained unchanged (25,434 surfels, zero RGB mismatches and identical
+frame ownership).
+
+The full randomized, fresh-process confirmation is in
+[`after-parallel-windows/raw.jsonl`](after-parallel-windows/raw.jsonl), with
+complete provenance in its adjacent
+[`metadata.json`](after-parallel-windows/metadata.json). It again uses one
+excluded warm-up per arm and ten measurements per arm; no outliers were
+removed.
+
+| Arm | n | Mean (ms) | Median (ms) | 95% t CI of mean (ms) |
+| --- | --: | --: | --: | ---: |
+| C++ PR #2 | 10 | 866.475 | 866.133 | [864.118, 868.832] |
+| Vestra Rust | 10 | 911.959 | 912.094 | [909.121, 914.797] |
+
+Vestra is now **1.052×** C++ wall time in the locked geometry-plus-TSDF tier
+(5.25% slower), a **50.44%** reduction from its 1840.159 ms starting point.
+The intervals remain separate, so this is an honest near-parity result rather
+than a performance win. Future work must target an observed phase gap; it may
+not alter the workload, model tensors, precision, schedule or thread budget.
