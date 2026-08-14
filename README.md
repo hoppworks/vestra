@@ -234,7 +234,8 @@ confidence percentile used by PR #2 for loop keys and first-owner emission. A
 legacy sparse scene is intentionally refused by strict fusion, rather than
 being relabelled as reference-compatible. Pass
 `--cpp-pr2-relative=false` only when deliberately reconstructing a legacy
-compatibility world:
+compatibility world. The closed-loop profile is the only profile exposed by
+the current CLI:
 
 ```bash
 cargo run -p vestra-cli -- reconstruct \

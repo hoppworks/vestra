@@ -75,9 +75,9 @@ enum Command {
         #[arg(long)]
         tsdf: bool,
         /// Use the PR #2 relative seam and loop-closure profile. This is the
-        /// default for new worlds; pass `--cpp-pr2-relative=false` only for a
-        /// compatibility reconstruction of a legacy bundle.
-        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        /// default for new worlds. The flag remains accepted explicitly so
+        /// intake subprocesses can record the selected profile unambiguously.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::SetTrue)]
         cpp_pr2_relative: bool,
     },
     /// Rebuild the derived world from a bundle's immutable measured windows.
@@ -89,7 +89,7 @@ enum Command {
         tsdf: bool,
         /// Use the PR #2 relative seam and loop-closure profile. New derived
         /// worlds default to the same profile as browser intake jobs.
-        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        #[arg(long, default_value_t = true, action = clap::ArgAction::SetTrue)]
         cpp_pr2_relative: bool,
     },
     /// Export the fused relative-scale world as an open ASCII PLY file.
@@ -165,7 +165,7 @@ enum Command {
         /// Capture and fuse the dense PR #2-relative geometry profile. This
         /// is the default for new browser jobs; it preserves the evidence
         /// needed for closed-loop ICP and deferred pose-graph fusion.
-        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        #[arg(long, default_value_t = true, action = clap::ArgAction::SetTrue)]
         cpp_pr2_relative: bool,
     },
     /// Capture window-scoped DA3 output for the pinned C++ PR #2 stitcher oracle.
@@ -1360,7 +1360,7 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_profile_requires_an_explicit_opt_out() {
+    fn explicit_closed_loop_flag_remains_compatible_with_intake_subprocesses() {
         let cli = Cli::try_parse_from([
             "vestra",
             "reconstruct",
@@ -1370,7 +1370,7 @@ mod tests {
             "depth-anything-base-f32.gguf",
             "--output",
             "world.vestra",
-            "--cpp-pr2-relative=false",
+            "--cpp-pr2-relative",
         ])
         .unwrap();
         let Command::Reconstruct {
@@ -1379,7 +1379,7 @@ mod tests {
         else {
             panic!("expected reconstruct command");
         };
-        assert!(!cpp_pr2_relative);
+        assert!(cpp_pr2_relative);
     }
 
     #[test]
