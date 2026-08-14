@@ -157,6 +157,10 @@ enum Command {
         minimum_confidence: f32,
         #[arg(long, default_value_t = 8)]
         pixel_stride: usize,
+        /// Capture and fuse the dense PR #2-relative geometry profile.
+        /// This is more memory-intensive than the default browser workflow.
+        #[arg(long)]
+        cpp_pr2_relative: bool,
     },
     /// Capture window-scoped DA3 output for the pinned C++ PR #2 stitcher oracle.
     /// This is diagnostic evidence, not a production scene export.
@@ -387,6 +391,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             overlap,
             minimum_confidence,
             pixel_stride,
+            cpp_pr2_relative,
         } => {
             let executable = std::env::current_exe()?;
             println!("Vestra intake: http://127.0.0.1:{port}");
@@ -402,6 +407,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 overlap,
                 minimum_confidence,
                 pixel_stride,
+                cpp_pr2_relative,
             })?;
         }
         Command::OracleFixture {
