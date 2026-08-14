@@ -74,8 +74,10 @@ enum Command {
         /// Build PR #2 normal-space TSDF surfels instead of compatibility voxel fusion.
         #[arg(long)]
         tsdf: bool,
-        /// Use the PR #2 relative seam and loop-closure profile.
-        #[arg(long)]
+        /// Use the PR #2 relative seam and loop-closure profile. This is the
+        /// default for new worlds; pass `--cpp-pr2-relative=false` only for a
+        /// compatibility reconstruction of a legacy bundle.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         cpp_pr2_relative: bool,
     },
     /// Rebuild the derived world from a bundle's immutable measured windows.
@@ -85,8 +87,9 @@ enum Command {
         /// Rebuild this derivative with PR #2 normal-space TSDF fusion.
         #[arg(long)]
         tsdf: bool,
-        /// Use the PR #2 relative seam and loop-closure profile.
-        #[arg(long)]
+        /// Use the PR #2 relative seam and loop-closure profile. New derived
+        /// worlds default to the same profile as browser intake jobs.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         cpp_pr2_relative: bool,
     },
     /// Export the fused relative-scale world as an open ASCII PLY file.
@@ -159,9 +162,10 @@ enum Command {
         minimum_confidence: f32,
         #[arg(long, default_value_t = 8)]
         pixel_stride: usize,
-        /// Capture and fuse the dense PR #2-relative geometry profile.
-        /// This is more memory-intensive than the default browser workflow.
-        #[arg(long)]
+        /// Capture and fuse the dense PR #2-relative geometry profile. This
+        /// is the default for new browser jobs; it preserves the evidence
+        /// needed for closed-loop ICP and deferred pose-graph fusion.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         cpp_pr2_relative: bool,
     },
     /// Capture window-scoped DA3 output for the pinned C++ PR #2 stitcher oracle.
@@ -1334,6 +1338,49 @@ fn fusion_settings(tsdf: bool) -> StitchSettings {
 mod tests {
     use super::*;
     use vestra_core::{AlignmentReport, FusedPoint, FusedSceneChunk};
+
+    #[test]
+    fn new_browser_jobs_default_to_the_pr2_closed_loop_profile() {
+        let cli = Cli::try_parse_from([
+            "vestra",
+            "app",
+            "--model",
+            "depth-anything-base-f32.gguf",
+            "--jobs",
+            "vestra-jobs",
+        ])
+        .unwrap();
+        let Command::App {
+            cpp_pr2_relative, ..
+        } = cli.command
+        else {
+            panic!("expected app command");
+        };
+        assert!(cpp_pr2_relative);
+    }
+
+    #[test]
+    fn compatibility_profile_requires_an_explicit_opt_out() {
+        let cli = Cli::try_parse_from([
+            "vestra",
+            "reconstruct",
+            "--video",
+            "capture.mov",
+            "--model",
+            "depth-anything-base-f32.gguf",
+            "--output",
+            "world.vestra",
+            "--cpp-pr2-relative=false",
+        ])
+        .unwrap();
+        let Command::Reconstruct {
+            cpp_pr2_relative, ..
+        } = cli.command
+        else {
+            panic!("expected reconstruct command");
+        };
+        assert!(!cpp_pr2_relative);
+    }
 
     #[test]
     fn lock_parser_extracts_pinned_component_revisions() {

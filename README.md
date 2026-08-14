@@ -228,18 +228,19 @@ windows remain manifest-referenced. Restart with the identical command and
 `--resume` to continue. The in-process API currently exposes window-boundary
 completion, while this CLI path supplies the bounded cancellation guarantee.
 
-For a strict PR #2-relative geometry run, capture a new dense evidence bundle
-with `--cpp-pr2-relative`. This stores all finite-depth samples and the
-per-window confidence percentile used by PR #2 for loop keys and first-owner
-emission. A legacy sparse scene is intentionally refused by strict fusion,
-rather than being relabelled as reference-compatible:
+New browser and CLI reconstruction jobs use the strict PR #2-relative geometry
+profile by default. It stores all finite-depth samples and the per-window
+confidence percentile used by PR #2 for loop keys and first-owner emission. A
+legacy sparse scene is intentionally refused by strict fusion, rather than
+being relabelled as reference-compatible. Pass
+`--cpp-pr2-relative=false` only when deliberately reconstructing a legacy
+compatibility world:
 
 ```bash
 cargo run -p vestra-cli -- reconstruct \
   --video room.mov \
   --model depth-anything-base-f32.gguf \
-  --output room-pr2.vestra \
-  --cpp-pr2-relative
+  --output room-pr2.vestra
 ```
 
 Before inference, Vestra records a lightweight adjacent-frame luma-motion
