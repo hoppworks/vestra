@@ -21,6 +21,14 @@ target_include_directories(vestra_cpp_stream_fixture_dump PRIVATE
     "${CPP_PR2_SOURCE}/src"
     "${CPP_PR2_SOURCE}/include")
 
+# End-to-end counterpart to the model-free fixture harness. It invokes the
+# pinned C++ C API over an already-decoded, lexically ordered frame directory
+# and writes raw stream evidence without a server, browser, or resampling layer.
+add_executable(vestra_cpp_capi_stream_dump capi_stream_dump.cpp)
+target_link_libraries(vestra_cpp_capi_stream_dump PRIVATE depthanything)
+target_include_directories(vestra_cpp_capi_stream_dump PRIVATE
+    "${CPP_PR2_SOURCE}/include")
+
 # Deterministic diagnostic evidence for the exact PR #2 closed-trajectory
 # regression. It only writes a VPS1 fixture; it never modifies or links to the
 # pinned C++ source tree.
