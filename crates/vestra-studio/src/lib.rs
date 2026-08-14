@@ -1336,7 +1336,9 @@ mod tests {
         assert!(INDEX_HTML.contains("src=\"/input-video\""));
         assert!(INDEX_HTML.contains("function updateReplay()"));
         assert!(INDEX_HTML.contains("original capture · 3:2 crop"));
-        assert!(INDEX_HTML.contains("depth-parallax view"));
+        assert!(INDEX_HTML.contains("right-eye depth view"));
+        assert!(INDEX_HTML.contains("function depthColor(t)"));
+        assert!(INDEX_HTML.contains("x=samples.view.getFloat32(offset,true)-sideStep"));
         assert!(INDEX_HTML.contains("object-fit:cover"));
         assert!(INDEX_HTML.contains("replay-landscape"));
         assert!(INDEX_HTML.contains("function arrangeReplay()"));
