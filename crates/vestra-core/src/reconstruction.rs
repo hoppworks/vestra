@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use rayon::prelude::*;
 use vestra_engine::Engine;
 
 use crate::cpp_pr2_f64::optimize_cpp_pr2_pose_graph_f64;
@@ -399,7 +400,7 @@ pub fn emit_cpp_pr2_loop_closed_tsdf_reference_cloud(
     let windows = cpp_pr2_fixture_windows(fixture)?;
     let windows_at = std::time::Instant::now();
     let alignments = windows
-        .windows(2)
+        .par_windows(2)
         .map(|pair| Ok(align_overlapping_windows_cpp_pr2(&pair[1], &pair[0])?))
         .collect::<Result<Vec<_>, ReconstructionError>>()?;
     let seams_at = std::time::Instant::now();
