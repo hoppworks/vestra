@@ -698,6 +698,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut confidence = DifferenceStats::default();
             let mut extrinsics = DifferenceStats::default();
             let mut intrinsics = DifferenceStats::default();
+            let mut confidence_selection = Vec::with_capacity(reference.views.len());
             let mut views_match = schedule_matches;
             for (cpp_window, rust_window) in reference.views.iter().zip(&fixture.window_views) {
                 if cpp_window.len() != rust_window.len() {
@@ -712,6 +713,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     extrinsics.extend(&cpp.world_to_camera, &rust.world_to_camera);
                     intrinsics.extend(&cpp.intrinsics, &rust.intrinsics);
                 }
+                let cpp_confidences = cpp_window
+                    .iter()
+                    .flat_map(|view| view.confidence.iter().copied())
+                    .collect::<Vec<_>>();
+                let rust_confidences = rust_window
+                    .iter()
+                    .flat_map(|view| view.confidence.iter().copied())
+                    .collect::<Vec<_>>();
+                let cpp_threshold =
+                    percentile_linear(&cpp_confidences, fixture.confidence_percentile);
+                let rust_threshold =
+                    percentile_linear(&rust_confidences, fixture.confidence_percentile);
+                confidence_selection.push(serde_json::json!({
+                    "cpp_threshold": cpp_threshold,
+                    "rust_threshold": rust_threshold,
+                    "threshold_abs_delta": (cpp_threshold - rust_threshold).abs(),
+                    "cpp_selected": cpp_confidences.iter().filter(|value| **value >= cpp_threshold).count(),
+                    "rust_selected": rust_confidences.iter().filter(|value| **value >= rust_threshold).count(),
+                }));
             }
             println!(
                 "{}",
@@ -722,6 +742,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "windows": reference.views.len(),
                     "depth": depth.json(),
                     "confidence": confidence.json(),
+                    "confidence_selection": confidence_selection,
                     "extrinsics": extrinsics.json(),
                     "intrinsics": intrinsics.json(),
                 })
@@ -867,6 +888,19 @@ fn trajectory_difference(left: &[[f32; 3]], right_flat: &[f32]) -> (f64, f32) {
         }
     }
     (sum / (shared * 3) as f64, maximum)
+}
+
+fn percentile_linear(values: &[f32], percentile: f64) -> f32 {
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f32::total_cmp);
+    if sorted.len() <= 1 {
+        return sorted.first().copied().unwrap_or(0.0);
+    }
+    let index = percentile.clamp(0.0, 100.0) / 100.0 * (sorted.len() - 1) as f64;
+    let lower = index.floor() as usize;
+    let upper = index.ceil() as usize;
+    let fraction = index - lower as f64;
+    (f64::from(sorted[lower]) + fraction * f64::from(sorted[upper] - sorted[lower])) as f32
 }
 
 #[derive(Default)]
