@@ -192,16 +192,23 @@ pub(crate) fn estimate_normals(points: &[[f32; 3]], radius: f32) -> Vec<[f32; 3]
             for value in &mut mean {
                 *value /= neighbours.len() as f64;
             }
-            let mut covariance = [[0.0_f64; 3]; 3];
+            // A symmetric 3×3 covariance has six independent entries. Keep
+            // each entry's neighbour traversal/order unchanged while avoiding
+            // the repeated generic matrix-index loops in this hot PCA path.
+            let (mut xx, mut xy, mut xz, mut yy, mut yz, mut zz) =
+                (0.0_f64, 0.0, 0.0, 0.0, 0.0, 0.0);
             for &index in neighbours.iter() {
-                let centered: [f64; 3] =
-                    std::array::from_fn(|axis| f64::from(points[index][axis]) - mean[axis]);
-                for row in 0..3 {
-                    for column in 0..3 {
-                        covariance[row][column] += centered[row] * centered[column];
-                    }
-                }
+                let x = f64::from(points[index][0]) - mean[0];
+                let y = f64::from(points[index][1]) - mean[1];
+                let z = f64::from(points[index][2]) - mean[2];
+                xx += x * x;
+                xy += x * y;
+                xz += x * z;
+                yy += y * y;
+                yz += y * z;
+                zz += z * z;
             }
+            let covariance = [[xx, xy, xz], [xy, yy, yz], [xz, yz, zz]];
             let (values, vectors) = jacobi_eigen_3(covariance);
             let minimum = (0..3)
                 .min_by(|&left, &right| values[left].total_cmp(&values[right]))
