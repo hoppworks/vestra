@@ -10,7 +10,7 @@ use std::{collections::HashMap, time::Instant};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::icp::estimate_normals;
+use crate::icp::estimate_normals_f64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TsdfSettings {
@@ -94,6 +94,11 @@ pub fn fuse_normal_space_tsdf(
         .iter()
         .map(|point| point.position)
         .collect::<Vec<_>>();
+    let positions_f64 = positions
+        .iter()
+        .copied()
+        .map(|point| point.map(f64::from))
+        .collect::<Vec<_>>();
     // PR #2 keeps the voxel edge in F64 from the F32 input-bounds subtraction
     // through spatial-key assignment. Casting it to F32 here moves points that
     // sit on a cell boundary and can change the final surfel count.
@@ -111,8 +116,8 @@ pub fn fuse_normal_space_tsdf(
         .map(f64::from)
         .unwrap_or(2.5 * voxel)
         .max(1e-6);
-    let mut normals = estimate_normals(&positions, normal_radius as f32);
-    orient_normals_toward_cameras(&positions, &mut normals, camera_centres);
+    let mut normals = estimate_normals_f64(&positions_f64, normal_radius);
+    orient_normals_f64_toward_cameras(&positions_f64, &mut normals, camera_centres);
     let normals_at = Instant::now();
 
     let band = (truncation / voxel).ceil() as i32;
@@ -130,9 +135,9 @@ pub fn fuse_normal_space_tsdf(
         let mut previous = None;
         for step in -band..=band {
             let query = [
-                f64::from(observation.position[0]) + step as f64 * voxel * f64::from(normal[0]),
-                f64::from(observation.position[1]) + step as f64 * voxel * f64::from(normal[1]),
-                f64::from(observation.position[2]) + step as f64 * voxel * f64::from(normal[2]),
+                f64::from(observation.position[0]) + step as f64 * voxel * normal[0],
+                f64::from(observation.position[1]) + step as f64 * voxel * normal[1],
+                f64::from(observation.position[2]) + step as f64 * voxel * normal[2],
             ];
             let key = VoxelKey::for_position_f64(query, voxel);
             if previous == Some(key) {
@@ -140,10 +145,9 @@ pub fn fuse_normal_space_tsdf(
             }
             previous = Some(key);
             let centre = key.centre_f64(voxel);
-            let signed_distance = (centre[0] - f64::from(observation.position[0]))
-                * f64::from(normal[0])
-                + (centre[1] - f64::from(observation.position[1])) * f64::from(normal[1])
-                + (centre[2] - f64::from(observation.position[2])) * f64::from(normal[2]);
+            let signed_distance = (centre[0] - f64::from(observation.position[0])) * normal[0]
+                + (centre[1] - f64::from(observation.position[1])) * normal[1]
+                + (centre[2] - f64::from(observation.position[2])) * normal[2];
             if signed_distance.abs() > truncation {
                 continue;
             }
@@ -151,7 +155,7 @@ pub fn fuse_normal_space_tsdf(
             cell.weight += weight;
             cell.signed_distance += weight * signed_distance;
             for axis in 0..3 {
-                cell.normal[axis] += weight * f64::from(normal[axis]);
+                cell.normal[axis] += weight * normal[axis];
                 cell.color_linear[axis] += weight * f64::from(linear[axis]);
             }
             cell.hits += 1;
@@ -170,17 +174,17 @@ pub fn fuse_normal_space_tsdf(
             if signed_distance.abs() > half {
                 return None;
             }
-            let normal = normalize(cell.normal.map(|value| (value / cell.weight) as f32))?;
+            let normal = normalize_f64(cell.normal.map(|value| value / cell.weight))?;
             let centre = key.centre_f64(voxel);
             Some((
                 key,
                 TsdfSurfel {
                     position: [
-                        (centre[0] - signed_distance * f64::from(normal[0])) as f32,
-                        (centre[1] - signed_distance * f64::from(normal[1])) as f32,
-                        (centre[2] - signed_distance * f64::from(normal[2])) as f32,
+                        (centre[0] - signed_distance * normal[0]) as f32,
+                        (centre[1] - signed_distance * normal[1]) as f32,
+                        (centre[2] - signed_distance * normal[2]) as f32,
                     ],
-                    normal,
+                    normal: normal.map(|value| value as f32),
                     color_srgb: cell
                         .color_linear
                         .map(|value| linear_to_srgb((value / cell.weight) as f32)),
@@ -337,6 +341,48 @@ fn orient_normals_toward_cameras(
                 *normal = normal.map(|value| -value);
             }
         });
+}
+fn orient_normals_f64_toward_cameras(
+    points: &[[f64; 3]],
+    normals: &mut [[f64; 3]],
+    cameras: &[[f32; 3]],
+) {
+    if cameras.is_empty() {
+        return;
+    }
+    normals
+        .par_iter_mut()
+        .zip(points.par_iter())
+        .for_each(|(normal, point)| {
+            if *normal == [0.0; 3] {
+                return;
+            }
+            let mut camera = cameras[0].map(f64::from);
+            let mut best = squared_distance_f64(camera, *point);
+            for &candidate in &cameras[1..] {
+                let candidate = candidate.map(f64::from);
+                let distance = squared_distance_f64(candidate, *point);
+                if distance < best {
+                    camera = candidate;
+                    best = distance;
+                }
+            }
+            let delta = [
+                camera[0] - point[0],
+                camera[1] - point[1],
+                camera[2] - point[2],
+            ];
+            if normal[0] * delta[0] + normal[1] * delta[1] + normal[2] * delta[2] < 0.0 {
+                *normal = normal.map(|v| -v);
+            }
+        });
+}
+fn squared_distance_f64(a: [f64; 3], b: [f64; 3]) -> f64 {
+    (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)
+}
+fn normalize_f64(value: [f64; 3]) -> Option<[f64; 3]> {
+    let length = (value[0] * value[0] + value[1] * value[1] + value[2] * value[2]).sqrt();
+    (length.is_finite() && length > 0.0).then(|| value.map(|v| v / length))
 }
 fn subtract(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
     [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
