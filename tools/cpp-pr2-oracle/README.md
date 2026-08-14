@@ -62,7 +62,14 @@ python3 tools/cpp-pr2-oracle/make_identity_fixture.py /tmp/identity.vps
 
 # Optional normal-space TSDF branch used by the PR #2 C API.
 /tmp/vestra-cpp-pr2-build/vestra_cpp_stream_fixture_dump /tmp/identity.vps /tmp/identity-tsdf.vpo --tsdf
+
+# Diagnostic-only phase timing. This does not change the VPO1 output.
+/tmp/vestra-cpp-pr2-build/vestra_cpp_stream_fixture_dump /tmp/identity.vps /tmp/identity-tsdf.vpo --tsdf --profile
 ```
+
+`--profile` writes fixture-read, PR #2 stream, TSDF, VPO-write, and total
+durations to stderr. It is for phase attribution only; use the locked
+fresh-process benchmark protocol for comparative wall-clock claims.
 
 ## Output (`VPO1`)
 

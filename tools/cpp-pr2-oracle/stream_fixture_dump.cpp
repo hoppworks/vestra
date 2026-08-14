@@ -6,6 +6,7 @@
 #include "tsdf.hpp"
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -159,11 +160,25 @@ bool write_output(const std::string& path, const da::StreamCloud& cloud, std::ui
 } // namespace
 
 int main(int argc, char** argv) {
-    const bool tsdf = argc == 4 && std::string(argv[3]) == "--tsdf";
-    if (argc != 3 && !tsdf) {
-        std::cerr << "usage: vestra_cpp_stream_fixture_dump INPUT.vps OUTPUT.vpo [--tsdf]\n";
+    bool tsdf = false;
+    bool profile = false;
+    if (argc < 3) {
+        std::cerr << "usage: vestra_cpp_stream_fixture_dump INPUT.vps OUTPUT.vpo [--tsdf] [--profile]\n";
         return 64;
     }
+    for (int index = 3; index < argc; ++index) {
+        const std::string flag = argv[index];
+        if (flag == "--tsdf" && !tsdf) {
+            tsdf = true;
+        } else if (flag == "--profile" && !profile) {
+            profile = true;
+        } else {
+            std::cerr << "usage: vestra_cpp_stream_fixture_dump INPUT.vps OUTPUT.vpo [--tsdf] [--profile]\n";
+            return 64;
+        }
+    }
+    using Clock = std::chrono::steady_clock;
+    const auto all_started = Clock::now();
     std::uint32_t frames = 0, h = 0, w = 0;
     da::StreamParams params;
     std::vector<std::vector<FixtureFrame>> fixture;
@@ -171,6 +186,7 @@ int main(int argc, char** argv) {
     if (!read_fixture(argv[1], frames, h, w, params, fixture, error)) {
         std::cerr << "fixture error: " << error << '\n'; return 65;
     }
+    const auto fixture_read_finished = Clock::now();
     const da::WindowSource source = [&](int w0, int w1, std::vector<da::ViewResult>& views,
                                          std::vector<std::vector<std::uint8_t>>& rgb,
                                          int& source_h, int& source_w, std::string&) {
@@ -190,6 +206,7 @@ int main(int argc, char** argv) {
     if (!da::stream_points_core(static_cast<int>(frames), params, source, cloud, error)) {
         std::cerr << "stream error: " << error << '\n'; return 66;
     }
+    const auto stream_finished = Clock::now();
     if (tsdf) {
         std::vector<int> in_frame;
         in_frame.reserve(cloud.radius.size());
@@ -216,8 +233,21 @@ int main(int argc, char** argv) {
             if (frame >= 0 && frame < static_cast<int>(frames)) ++cloud.counts[frame];
         }
     }
+    const auto tsdf_finished = Clock::now();
     if (!write_output(argv[2], cloud, frames, h, w, error)) {
         std::cerr << "output error: " << error << '\n'; return 69;
+    }
+    const auto write_finished = Clock::now();
+    if (profile) {
+        const auto milliseconds = [](const Clock::time_point begin, const Clock::time_point end) {
+            return std::chrono::duration<double, std::milli>(end - begin).count();
+        };
+        std::cerr << "vestra_cpp_pr2_profile"
+                  << " fixture_read_ms=" << milliseconds(all_started, fixture_read_finished)
+                  << " stream_ms=" << milliseconds(fixture_read_finished, stream_finished)
+                  << " tsdf_ms=" << milliseconds(stream_finished, tsdf_finished)
+                  << " write_ms=" << milliseconds(tsdf_finished, write_finished)
+                  << " total_ms=" << milliseconds(all_started, write_finished) << '\n';
     }
     std::cout << "VPO1 points=" << cloud.radius.size() << " windows=" << cloud.window_mid_frame.size()
               << " warnings=" << cloud.warnings << " loops=" << cloud.loops_found << '\n';
