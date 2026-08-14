@@ -107,6 +107,11 @@ previous generic solver, but its Workhorse phase profile was approximately
 1053 ms versus approximately 1047 ms for the established path. It was reverted
 in `9987c0d`; no unproven microkernel is retained as an optimization.
 
+Fusing PCA and camera-normal orientation into one Rayon pass also preserved
+output parity but regressed the same profile to approximately 1073 ms, likely
+through cache pressure and less favourable load distribution. It was reverted
+in `9d7e56a`.
+
 ## Next action
 
 Profile the Rust TSDF stage separately from seam/loop/emit work before changing
