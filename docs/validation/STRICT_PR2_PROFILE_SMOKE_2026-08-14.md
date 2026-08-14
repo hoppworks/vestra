@@ -60,3 +60,14 @@ The next acceptance gate is a paired C++/Rust run using an identical locked
 decoded-frame directory, model, precision, 12/3 schedule, geometry flags, and
 thread budget. It must compare pre-voxel ordered emission, trajectory, TSDF
 ordering, and stage timings before any end-to-end speed claim is made.
+
+## First paired C++ probe — not accepted
+
+The pinned C++ C API was subsequently run over the exact persisted `decoded/`
+directory using the same F32 model, 16 threads, `chunk=12`, `overlap=3`,
+55th-percentile confidence selection, seam ICP, loop closure, and TSDF fusion.
+The versioned `CPS1` harness reported 16,643 surfels; Vestra reported 16,722.
+Both runs found no loop in this short clip. This 79-surfel difference means
+end-to-end video parity is **open**. The harness and output SHA-256 are retained
+for diagnosis (`df2436cacff65f81df324a131929f0a4262c2aa7dfacbc8985068bf83cfa2704`);
+no relative performance or parity claim is made from this probe.
