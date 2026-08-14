@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use vestra_engine::{Engine, EngineError, MultiViewInferOut, ViewInput};
 
+mod cpp_pr2_f64;
+mod cpp_pr2_geometry_d;
 pub mod cpp_pr2_oracle;
 pub mod export;
 pub mod geometry;

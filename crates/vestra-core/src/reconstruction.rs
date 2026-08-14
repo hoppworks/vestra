@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use vestra_engine::Engine;
 
+use crate::cpp_pr2_f64::optimize_cpp_pr2_pose_graph_f64;
+use crate::cpp_pr2_geometry_d::camera_centre_direction_cpp_pr2;
 use crate::{
     AlignmentReport, BackprojectionError, BackprojectionSettings, CameraCalibration, CppPr2Fixture,
     CppPr2Frame, CppPr2StreamBranches, FrameWindow, FusedPoint, FusedSceneChunk, FusedWindowPose,
@@ -11,8 +13,7 @@ use crate::{
     RelativePoseGraph, SceneBundle, SceneBundleError, SimilarityTransform, TsdfSettings,
     WindowMeasuredChunk, WindowSettings, align_overlapping_windows_cpp_pr2,
     backproject_measured_view, camera_centre_direction, fuse_normal_space_tsdf,
-    infer_ordered_window, optimize_relative_pose_graph, plan_windows,
-    stitch_measured_windows_with_settings,
+    infer_ordered_window, plan_windows, stitch_measured_windows_with_settings,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -457,10 +458,11 @@ pub fn cpp_pr2_fixture_trajectory(
     for (window, pose) in windows.iter().zip(&poses) {
         let middle = window.views.len() / 2;
         window_mid_frames.push((window.window.start + middle) as i32);
-        let mid = window
-            .views
+        let mid = fixture.window_views[window.window.index]
             .get(middle)
-            .and_then(|frame| camera_centre_direction(frame.frame_index, frame.camera));
+            .and_then(|frame| {
+                camera_centre_direction_cpp_pr2(window.window.start + middle, frame.world_to_camera)
+            });
         window_positions
             .push(mid.map_or(pose.translation, |camera| pose.apply(camera.centre_local)));
         let first_owned = if window.window.index == 0 {
@@ -468,8 +470,11 @@ pub fn cpp_pr2_fixture_trajectory(
         } else {
             fixture.windows.overlap.min(window.views.len())
         };
-        for frame in window.views.iter().skip(first_owned) {
-            if let Some(camera) = camera_centre_direction(frame.frame_index, frame.camera) {
+        for (local_index, frame) in window.views.iter().enumerate().skip(first_owned) {
+            if let Some(camera) = camera_centre_direction_cpp_pr2(
+                frame.frame_index,
+                fixture.window_views[window.window.index][local_index].world_to_camera,
+            ) {
                 frame_positions[frame.frame_index] = pose.apply(camera.centre_local);
                 frame_forwards[frame.frame_index] =
                     normalize_direction(pose.rotate(camera.forward_local));
@@ -735,10 +740,18 @@ pub fn cpp_pr2_loop_oracle_for_windows(
             .collect(),
         fixed: Vec::new(),
     };
-    let pose_graph = (!loop_edges.is_empty())
-        .then(|| optimize_relative_pose_graph(&mut graph, crate::PoseGraphSettings::default()))
-        .transpose()
+    let pose_graph = if loop_edges.is_empty() {
+        None
+    } else {
+        let (nodes, report) = optimize_cpp_pr2_pose_graph_f64(
+            &graph.nodes,
+            &graph.edges,
+            crate::PoseGraphSettings::default(),
+        )
         .map_err(crate::StitchError::from)?;
+        graph.nodes = nodes;
+        Some(report)
+    };
     let optimized_window_poses = windows
         .iter()
         .zip(&graph.nodes)
