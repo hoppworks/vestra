@@ -106,9 +106,11 @@ branches—not a claim that those features already exist:
     Sim(3), first-owner point emission, 9,931,557 ordered points, per-frame
     ownership and RGB. The numerical cloud comparison is recorded in
     [the streaming oracle record](docs/validation/CPP_PR2_STREAMING_ORACLE_2026-08-13.md).
-16. The PR #2 normal-space TSDF branch has an exact identity-control oracle and
-    an explicitly open closed-loop trajectory tier; the acceptance boundary and
-    reproduction commands are in [the TSDF oracle record](docs/validation/TSDF_ORACLE_2026-08-14.md).
+16. The PR #2 normal-space TSDF branch has accepted identity and closed-loop
+    oracle tiers. The closed-loop result has identical ordered ownership and
+    RGB for all 25,434 surfels, with a position MAE of `3.046e-7` relative
+    units. The acceptance boundary and reproduction commands are in
+    [the TSDF oracle record](docs/validation/TSDF_ORACLE_2026-08-14.md).
 17. The corrected current Rust product pipeline has also reconstructed the
     same 120-frame capture into 296,596 finite fused surfels across 13 windows
     and served six progressive binary chunks through local Studio. The
@@ -206,6 +208,20 @@ code `130`; the atomic scene contract guarantees that only complete measured
 windows remain manifest-referenced. Restart with the identical command and
 `--resume` to continue. The in-process API currently exposes window-boundary
 completion, while this CLI path supplies the bounded cancellation guarantee.
+
+For a strict PR #2-relative geometry run, capture a new dense evidence bundle
+with `--cpp-pr2-relative`. This stores all finite-depth samples and the
+per-window confidence percentile used by PR #2 for loop keys and first-owner
+emission. A legacy sparse scene is intentionally refused by strict fusion,
+rather than being relabelled as reference-compatible:
+
+```bash
+cargo run -p vestra-cli -- reconstruct \
+  --video room.mov \
+  --model depth-anything-base-f32.gguf \
+  --output room-pr2.vestra \
+  --cpp-pr2-relative
+```
 
 Before inference, Vestra records a lightweight adjacent-frame luma-motion
 indicator as `ready`, `review`, or `recapture` in the manifest and Studio HUD.
