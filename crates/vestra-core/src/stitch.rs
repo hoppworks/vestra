@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     MeasuredPoint, PoseGraphEdge, PoseGraphError, PoseGraphReport, PoseGraphSettings,
-    RelativePoseGraph, RevisitProposalSettings, WindowMeasuredChunk, optimize_relative_pose_graph,
+    RelativePoseGraph, RevisitProposalSettings, TsdfObservation, TsdfSettings, WindowMeasuredChunk,
+    camera_centre_direction, fuse_normal_space_tsdf, optimize_relative_pose_graph,
     propose_revisits, window_camera_path,
 };
 
@@ -277,7 +278,19 @@ pub struct StitchSettings {
     pub maximum_normalized_rms_residual: f32,
     pub minimum_scale: f32,
     pub maximum_scale: f32,
+    #[serde(default)]
+    pub surface_fusion: SurfaceFusion,
     pub loop_closure: Option<LoopClosureSettings>,
+}
+
+/// The final surface representation built from immutable, globally-aligned
+/// measured evidence. Voxel remains the compatibility default; TSDF is the
+/// PR #2 de-ghosting mode and preserves a first-observing-frame reveal index.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub enum SurfaceFusion {
+    #[default]
+    Voxel,
+    NormalSpaceTsdf(TsdfSettings),
 }
 
 /// Conservative relative-scale gates for automatic revisit handling. Lengths
@@ -330,6 +343,7 @@ impl Default for StitchSettings {
             // quality, not an invented metric-scale range.
             minimum_scale: 1e-3,
             maximum_scale: 1e3,
+            surface_fusion: SurfaceFusion::Voxel,
             loop_closure: Some(LoopClosureSettings {
                 minimum_window_gap: 3,
                 candidate_distance_radii: 80.0,
@@ -1258,6 +1272,18 @@ pub fn stitch_measured_windows_with_loop_closures(
         .zip(poses.iter().copied())
         .map(|(window, pose)| transform_window(window, pose))
         .collect::<Vec<_>>();
+    if let SurfaceFusion::NormalSpaceTsdf(tsdf_settings) = settings.surface_fusion {
+        return Ok(fuse_normal_space_tsdf_scene(
+            windows,
+            &global,
+            &poses,
+            tsdf_settings,
+            alignments,
+            pose_graph_edges,
+            pose_graph,
+            window_poses,
+        ));
+    }
     let mut radii = global
         .iter()
         .flat_map(|w| w.views.iter())
@@ -1357,6 +1383,72 @@ pub fn stitch_measured_windows_with_loop_closures(
         voxel_size,
         points,
     })
+}
+
+fn fuse_normal_space_tsdf_scene(
+    local_windows: &[WindowMeasuredChunk],
+    global_windows: &[WindowMeasuredChunk],
+    poses: &[SimilarityTransform],
+    settings: TsdfSettings,
+    alignments: Vec<AlignmentReport>,
+    pose_graph_edges: Vec<PoseGraphEdge>,
+    pose_graph: Option<PoseGraphReport>,
+    window_poses: Vec<FusedWindowPose>,
+) -> FusedSceneChunk {
+    let mut emitted_source_frames = HashSet::new();
+    let mut observations = Vec::new();
+    let mut cameras = Vec::new();
+    for ((local, global), &pose) in local_windows.iter().zip(global_windows).zip(poses) {
+        for (local_frame, global_frame) in local.views.iter().zip(&global.views) {
+            if !emitted_source_frames.insert(local_frame.frame_index) {
+                continue;
+            }
+            if let Some(camera) =
+                camera_centre_direction(local_frame.frame_index, local_frame.camera)
+            {
+                cameras.push(pose.apply(camera.centre_local));
+            }
+            observations.extend(global_frame.points.iter().filter_map(|point| {
+                (point.position.iter().all(|value| value.is_finite())
+                    && point.confidence.is_finite()
+                    && point.confidence > 0.0
+                    && point.radius.is_finite()
+                    && point.radius > 0.0)
+                    .then_some(TsdfObservation {
+                        position: point.position,
+                        color_srgb: point.color_srgb,
+                        confidence: point.confidence,
+                        radius: point.radius,
+                        frame_index: global_frame.frame_index as i32,
+                    })
+            }));
+        }
+    }
+    let surfels = fuse_normal_space_tsdf(&observations, &cameras, settings);
+    let voxel_size = surfels
+        .first()
+        .map(|surfel| surfel.radius / 0.6)
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(0.0);
+    FusedSceneChunk {
+        alignments,
+        pose_graph_edges,
+        pose_graph,
+        window_poses,
+        voxel_size,
+        points: surfels
+            .into_iter()
+            .map(|surfel| FusedPoint {
+                position: surfel.position,
+                normal: surfel.normal,
+                color_srgb: surfel.color_srgb,
+                confidence: 1.0,
+                radius: surfel.radius,
+                first_observing_frame: surfel.first_observing_frame,
+                contributors: surfel.contributors,
+            })
+            .collect(),
+    }
 }
 
 fn discover_loop_closures(
@@ -1499,6 +1591,35 @@ mod tests {
         assert!((report.transform.scale - 2.).abs() < 1e-4);
         assert!(distance(report.transform.apply([1., 0., 0.]), [5., -1., 1.]) < 1e-4);
         assert!(report.rms_residual < 1e-4);
+    }
+
+    #[test]
+    fn tsdf_surface_mode_preserves_first_observing_frame() {
+        let window = chunk(
+            (0..3)
+                .flat_map(|y| (0..3).map(move |x| p((y * 3 + x) as u32, [x as f32, y as f32, 1.0])))
+                .collect(),
+        );
+        let fused = stitch_measured_windows_with_settings(
+            &[window],
+            StitchSettings {
+                surface_fusion: SurfaceFusion::NormalSpaceTsdf(TsdfSettings {
+                    voxel_size: Some(0.5),
+                    minimum_hits: 1,
+                    ..TsdfSettings::default()
+                }),
+                loop_closure: None,
+                ..StitchSettings::default()
+            },
+        )
+        .unwrap();
+        assert!(!fused.points.is_empty());
+        assert!(
+            fused
+                .points
+                .iter()
+                .all(|point| point.first_observing_frame == 7 && point.radius > 0.0)
+        );
     }
 
     #[test]

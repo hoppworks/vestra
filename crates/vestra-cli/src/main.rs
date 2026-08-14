@@ -9,11 +9,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vestra_core::{
     BackprojectionSettings, CppPr2Fixture, CppPr2StreamOutput, ReconstructionSettings, SceneBundle,
-    SceneProvenance, VideoExtractionSettings, WindowSettings, capture_cpp_pr2_fixture,
-    cpp_pr2_fixture_alignment_reports, emit_cpp_pr2_loop_closed_reference_cloud,
-    emit_cpp_pr2_reference_cloud, export_camera_json, export_fused_glb, export_fused_ply,
-    export_fused_splat, extract_video_frames, fuse_scene_bundle, fused_topology,
-    load_decoded_frame_cache, load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
+    SceneProvenance, StitchSettings, SurfaceFusion, TsdfSettings, VideoExtractionSettings,
+    WindowSettings, capture_cpp_pr2_fixture, cpp_pr2_fixture_alignment_reports,
+    emit_cpp_pr2_loop_closed_reference_cloud, emit_cpp_pr2_reference_cloud, export_camera_json,
+    export_fused_glb, export_fused_ply, export_fused_splat, extract_video_frames,
+    fuse_scene_bundle_with_settings, fused_topology, load_decoded_frame_cache,
+    load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
 use vestra_studio::{IntakeConfig, serve, serve_intake};
@@ -67,11 +68,17 @@ enum Command {
         /// a practical surfel volume; use 1 only for small diagnostics.
         #[arg(long, default_value_t = 8)]
         pixel_stride: usize,
+        /// Build PR #2 normal-space TSDF surfels instead of compatibility voxel fusion.
+        #[arg(long)]
+        tsdf: bool,
     },
     /// Rebuild the derived world from a bundle's immutable measured windows.
     Fuse {
         #[arg(long)]
         scene: PathBuf,
+        /// Rebuild this derivative with PR #2 normal-space TSDF fusion.
+        #[arg(long)]
+        tsdf: bool,
     },
     /// Export the fused relative-scale world as an open ASCII PLY file.
     Export {
@@ -226,6 +233,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             overlap,
             minimum_confidence,
             pixel_stride,
+            tsdf,
         } => {
             install_reconstruction_interrupt_handler()?;
             let provenance = SceneProvenance {
@@ -312,7 +320,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     checkpoint.measured_points
                 );
             }
-            let fusion = fuse_scene_bundle(&bundle)?;
+            let fusion = fuse_scene_bundle_with_settings(&bundle, fusion_settings(tsdf))?;
             eprintln!(
                 "fused {} measured windows into {} relative-scale points",
                 fusion.aligned_windows, fusion.points
@@ -527,9 +535,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             );
         }
-        Command::Fuse { scene } => {
+        Command::Fuse { scene, tsdf } => {
             let bundle = SceneBundle::open(scene)?;
-            let fusion = fuse_scene_bundle(&bundle)?;
+            let fusion = fuse_scene_bundle_with_settings(&bundle, fusion_settings(tsdf))?;
             println!(
                 "{}",
                 serde_json::json!({
@@ -903,6 +911,15 @@ fn settings_fingerprint(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect())
+}
+
+fn fusion_settings(tsdf: bool) -> StitchSettings {
+    StitchSettings {
+        surface_fusion: tsdf
+            .then_some(SurfaceFusion::NormalSpaceTsdf(TsdfSettings::default()))
+            .unwrap_or(SurfaceFusion::Voxel),
+        ..StitchSettings::default()
+    }
 }
 
 #[cfg(test)]

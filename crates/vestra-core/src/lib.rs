@@ -51,10 +51,10 @@ pub use scene::{
 pub use stitch::{
     AlignmentReport, FusedPoint, FusedSceneChunk, FusedTopology, FusedWindowPose,
     LoopClosureSettings, LoopMeasurement, LoopMeasurementSettings, SimilarityTransform,
-    StitchError, StitchSettings, align_overlapping_windows, align_overlapping_windows_cpp_pr2,
-    fused_topology, measure_loop_closure, stitch_measured_windows,
-    stitch_measured_windows_with_loop_closures, stitch_measured_windows_with_settings,
-    transform_points,
+    StitchError, StitchSettings, SurfaceFusion, align_overlapping_windows,
+    align_overlapping_windows_cpp_pr2, fused_topology, measure_loop_closure,
+    stitch_measured_windows, stitch_measured_windows_with_loop_closures,
+    stitch_measured_windows_with_settings, transform_points,
 };
 pub use tsdf::{TsdfObservation, TsdfSettings, TsdfSurfel, fuse_normal_space_tsdf};
 pub use video::{

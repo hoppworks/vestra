@@ -7,9 +7,11 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::icp::estimate_normals;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TsdfSettings {
     /// Relative fraction of the cloud bounding-box diagonal when `voxel_size`
     /// is absent. PR #2's default is 0.4 percent.
@@ -166,6 +168,19 @@ pub fn fuse_normal_space_tsdf(
             ))
         })
         .collect::<Vec<_>>();
+    if output.is_empty() {
+        return observations
+            .into_iter()
+            .map(|point| TsdfSurfel {
+                position: point.position,
+                normal: [0.0, 0.0, 1.0],
+                color_srgb: point.color_srgb,
+                radius: point.radius,
+                first_observing_frame: point.frame_index,
+                contributors: 1,
+            })
+            .collect();
+    }
     output.sort_by_key(|(key, point)| (point.first_observing_frame, key.x, key.y, key.z));
     output.into_iter().map(|(_, point)| point).collect()
 }

@@ -195,6 +195,7 @@ pub fn stitch_cpp_pr2_fixture_as_vestra(
         maximum_normalized_rms_residual: f32::INFINITY,
         minimum_scale: 1e-9,
         maximum_scale: 1e9,
+        surface_fusion: crate::SurfaceFusion::Voxel,
         loop_closure: fixture
             .branches
             .loop_close
