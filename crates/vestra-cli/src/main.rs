@@ -2,6 +2,7 @@ use std::{
     fs::File,
     io::{BufReader, Read},
     path::PathBuf,
+    time::Instant,
 };
 
 use clap::{Parser, Subcommand};
@@ -18,7 +19,7 @@ use vestra_core::{
     fuse_scene_bundle_with_settings, fused_topology, load_decoded_frame_cache,
     load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
 };
-use vestra_engine::{Engine, QuantPref};
+use vestra_engine::{Engine, QuantPref, ViewInput};
 use vestra_studio::{IntakeConfig, serve, serve_intake};
 
 const VESTRA_LOCK: &str = include_str!("../../../vestra.lock.toml");
@@ -196,6 +197,28 @@ enum Command {
         /// Enable PR #2's non-adjacent loop-closure and Sim(3) pose graph in the C++ oracle.
         #[arg(long)]
         loop_close: bool,
+    },
+    /// Bench only the repeated PR #2 multi-view model boundary. Model loading
+    /// and canonical PPM decoding occur before the timed samples.
+    OracleModelBench {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        decoded: PathBuf,
+        #[arg(long, default_value_t = 120)]
+        frames: usize,
+        #[arg(long, default_value_t = 504)]
+        width: usize,
+        #[arg(long, default_value_t = 336)]
+        height: usize,
+        #[arg(long, default_value_t = 12)]
+        chunk_size: usize,
+        #[arg(long, default_value_t = 3)]
+        overlap: usize,
+        #[arg(long, default_value_t = 1)]
+        warmup: usize,
+        #[arg(long, default_value_t = 10)]
+        repeat: usize,
     },
     /// Validate and summarize a VPO1 output from the pinned C++ streaming oracle.
     OracleInspect {
@@ -487,6 +510,84 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fixture.window_views.len(),
                 fixture.width,
                 fixture.height,
+            );
+        }
+        Command::OracleModelBench {
+            model,
+            decoded,
+            frames: requested_frames,
+            width,
+            height,
+            chunk_size,
+            overlap,
+            warmup,
+            repeat,
+        } => {
+            if warmup == 0 || repeat == 0 {
+                return Err("oracle-model-bench requires positive --warmup and --repeat".into());
+            }
+            let frames = load_decoded_rgb24_cache(
+                &decoded,
+                VideoExtractionSettings {
+                    width,
+                    height,
+                    max_frames: requested_frames,
+                },
+            )?;
+            let schedule = plan_windows(
+                frames.len(),
+                WindowSettings {
+                    chunk_size,
+                    overlap,
+                },
+            )?;
+            // Borrowed window inputs are deliberately prebuilt before timing:
+            // this benchmark measures only the shared DA3 multi-view model
+            // boundary, never PPM decoding, model loading or input assembly.
+            let windows = schedule
+                .iter()
+                .map(|window| {
+                    frames[window.start..window.end]
+                        .iter()
+                        .map(|frame| ViewInput {
+                            rgb_hwc_u8: &frame.rgb_hwc_u8,
+                            h: frame.height,
+                            w: frame.width,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let mut engine = Engine::load(&model, QuantPref::PreferF32)?;
+            let mut samples_ms = Vec::with_capacity(repeat);
+            let mut checksum = 0.0_f64;
+            for iteration in 0..warmup.saturating_add(repeat) {
+                let started = Instant::now();
+                for inputs in &windows {
+                    let output = engine.infer_multi_view(inputs)?;
+                    let Some(first) = output.views.first() else {
+                        return Err("multi-view model produced no views".into());
+                    };
+                    let Some((&depth, &confidence)) = first.depth.first().zip(first.conf.first())
+                    else {
+                        return Err(
+                            "multi-view model produced an empty depth/confidence map".into()
+                        );
+                    };
+                    checksum += f64::from(depth) + f64::from(confidence);
+                }
+                if iteration >= warmup {
+                    samples_ms.push(started.elapsed().as_secs_f64() * 1_000.0);
+                }
+            }
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.pr2-multiview-model-bench/v1",
+                    "frames": frames.len(),
+                    "windows": windows.len(),
+                    "samples_ms": samples_ms,
+                    "checksum": checksum,
+                })
             );
         }
         Command::OracleInspect { input } => {

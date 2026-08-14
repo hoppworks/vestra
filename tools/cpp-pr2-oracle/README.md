@@ -71,6 +71,26 @@ python3 tools/cpp-pr2-oracle/make_identity_fixture.py /tmp/identity.vps
 durations to stderr. It is for phase attribution only; use the locked
 fresh-process benchmark protocol for comparative wall-clock claims.
 
+## Model-only multi-view benchmark
+
+`vestra_cpp_multiview_bench` and `vestra oracle-model-bench` are paired
+diagnostic runners. Both load the F32 model and canonical RGB24 PPM cache once
+before timing, then repeatedly execute only the same PR #2 multi-view
+depth/confidence/pose windows. Neither runner writes model outputs in the
+timed interval.
+
+```bash
+vestra_cpp_multiview_bench MODEL.gguf decoded/ 16 12 3 1 10
+vestra oracle-model-bench --model MODEL.gguf --decoded decoded/ \
+  --frames 24 --width 504 --height 336 --chunk-size 12 --overlap 3 \
+  --warmup 1 --repeat 10
+```
+
+The runner returns raw per-repeat milliseconds plus a checksum to keep the
+computed tensors observable. It is a stage benchmark; run the two binaries in
+fresh randomized process trials and retain their full JSON outputs before
+claiming an implementation speed comparison.
+
 ## Output (`VPO1`)
 
 The header is `VPO1`, `u32 version`, `u32 frame_count`, `u32 height`, `u32 width`,

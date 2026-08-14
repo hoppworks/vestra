@@ -37,6 +37,13 @@ target_link_libraries(vestra_cpp_multiview_dump PRIVATE depthanything)
 target_include_directories(vestra_cpp_multiview_dump PRIVATE
     "${CPP_PR2_SOURCE}/src")
 
+# Model-only timing: model and canonical PPM cache are initialized before the
+# timed repeated multi-view windows, matching Vestra's Rust bench boundary.
+add_executable(vestra_cpp_multiview_bench multiview_bench.cpp)
+target_link_libraries(vestra_cpp_multiview_bench PRIVATE depthanything)
+target_include_directories(vestra_cpp_multiview_bench PRIVATE
+    "${CPP_PR2_SOURCE}/src")
+
 # Deterministic diagnostic evidence for the exact PR #2 closed-trajectory
 # regression. It only writes a VPS1 fixture; it never modifies or links to the
 # pinned C++ source tree.
