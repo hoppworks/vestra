@@ -395,11 +395,28 @@ pub fn emit_cpp_pr2_loop_closed_tsdf_reference_cloud(
     fixture: &CppPr2Fixture,
 ) -> Result<CppPr2ReferenceCloud, ReconstructionError> {
     let windows = cpp_pr2_fixture_windows(fixture)?;
-    let oracle = cpp_pr2_closed_loop_oracle(fixture)?;
     let alignments = windows
         .windows(2)
         .map(|pair| Ok(align_overlapping_windows_cpp_pr2(&pair[1], &pair[0])?))
         .collect::<Result<Vec<_>, ReconstructionError>>()?;
+    let sequential = sequential_poses_from_alignments(&alignments);
+    let keys = windows
+        .iter()
+        .enumerate()
+        .map(|(index, window)| cpp_pr2_fixture_key_cloud(fixture, index, window))
+        .collect::<Vec<_>>();
+    let paths = windows
+        .iter()
+        .enumerate()
+        .map(|(index, window)| cpp_pr2_fixture_camera_path(fixture, index, window))
+        .collect::<Vec<_>>();
+    let oracle = cpp_pr2_loop_oracle_from_sequential(
+        &windows,
+        fixture.branches.loop_close,
+        &keys,
+        &paths,
+        sequential,
+    )?;
     let poses = oracle
         .optimized_window_poses
         .iter()
@@ -708,6 +725,16 @@ fn cpp_pr2_loop_oracle_with_evidence(
         return Err(ReconstructionError::OracleOutputShape);
     }
     let sequential = cpp_pr2_sequential_window_poses(&windows)?;
+    cpp_pr2_loop_oracle_from_sequential(windows, loop_close, keys, paths, sequential)
+}
+
+fn cpp_pr2_loop_oracle_from_sequential(
+    windows: &[WindowMeasuredChunk],
+    loop_close: bool,
+    keys: &[Vec<[f32; 3]>],
+    paths: &[Vec<crate::CameraCentreDirection>],
+    sequential: Vec<SimilarityTransform>,
+) -> Result<CppPr2LoopOracle, ReconstructionError> {
     let sequential_window_poses = windows
         .iter()
         .zip(&sequential)
@@ -817,6 +844,16 @@ fn cpp_pr2_sequential_window_poses(
         poses.push(previous.compose(report.transform));
     }
     Ok(poses)
+}
+
+fn sequential_poses_from_alignments(alignments: &[AlignmentReport]) -> Vec<SimilarityTransform> {
+    let mut poses = Vec::with_capacity(alignments.len() + 1);
+    poses.push(SimilarityTransform::IDENTITY);
+    for report in alignments {
+        let previous = *poses.last().expect("first reference pose exists");
+        poses.push(previous.compose(report.transform));
+    }
+    poses
 }
 
 fn cpp_pr2_first_owner_key_cloud(window: &WindowMeasuredChunk, overlap: usize) -> Vec<[f32; 3]> {
