@@ -39,6 +39,26 @@ recorded separately in
 Rust is currently **2.130×** the C++ wall time in this bounded geometry tier.
 This is an honest regression target, not a completed performance objective.
 
+## Follow-up: TSDF normal-orientation parallelization
+
+The phase profiler then identified that Rust oriented 921,600 independent PCA
+normals serially, whereas PR #2 uses an OpenMP loop. The fix parallelizes that
+independent pass and reuses per-worker neighbour scratch. It retained the exact
+ordered output count, RGB, frame ownership and the TSDF oracle tolerances.
+
+The repeated, fresh 10× trial is stored in
+[`after-normal-orientation/raw.jsonl`](after-normal-orientation/raw.jsonl):
+
+| Arm | n | Mean (ms) | Median (ms) | 95% t CI of mean (ms) |
+| --- | --: | --: | --: | ---: |
+| C++ PR #2 | 10 | 862.679 | 863.054 | [861.175, 864.183] |
+| Vestra Rust | 10 | 1437.229 | 1434.143 | [1429.892, 1444.567] |
+
+This reduces the Rust geometry wall time by **21.90%** relative to the first
+series (1840.159 ms → 1437.229 ms) and narrows the C++ ratio from 2.130× to
+**1.666×**. It is a real improvement, but Rust is still slower; the next
+optimization must be justified by a new phase profile rather than assumed.
+
 ## Next action
 
 Profile the Rust TSDF stage separately from seam/loop/emit work before changing
