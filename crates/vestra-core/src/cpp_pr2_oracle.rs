@@ -10,6 +10,8 @@ use crate::WindowSettings;
 
 const FIXTURE_MAGIC: [u8; 4] = *b"VPS1";
 const OUTPUT_MAGIC: [u8; 4] = *b"VPO1";
+const CAPI_STREAM_MAGIC: [u8; 4] = *b"CPS1";
+const CAPI_STREAM_VERSION: u32 = 1;
 /// Version 2 established the base sequential streaming oracle. Version 3 adds
 /// explicit opt-in geometry branches while retaining a reader for the durable
 /// V2 evidence artifacts.
@@ -90,6 +92,22 @@ pub struct CppPr2StreamOutput {
     pub counts: Vec<i32>,
     pub window_pos: Vec<f32>,
     pub window_mid_frame: Vec<i32>,
+    pub frame_pos: Vec<f32>,
+    pub frame_fwd: Vec<f32>,
+}
+
+/// Output from Vestra's small C++ C-API stream harness.
+///
+/// Unlike `VPO1`, this intentionally contains only the public C-API cloud and
+/// per-frame camera trajectory. It is the end-to-end differential boundary
+/// for a real DA3 model run over the same decoded RGB frames.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CppPr2CapiStreamOutput {
+    pub frame_count: usize,
+    pub xyz: Vec<f32>,
+    pub rgb: Vec<u8>,
+    pub radius: Vec<f32>,
+    pub counts: Vec<i32>,
     pub frame_pos: Vec<f32>,
     pub frame_fwd: Vec<f32>,
 }
@@ -372,6 +390,72 @@ impl CppPr2StreamOutput {
     }
 }
 
+impl CppPr2CapiStreamOutput {
+    /// Reads a complete `CPS1` stream-harness artifact and rejects trailing
+    /// bytes. The format is deliberately tiny and independent of C++ headers.
+    pub fn read_cps1(reader: &mut impl Read) -> Result<Self, CppPr2OracleError> {
+        let mut magic = [0; 4];
+        read_exact(reader, &mut magic)?;
+        if magic != CAPI_STREAM_MAGIC {
+            return Err(CppPr2OracleError::Magic);
+        }
+        let version = read_u32(reader)?;
+        if version != CAPI_STREAM_VERSION {
+            return Err(CppPr2OracleError::Version(version));
+        }
+        let frame_count = read_u32(reader)? as usize;
+        let point_count = read_u32(reader)? as usize;
+        let pose_frames = read_u32(reader)? as usize;
+        if frame_count == 0 || pose_frames > frame_count {
+            return Err(CppPr2OracleError::InvalidHeader);
+        }
+        let counts = read_i32_vec(reader, frame_count)?;
+        if counts.iter().any(|count| *count < 0)
+            || counts.iter().map(|count| *count as usize).sum::<usize>() != point_count
+        {
+            return Err(CppPr2OracleError::InconsistentPayload);
+        }
+        let xyz = read_f32_vec(
+            reader,
+            point_count
+                .checked_mul(3)
+                .ok_or(CppPr2OracleError::InvalidHeader)?,
+        )?;
+        let rgb = read_u8_vec(
+            reader,
+            point_count
+                .checked_mul(3)
+                .ok_or(CppPr2OracleError::InvalidHeader)?,
+        )?;
+        let radius = read_f32_vec(reader, point_count)?;
+        let frame_pos = read_f32_vec(
+            reader,
+            pose_frames
+                .checked_mul(3)
+                .ok_or(CppPr2OracleError::InvalidHeader)?,
+        )?;
+        let frame_fwd = read_f32_vec(
+            reader,
+            pose_frames
+                .checked_mul(3)
+                .ok_or(CppPr2OracleError::InvalidHeader)?,
+        )?;
+        let mut extra = [0; 1];
+        if reader.read(&mut extra).map_err(io_error)? != 0 {
+            return Err(CppPr2OracleError::TrailingBytes);
+        }
+        Ok(Self {
+            frame_count,
+            xyz,
+            rgb,
+            radius,
+            counts,
+            frame_pos,
+            frame_fwd,
+        })
+    }
+}
+
 fn io_error(error: std::io::Error) -> CppPr2OracleError {
     CppPr2OracleError::Io(error.to_string())
 }
@@ -492,6 +576,43 @@ mod tests {
                 .unwrap()
                 .branches,
             fixture.branches
+        );
+    }
+
+    #[test]
+    fn cps1_reader_preserves_capi_cloud_and_rejects_count_mismatch() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&CAPI_STREAM_MAGIC);
+        bytes.extend_from_slice(&CAPI_STREAM_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        for count in [1_i32, 1] {
+            bytes.extend_from_slice(&count.to_le_bytes());
+        }
+        for value in [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[7, 8, 9, 10, 11, 12]);
+        for value in [0.1_f32, 0.2] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in [0.0_f32, 1.0, 2.0, 3.0, 4.0, 5.0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in [1.0_f32, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        let parsed = CppPr2CapiStreamOutput::read_cps1(&mut bytes.as_slice()).unwrap();
+        assert_eq!(parsed.counts, vec![1, 1]);
+        assert_eq!(parsed.xyz, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(parsed.rgb, vec![7, 8, 9, 10, 11, 12]);
+        assert_eq!(parsed.radius, vec![0.1, 0.2]);
+        let mut invalid = bytes;
+        invalid[20..24].copy_from_slice(&2_i32.to_le_bytes());
+        assert_eq!(
+            CppPr2CapiStreamOutput::read_cps1(&mut invalid.as_slice()),
+            Err(CppPr2OracleError::InconsistentPayload)
         );
     }
 

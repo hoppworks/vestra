@@ -39,12 +39,13 @@ bool parse_positive(const char* value, int& output) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 8) {
+    if (argc != 10) {
         std::cerr << "usage: " << argv[0]
-                  << " MODEL.gguf FRAME_DIRECTORY OUTPUT.cps THREADS CHUNK OVERLAP FUSE(0|1)\n";
+                  << " MODEL.gguf FRAME_DIRECTORY OUTPUT.cps THREADS CHUNK OVERLAP "
+                     "FUSE(0|1) ICP(0|1) LOOP(0|1)\n";
         return 2;
     }
-    int threads = 0, chunk = 0, overlap = 0, fuse = 0;
+    int threads = 0, chunk = 0, overlap = 0, fuse = 0, icp = 0, loop = 0;
     if (!parse_positive(argv[4], threads) || !parse_positive(argv[5], chunk) ||
         !parse_positive(argv[6], overlap)) {
         std::cerr << "threads, chunk, and overlap must be positive integers\n";
@@ -53,6 +54,11 @@ int main(int argc, char** argv) {
     try { fuse = std::stoi(argv[7]); } catch (...) { return 2; }
     if (fuse != 0 && fuse != 1) {
         std::cerr << "fuse must be 0 or 1\n";
+        return 2;
+    }
+    try { icp = std::stoi(argv[8]); loop = std::stoi(argv[9]); } catch (...) { return 2; }
+    if ((icp != 0 && icp != 1) || (loop != 0 && loop != 1)) {
+        std::cerr << "icp and loop must be 0 or 1\n";
         return 2;
     }
 
@@ -83,7 +89,7 @@ int main(int argc, char** argv) {
     float* radius = nullptr;
     const int result = da_capi_points_stream(
         context, raw_paths.data(), static_cast<int>(raw_paths.size()), chunk, overlap,
-        55.0, 1.0f, 0, 1, 1, fuse, 0, 0.0, &points, counts.data(), &xyz, &rgb, &radius);
+        55.0, 1.0f, 0, icp, loop, fuse, 0, 0.0, &points, counts.data(), &xyz, &rgb, &radius);
     if (result != 0 || points < 0 || !xyz || !rgb || !radius) {
         std::cerr << "points stream failed: " << da_capi_last_error(context) << '\n';
         da_capi_free_floats(xyz);

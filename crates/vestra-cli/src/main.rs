@@ -8,14 +8,15 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vestra_core::{
-    BackprojectionSettings, CppPr2Fixture, CppPr2StreamOutput, ReconstructionSettings, SceneBundle,
-    SceneProvenance, StitchSettings, SurfaceFusion, TsdfSettings, VideoExtractionSettings,
-    WindowSettings, capture_cpp_pr2_fixture, cpp_pr2_fixture_alignment_reports,
-    cpp_pr2_fixture_trajectory, emit_cpp_pr2_loop_closed_reference_cloud,
-    emit_cpp_pr2_reference_cloud, emit_cpp_pr2_tsdf_reference_cloud, export_camera_json,
-    export_fused_glb, export_fused_ply, export_fused_splat, extract_video_frames,
-    fuse_scene_bundle_cpp_pr2_relative, fuse_scene_bundle_with_settings, fused_topology,
-    load_decoded_frame_cache, load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
+    BackprojectionSettings, CppPr2CapiStreamOutput, CppPr2Fixture, CppPr2StreamOutput,
+    ReconstructionSettings, SceneBundle, SceneProvenance, StitchSettings, SurfaceFusion,
+    TsdfSettings, VideoExtractionSettings, WindowSettings, capture_cpp_pr2_fixture,
+    cpp_pr2_fixture_alignment_reports, cpp_pr2_fixture_trajectory,
+    emit_cpp_pr2_loop_closed_reference_cloud, emit_cpp_pr2_reference_cloud,
+    emit_cpp_pr2_tsdf_reference_cloud, export_camera_json, export_fused_glb, export_fused_ply,
+    export_fused_splat, extract_video_frames, fuse_scene_bundle_cpp_pr2_relative,
+    fuse_scene_bundle_with_settings, fused_topology, load_decoded_frame_cache,
+    load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
 use vestra_studio::{IntakeConfig, serve, serve_intake};
@@ -213,6 +214,17 @@ enum Command {
         #[arg(long)]
         reference: PathBuf,
         /// Compare the normal-space TSDF tier. The C++ VPO1 must use `--tsdf`.
+        #[arg(long)]
+        tsdf: bool,
+    },
+    /// Compare a Rust VPS1 replay with the C++ C-API's CPS1 output from the
+    /// same model, decoded frames, windows, and geometry branch settings.
+    OracleCompareCapi {
+        #[arg(long)]
+        fixture: PathBuf,
+        #[arg(long)]
+        reference: PathBuf,
+        /// Compare normal-space TSDF output rather than the pre-voxel cloud.
         #[arg(long)]
         tsdf: bool,
     },
@@ -594,6 +606,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "frame_forward_mae": frame_forward_mae,
                     "frame_forward_max_abs": frame_forward_max_abs,
                     "alignments": rust.alignments,
+                })
+            );
+        }
+        Command::OracleCompareCapi {
+            fixture,
+            reference,
+            tsdf,
+        } => {
+            let mut fixture_reader = BufReader::new(File::open(fixture)?);
+            let fixture = CppPr2Fixture::read_vps1(&mut fixture_reader)?;
+            let mut reference_reader = BufReader::new(File::open(reference)?);
+            let reference = CppPr2CapiStreamOutput::read_cps1(&mut reference_reader)?;
+            let rust = if tsdf {
+                emit_cpp_pr2_tsdf_reference_cloud(&fixture)?
+            } else if fixture.branches.loop_close {
+                emit_cpp_pr2_loop_closed_reference_cloud(&fixture)?
+            } else {
+                emit_cpp_pr2_reference_cloud(&fixture)?
+            };
+            let trajectory = cpp_pr2_fixture_trajectory(&fixture)?;
+            let shared = rust.points.len().min(reference.radius.len());
+            let mut position_absolute_sum = 0.0_f64;
+            let mut position_absolute_max = 0.0_f32;
+            let mut radius_absolute_sum = 0.0_f64;
+            let mut radius_absolute_max = 0.0_f32;
+            let mut rgb_mismatches = 0_usize;
+            for (index, point) in rust.points.iter().take(shared).enumerate() {
+                for axis in 0..3 {
+                    let delta = (point.position[axis] - reference.xyz[index * 3 + axis]).abs();
+                    position_absolute_sum += f64::from(delta);
+                    position_absolute_max = position_absolute_max.max(delta);
+                }
+                let radius_delta = (point.radius - reference.radius[index]).abs();
+                radius_absolute_sum += f64::from(radius_delta);
+                radius_absolute_max = radius_absolute_max.max(radius_delta);
+                if point.color_srgb != reference.rgb[index * 3..index * 3 + 3] {
+                    rgb_mismatches += 1;
+                }
+            }
+            let position_values = shared.saturating_mul(3);
+            let (frame_position_mae, frame_position_max_abs) =
+                trajectory_difference(&trajectory.frame_positions, &reference.frame_pos);
+            let (frame_forward_mae, frame_forward_max_abs) =
+                trajectory_difference(&trajectory.frame_forwards, &reference.frame_fwd);
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.cpp-pr2-capi-comparison/v1",
+                    "reference_frames": reference.frame_count,
+                    "fixture_frames": fixture.frame_count,
+                    "reference_points": reference.radius.len(),
+                    "rust_points": rust.points.len(),
+                    "point_count_matches": rust.points.len() == reference.radius.len(),
+                    "reference_frame_owned_points": reference.counts,
+                    "rust_frame_owned_points": rust.frame_owned_points,
+                    "frame_owned_points_match": rust.frame_owned_points == reference.counts,
+                    "shared_ordered_points": shared,
+                    "rgb_mismatches": rgb_mismatches,
+                    "position_mae": if position_values == 0 { 0.0 } else { position_absolute_sum / position_values as f64 },
+                    "position_max_abs": position_absolute_max,
+                    "radius_mae": if shared == 0 { 0.0 } else { radius_absolute_sum / shared as f64 },
+                    "radius_max_abs": radius_absolute_max,
+                    "frame_position_mae": frame_position_mae,
+                    "frame_position_max_abs": frame_position_max_abs,
+                    "frame_forward_mae": frame_forward_mae,
+                    "frame_forward_max_abs": frame_forward_max_abs,
+                    "tsdf": tsdf,
                 })
             );
         }
