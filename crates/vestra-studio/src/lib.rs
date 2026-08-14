@@ -21,7 +21,7 @@ const INDEX_HTML: &str = include_str!("index.html");
 const INTAKE_HTML: &str = include_str!("intake.html");
 const CAMERA_CONTROLS_JS: &str = include_str!("camera-controls.js");
 const REPLAY_MAGIC: [u8; 4] = *b"VRPL";
-const REPLAY_VERSION: u16 = 1;
+const REPLAY_VERSION: u16 = 2;
 
 /// One measured window is sufficient for sequential replay: a source frame is
 /// owned by its earliest window, and the browser requests frames in video
@@ -1043,7 +1043,7 @@ fn replay_frame(root: &Path, request_path: &str) -> (&'static str, &'static str,
             .iter()
             .find(|view| view.frame_index == frame_index)
             .ok_or("source frame has no measured depth samples")?;
-        Ok(encode_replay_points(&view.points))
+        Ok(encode_replay_points(&view.points, view.camera))
     })();
     match payload {
         Ok(body) => ("200 OK", "application/octet-stream", body),
@@ -1059,38 +1059,46 @@ fn replay_frame_index(request_path: &str) -> Option<usize> {
         .ok()
 }
 
-/// `VRPL` v1: magic, version, reserved, sample count, raster width, raster
-/// height, then `[x:u16, y:u16, r:u8, g:u8, b:u8]` per real depth sample.
-fn encode_replay_points(points: &[MeasuredPoint]) -> Vec<u8> {
+/// `VRPL` v2 is a camera-space point-cloud payload, not an image raster.
+/// It contains magic/version/reserved/count, `fx/fy/cx/cy`, then
+/// `[camera_x:f32, camera_y:f32, camera_z:f32, r:u8, g:u8, b:u8]` per real
+/// measured point. The Studio deliberately renders it with a small camera
+/// offset so depth changes are visible instead of reconstructing the input
+/// image as a regular dot grid.
+fn encode_replay_points(points: &[MeasuredPoint], camera: CameraCalibration) -> Vec<u8> {
     let samples = points
         .iter()
-        .filter(|point| {
-            u16::try_from(point.source_pixel[0]).is_ok()
-                && u16::try_from(point.source_pixel[1]).is_ok()
+        .filter_map(|point| {
+            let [r00, r01, r02, tx, r10, r11, r12, ty, r20, r21, r22, tz] = camera.world_to_camera;
+            let [x, y, z] = point.position;
+            let camera_position = [
+                r00 * x + r01 * y + r02 * z + tx,
+                r10 * x + r11 * y + r12 * z + ty,
+                r20 * x + r21 * y + r22 * z + tz,
+            ];
+            (camera_position.iter().all(|value| value.is_finite()) && camera_position[2] > 0.0)
+                .then_some((camera_position, point.color_srgb))
         })
         .collect::<Vec<_>>();
-    let width = samples
-        .iter()
-        .map(|point| point.source_pixel[0] as u16 + 1)
-        .max()
-        .unwrap_or(1);
-    let height = samples
-        .iter()
-        .map(|point| point.source_pixel[1] as u16 + 1)
-        .max()
-        .unwrap_or(1);
     let count = u32::try_from(samples.len()).expect("bounded measured point payload");
-    let mut payload = Vec::with_capacity(16 + samples.len() * 7);
+    let mut payload = Vec::with_capacity(28 + samples.len() * 15);
     payload.extend_from_slice(&REPLAY_MAGIC);
     payload.extend_from_slice(&REPLAY_VERSION.to_le_bytes());
     payload.extend_from_slice(&0_u16.to_le_bytes());
     payload.extend_from_slice(&count.to_le_bytes());
-    payload.extend_from_slice(&width.to_le_bytes());
-    payload.extend_from_slice(&height.to_le_bytes());
-    for point in samples {
-        payload.extend_from_slice(&(point.source_pixel[0] as u16).to_le_bytes());
-        payload.extend_from_slice(&(point.source_pixel[1] as u16).to_le_bytes());
-        payload.extend_from_slice(&point.color_srgb);
+    for value in [
+        camera.intrinsics[0],
+        camera.intrinsics[4],
+        camera.intrinsics[2],
+        camera.intrinsics[5],
+    ] {
+        payload.extend_from_slice(&value.to_le_bytes());
+    }
+    for (position, color) in samples {
+        for value in position {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+        payload.extend_from_slice(&color);
     }
     payload
 }
@@ -1328,7 +1336,7 @@ mod tests {
         assert!(INDEX_HTML.contains("src=\"/input-video\""));
         assert!(INDEX_HTML.contains("function updateReplay()"));
         assert!(INDEX_HTML.contains("original capture · 3:2 crop"));
-        assert!(INDEX_HTML.contains("same 3:2 crop"));
+        assert!(INDEX_HTML.contains("depth-parallax view"));
         assert!(INDEX_HTML.contains("object-fit:cover"));
         assert!(INDEX_HTML.contains("replay-landscape"));
         assert!(INDEX_HTML.contains("function arrangeReplay()"));
@@ -1337,30 +1345,45 @@ mod tests {
 
     #[test]
     fn replay_payload_contains_only_real_measured_sample_pixels() {
-        let payload = encode_replay_points(&[
-            MeasuredPoint {
-                position: [0.0; 3],
-                normal: [0.0, 0.0, 1.0],
-                color_srgb: [7, 8, 9],
-                confidence: 1.0,
-                radius: 0.1,
-                source_pixel: [4, 2],
-            },
-            MeasuredPoint {
-                position: [0.0; 3],
-                normal: [0.0, 0.0, 1.0],
-                color_srgb: [10, 11, 12],
-                confidence: 1.0,
-                radius: 0.1,
-                source_pixel: [500, 332],
-            },
-        ]);
+        let camera = CameraCalibration {
+            world_to_camera: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            intrinsics: [504.0, 0.0, 252.0, 0.0, 336.0, 168.0, 0.0, 0.0, 1.0],
+        };
+        let payload = encode_replay_points(
+            &[
+                MeasuredPoint {
+                    position: [1.0, 2.0, 4.0],
+                    normal: [0.0, 0.0, 1.0],
+                    color_srgb: [7, 8, 9],
+                    confidence: 1.0,
+                    radius: 0.1,
+                    source_pixel: [4, 2],
+                },
+                MeasuredPoint {
+                    position: [2.0, 3.0, 5.0],
+                    normal: [0.0, 0.0, 1.0],
+                    color_srgb: [10, 11, 12],
+                    confidence: 1.0,
+                    radius: 0.1,
+                    source_pixel: [500, 332],
+                },
+            ],
+            camera,
+        );
         assert_eq!(&payload[..4], b"VRPL");
-        assert_eq!(u16::from_le_bytes(payload[4..6].try_into().unwrap()), 1);
+        assert_eq!(u16::from_le_bytes(payload[4..6].try_into().unwrap()), 2);
         assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
-        assert_eq!(u16::from_le_bytes(payload[12..14].try_into().unwrap()), 501);
-        assert_eq!(u16::from_le_bytes(payload[14..16].try_into().unwrap()), 333);
-        assert_eq!(&payload[16..23], &[4, 0, 2, 0, 7, 8, 9]);
+        assert_eq!(
+            f32::from_le_bytes(payload[12..16].try_into().unwrap()),
+            504.0
+        );
+        assert_eq!(
+            f32::from_le_bytes(payload[16..20].try_into().unwrap()),
+            336.0
+        );
+        assert_eq!(f32::from_le_bytes(payload[28..32].try_into().unwrap()), 1.0);
+        assert_eq!(f32::from_le_bytes(payload[36..40].try_into().unwrap()), 4.0);
+        assert_eq!(&payload[40..43], &[7, 8, 9]);
         assert_eq!(replay_frame_index("/replay/frames/42.bin"), Some(42));
         assert_eq!(replay_frame_index("/replay/frames/42.json"), None);
     }
