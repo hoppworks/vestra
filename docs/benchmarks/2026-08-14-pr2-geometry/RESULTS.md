@@ -59,6 +59,26 @@ series (1840.159 ms → 1437.229 ms) and narrows the C++ ratio from 2.130× to
 **1.666×**. It is a real improvement, but Rust is still slower; the next
 optimization must be justified by a new phase profile rather than assumed.
 
+## Follow-up: eliminate repeated sequential seam alignment
+
+The loop-closed TSDF adapter first built the sequential seam reports for
+emission and then recomputed the same six alignments inside the loop oracle.
+PR #2 carries that sequential trajectory forward once. Reusing the reports is
+semantically neutral and retains the same C++ differential result.
+
+The final current series is stored in
+[`after-deduplicated-seams/raw.jsonl`](after-deduplicated-seams/raw.jsonl):
+
+| Arm | n | Mean (ms) | Median (ms) | 95% t CI of mean (ms) |
+| --- | --: | --: | --: | ---: |
+| C++ PR #2 | 10 | 865.059 | 864.023 | [861.996, 868.121] |
+| Vestra Rust | 10 | 1223.294 | 1220.570 | [1216.176, 1230.413] |
+
+Rust is now **1.414×** the C++ wall time in this defined tier, a total
+**33.52% reduction** versus the initial 1840.159 ms measurement. The remaining
+work should focus on the now-measured loop/ICP trajectory work and the PCA
+normal kernel; no comparison outcome has been weakened to obtain this result.
+
 ## Next action
 
 Profile the Rust TSDF stage separately from seam/loop/emit work before changing
