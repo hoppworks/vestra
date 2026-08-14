@@ -495,7 +495,10 @@ fn emit_cpp_pr2_tsdf_cloud_with_poses(
     alignments: Vec<AlignmentReport>,
     poses: Vec<SimilarityTransform>,
 ) -> Result<CppPr2ReferenceCloud, ReconstructionError> {
+    let profile = std::env::var_os("VESTRA_ORACLE_PROFILE").is_some();
+    let started = std::time::Instant::now();
     let raw = emit_cpp_pr2_cloud_with_poses(fixture, windows, alignments, poses.clone())?;
+    let raw_at = std::time::Instant::now();
     let cameras = first_owner_camera_centres(windows, &poses);
     let observations = raw
         .points
@@ -508,6 +511,7 @@ fn emit_cpp_pr2_tsdf_cloud_with_poses(
             frame_index: point.first_observing_frame,
         })
         .collect::<Vec<_>>();
+    let tsdf_input_at = std::time::Instant::now();
     let points = fuse_normal_space_tsdf(&observations, &cameras, TsdfSettings::default())
         .into_iter()
         .map(|surfel| FusedPoint {
@@ -520,12 +524,26 @@ fn emit_cpp_pr2_tsdf_cloud_with_poses(
             contributors: surfel.contributors,
         })
         .collect::<Vec<_>>();
+    let tsdf_at = std::time::Instant::now();
     let mut frame_owned_points = vec![0_i32; fixture.frame_count];
     for point in &points {
         if let Some(count) = frame_owned_points.get_mut(point.first_observing_frame.max(0) as usize)
         {
             *count = count.saturating_add(1);
         }
+    }
+    if profile {
+        eprintln!(
+            "vestra_oracle_profile raw_emit_ms={:.3} tsdf_input_ms={:.3} tsdf_ms={:.3} frame_counts_ms={:.3} total_ms={:.3}",
+            raw_at.duration_since(started).as_secs_f64() * 1_000.0,
+            tsdf_input_at.duration_since(raw_at).as_secs_f64() * 1_000.0,
+            tsdf_at.duration_since(tsdf_input_at).as_secs_f64() * 1_000.0,
+            std::time::Instant::now()
+                .duration_since(tsdf_at)
+                .as_secs_f64()
+                * 1_000.0,
+            started.elapsed().as_secs_f64() * 1_000.0,
+        );
     }
     Ok(CppPr2ReferenceCloud {
         alignments: raw.alignments,
