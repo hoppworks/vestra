@@ -50,22 +50,25 @@ PR #2 parity.
 The dedicated Rust oracle now accepts the same two edges (`0<->5`, `0<->6`)
 after first-owner key sampling, many-to-one seed matching, scale-locked
 Umeyama, and iterative rank-truncated point-to-plane ICP. Its pose-graph cost
-is `0.158411 -> 0.014370`. The graph now keeps its solver state in F64, and
-the fixture adapter uses PR #2's generic F64 `inv4` calculation with the same
-F32 inverse-rounding boundary as C++ for both trajectory extraction and
-measured-point coordinates. This improves the closed-fixture pre-voxel point
-MAE to `0.0036880`; it is still not numerical parity because seam/loop
-measurements and composed transforms remain F32 in Vestra. Exact
-trajectory/point tolerances are the next gate. This is oracle-tier evidence
-only; it is not wired into Vestra's product reconstruction settings yet.
+is `0.158411 -> 0.014370`.
+
+The decisive parity correction was to build each loop key cloud from the
+same first-owned **and confidence-percentile-selected** points as C++
+`WindowRec::key`; the former Rust fixture path incorrectly included rejected
+low-confidence points. Together with the F64 pose-graph state and PR #2's
+F64 `inv4` calculation with its F32 inverse-rounding boundary, this closes the
+closed-fixture deferred pre-voxel tier to final-output rounding noise. This is
+oracle-tier evidence only; product geometry will adopt the exact evidence
+profile after the TSDF tier is closed.
 
 The deferred pre-voxel cloud comparison on the same artifact reports:
 
 - 921,600 points on both sides;
 - identical ordered per-frame ownership counts and zero RGB mismatches;
-- position MAE `0.0036880`, maximum absolute position delta `0.0219852`;
-- window trajectory MAE `0.0042974`, frame trajectory MAE `0.0040109`;
-- radius MAE `0.000002129`, maximum delta `0.000006696`.
+- position MAE `0.0000001975`, maximum absolute position delta `0.000001431`;
+- window trajectory MAE `0.0000001334`, frame trajectory MAE `0.0000001278`;
+- forward-direction MAE `0.0000000287`;
+- radius MAE `0.000000000196`, maximum delta `0.00000000373`.
 
 Run it with:
 

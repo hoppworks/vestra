@@ -641,11 +641,17 @@ pub fn cpp_pr2_closed_loop_oracle(
     fixture: &CppPr2Fixture,
 ) -> Result<CppPr2LoopOracle, ReconstructionError> {
     let windows = cpp_pr2_fixture_windows(fixture)?;
-    cpp_pr2_loop_oracle_for_windows(
-        &windows,
-        fixture.windows.overlap,
-        fixture.branches.loop_close,
-    )
+    let keys = windows
+        .iter()
+        .enumerate()
+        .map(|(index, window)| cpp_pr2_fixture_key_cloud(fixture, index, window))
+        .collect::<Vec<_>>();
+    let paths = windows
+        .iter()
+        .enumerate()
+        .map(|(index, window)| cpp_pr2_fixture_camera_path(fixture, index, window))
+        .collect::<Vec<_>>();
+    cpp_pr2_loop_oracle_with_evidence(&windows, fixture.branches.loop_close, &keys, &paths)
 }
 
 /// Solves the PR #2 relative loop-closure trajectory from immutable measured
@@ -657,6 +663,32 @@ pub fn cpp_pr2_loop_oracle_for_windows(
     overlap: usize,
     loop_close: bool,
 ) -> Result<CppPr2LoopOracle, ReconstructionError> {
+    let keys = windows
+        .iter()
+        .map(|window| cpp_pr2_first_owner_key_cloud(window, overlap))
+        .collect::<Vec<_>>();
+    let paths = windows
+        .iter()
+        .map(|window| {
+            window
+                .views
+                .iter()
+                .filter_map(|view| camera_centre_direction(view.frame_index, view.camera))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    cpp_pr2_loop_oracle_with_evidence(windows, loop_close, &keys, &paths)
+}
+
+fn cpp_pr2_loop_oracle_with_evidence(
+    windows: &[WindowMeasuredChunk],
+    loop_close: bool,
+    keys: &[Vec<[f32; 3]>],
+    paths: &[Vec<crate::CameraCentreDirection>],
+) -> Result<CppPr2LoopOracle, ReconstructionError> {
+    if keys.len() != windows.len() || paths.len() != windows.len() {
+        return Err(ReconstructionError::OracleOutputShape);
+    }
     let sequential = cpp_pr2_sequential_window_poses(&windows)?;
     let sequential_window_poses = windows
         .iter()
@@ -675,21 +707,6 @@ pub fn cpp_pr2_loop_oracle_for_windows(
             pose_graph: None,
         });
     }
-
-    let keys = windows
-        .iter()
-        .map(|window| cpp_pr2_first_owner_key_cloud(window, overlap))
-        .collect::<Vec<_>>();
-    let paths = windows
-        .iter()
-        .map(|window| {
-            window
-                .views
-                .iter()
-                .filter_map(|view| camera_centre_direction(view.frame_index, view.camera))
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
 
     let mut loop_edges = Vec::new();
     for earlier in 0..windows.len() {
@@ -805,6 +822,58 @@ fn cpp_pr2_first_owner_key_cloud(window: &WindowMeasuredChunk, overlap: usize) -
         .collect::<Vec<_>>();
     let stride = (owned.len() / 3_000).max(1);
     owned.into_iter().step_by(stride).collect()
+}
+
+/// Builds the loop key cloud exactly where PR #2 builds `WindowRec::key`: from
+/// the first-owned, confidence-percentile-selected emission cloud. Generic
+/// measured windows intentionally do not retain this window-local percentile,
+/// but the recorded VPS oracle does.
+fn cpp_pr2_fixture_key_cloud(
+    fixture: &CppPr2Fixture,
+    window_index: usize,
+    window: &WindowMeasuredChunk,
+) -> Vec<[f32; 3]> {
+    let views = &fixture.window_views[window_index];
+    let confidences = views
+        .iter()
+        .flat_map(|view| view.confidence.iter().copied())
+        .collect::<Vec<_>>();
+    let threshold = cpp_pr2_percentile(&confidences, fixture.confidence_percentile);
+    let first_owned = if window.window.index == 0 {
+        0
+    } else {
+        fixture.windows.overlap.min(window.views.len())
+    };
+    let owned = window
+        .views
+        .iter()
+        .skip(first_owned)
+        .flat_map(|frame| frame.points.iter())
+        .filter(|point| point.confidence >= threshold)
+        .filter_map(|point| {
+            point
+                .position
+                .iter()
+                .all(|value| value.is_finite())
+                .then_some(point.position)
+        })
+        .collect::<Vec<_>>();
+    let stride = (owned.len() / 3_000).max(1);
+    owned.into_iter().step_by(stride).collect()
+}
+
+fn cpp_pr2_fixture_camera_path(
+    fixture: &CppPr2Fixture,
+    window_index: usize,
+    window: &WindowMeasuredChunk,
+) -> Vec<crate::CameraCentreDirection> {
+    fixture.window_views[window_index]
+        .iter()
+        .enumerate()
+        .filter_map(|(offset, frame)| {
+            camera_centre_direction_cpp_pr2(window.window.start + offset, frame.world_to_camera)
+        })
+        .collect()
 }
 
 fn cpp_pr2_windows_overlap(
@@ -1110,6 +1179,67 @@ mod tests {
         assert_eq!(cpp_pr2_percentile(&[1.0, 3.0, 5.0, 9.0], 0.0), 1.0);
         assert_eq!(cpp_pr2_percentile(&[1.0, 3.0, 5.0, 9.0], 100.0), 9.0);
         assert_eq!(cpp_pr2_percentile(&[9.0, 1.0, 5.0, 3.0], 50.0), 4.0);
+    }
+
+    #[test]
+    fn fixture_loop_keys_use_the_same_confidence_selected_emit_cloud_as_pr2() {
+        let frame = CppPr2Frame {
+            intrinsics: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            world_to_camera: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            depth: vec![1.0, 1.0],
+            confidence: vec![0.1, 0.9],
+            rgb_hwc_u8: vec![0; 6],
+        };
+        let fixture = CppPr2Fixture {
+            frame_count: 1,
+            width: 2,
+            height: 1,
+            windows: WindowSettings {
+                chunk_size: 2,
+                overlap: 1,
+            },
+            confidence_percentile: 50.0,
+            point_size: 1.0,
+            minimum_overlap_points: 3,
+            branches: CppPr2StreamBranches::default(),
+            window_views: vec![vec![frame]],
+        };
+        let window = WindowMeasuredChunk {
+            window: FrameWindow {
+                index: 0,
+                start: 0,
+                end: 1,
+            },
+            views: vec![MeasuredFrameChunk {
+                frame_index: 0,
+                camera: CameraCalibration {
+                    world_to_camera: fixture.window_views[0][0].world_to_camera,
+                    intrinsics: fixture.window_views[0][0].intrinsics,
+                },
+                points: vec![
+                    MeasuredPoint {
+                        position: [0.0, 0.0, 1.0],
+                        normal: [0.0, 0.0, 1.0],
+                        color_srgb: [0; 3],
+                        confidence: 0.1,
+                        radius: 1.0,
+                        source_pixel: [0, 0],
+                    },
+                    MeasuredPoint {
+                        position: [1.0, 0.0, 1.0],
+                        normal: [0.0, 0.0, 1.0],
+                        color_srgb: [0; 3],
+                        confidence: 0.9,
+                        radius: 1.0,
+                        source_pixel: [1, 0],
+                    },
+                ],
+            }],
+        };
+        assert_eq!(
+            cpp_pr2_fixture_key_cloud(&fixture, 0, &window),
+            vec![[1.0, 0.0, 1.0]]
+        );
     }
 
     #[test]
