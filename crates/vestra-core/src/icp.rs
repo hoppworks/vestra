@@ -255,16 +255,19 @@ fn plane_rms(
 struct SpatialHash {
     cell: f32,
     points: Vec<[f32; 3]>,
-    cells: FastHashMap<(i32, i32, i32), Vec<usize>>,
+    cells: FastHashMap<u64, Vec<usize>>,
 }
 
 impl SpatialHash {
     fn new(points: &[[f32; 3]], cell: f32) -> Self {
         let cell = cell.max(1e-6);
-        let mut cells = FastHashMap::default();
+        let mut cells = FastHashMap::with_capacity_and_hasher(
+            points.len().saturating_mul(2).saturating_add(16),
+            BuildHasherDefault::default(),
+        );
         for (index, &point) in points.iter().enumerate() {
             cells
-                .entry(cell_for(point, cell))
+                .entry(pack_cell(cell_for(point, cell)))
                 .or_insert_with(Vec::new)
                 .push(index);
         }
@@ -282,15 +285,20 @@ impl SpatialHash {
         output.clear();
         let base = cell_for(point, self.cell);
         let span = (radius / self.cell).ceil() as i32;
+        let radius_squared = radius * radius;
         for x in base.0 - span..=base.0 + span {
             for y in base.1 - span..=base.1 + span {
                 for z in base.2 - span..=base.2 + span {
-                    output.extend(self.cells.get(&(x, y, z)).into_iter().flatten().copied());
+                    if let Some(indices) = self.cells.get(&pack_cell((x, y, z))) {
+                        for &index in indices {
+                            if squared_distance(self.points[index], point) <= radius_squared {
+                                output.push(index);
+                            }
+                        }
+                    }
                 }
             }
         }
-        let radius_squared = radius * radius;
-        output.retain(|&index| squared_distance(self.points[index], point) <= radius_squared);
     }
 
     fn nearest(&self, point: [f32; 3], maximum_distance: f32) -> Option<usize> {
@@ -301,7 +309,7 @@ impl SpatialHash {
         for x in base.0 - span..=base.0 + span {
             for y in base.1 - span..=base.1 + span {
                 for z in base.2 - span..=base.2 + span {
-                    for &index in self.cells.get(&(x, y, z)).into_iter().flatten() {
+                    for &index in self.cells.get(&pack_cell((x, y, z))).into_iter().flatten() {
                         let squared = squared_distance(self.points[index], point);
                         if squared <= best_squared {
                             result = Some(index);
@@ -351,6 +359,17 @@ fn cell_for(point: [f32; 3], cell: f32) -> (i32, i32, i32) {
         (point[1] / cell).floor() as i32,
         (point[2] / cell).floor() as i32,
     )
+}
+
+/// PR #2's grid packs signed 21-bit voxel coordinates into one integer key.
+/// The grid is private to bounded relative reconstruction coordinates, so its
+/// documented 21-bit wrapping contract is sufficient and avoids tuple hashing
+/// on every 27-cell neighbour probe.
+fn pack_cell((x, y, z): (i32, i32, i32)) -> u64 {
+    const MASK: u64 = (1 << 21) - 1;
+    (u64::from(x as u32) & MASK)
+        | ((u64::from(y as u32) & MASK) << 21)
+        | ((u64::from(z as u32) & MASK) << 42)
 }
 fn squared_distance(left: [f32; 3], right: [f32; 3]) -> f32 {
     subtract(left, right)
