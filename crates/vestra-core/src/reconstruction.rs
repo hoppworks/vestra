@@ -242,6 +242,38 @@ pub fn emit_cpp_pr2_reference_cloud(
         poses.push(previous.compose(report.transform));
         alignments.push(report);
     }
+    emit_cpp_pr2_cloud_with_poses(fixture, &windows, alignments, poses)
+}
+
+/// Re-emits the immutable fixture evidence after the PR #2 loop oracle has
+/// optimized its trajectory. This mirrors the reference's single deferred
+/// emission pass: loop correction is applied before, never after, point output.
+pub fn emit_cpp_pr2_loop_closed_reference_cloud(
+    fixture: &CppPr2Fixture,
+) -> Result<CppPr2ReferenceCloud, ReconstructionError> {
+    let windows = cpp_pr2_fixture_windows(fixture)?;
+    let oracle = cpp_pr2_closed_loop_oracle(fixture)?;
+    let alignments = windows
+        .windows(2)
+        .map(|pair| Ok(align_overlapping_windows_cpp_pr2(&pair[1], &pair[0])?))
+        .collect::<Result<Vec<_>, ReconstructionError>>()?;
+    let poses = oracle
+        .optimized_window_poses
+        .into_iter()
+        .map(|pose| pose.local_to_world)
+        .collect();
+    emit_cpp_pr2_cloud_with_poses(fixture, &windows, alignments, poses)
+}
+
+fn emit_cpp_pr2_cloud_with_poses(
+    fixture: &CppPr2Fixture,
+    windows: &[WindowMeasuredChunk],
+    alignments: Vec<AlignmentReport>,
+    poses: Vec<SimilarityTransform>,
+) -> Result<CppPr2ReferenceCloud, ReconstructionError> {
+    if poses.len() != windows.len() {
+        return Err(ReconstructionError::OracleOutputShape);
+    }
 
     let mut points = Vec::new();
     let mut counts = vec![0_i32; fixture.frame_count];

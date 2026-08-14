@@ -34,9 +34,10 @@ pub use pose_graph::{
 pub use reconstruction::{
     CppPr2LoopOracle, CppPr2ReferenceCloud, FusionProgress, ReconstructionError,
     ReconstructionProgress, ReconstructionSettings, capture_cpp_pr2_fixture,
-    cpp_pr2_closed_loop_oracle, cpp_pr2_fixture_alignment_reports, emit_cpp_pr2_reference_cloud,
-    fuse_scene_bundle, fuse_scene_bundle_with_settings, reconstruct_frames,
-    stitch_cpp_pr2_fixture_as_vestra, stitch_cpp_pr2_fixture_with_settings,
+    cpp_pr2_closed_loop_oracle, cpp_pr2_fixture_alignment_reports,
+    emit_cpp_pr2_loop_closed_reference_cloud, emit_cpp_pr2_reference_cloud, fuse_scene_bundle,
+    fuse_scene_bundle_with_settings, reconstruct_frames, stitch_cpp_pr2_fixture_as_vestra,
+    stitch_cpp_pr2_fixture_with_settings,
 };
 pub use revisit::{
     CameraCentreDirection, RevisitProposal, RevisitProposalSettings, WindowCameraPath,

@@ -56,6 +56,25 @@ and F64 geometry in the reference. Exact trajectory/point tolerances are the
 next gate. This is oracle-tier evidence only; it is not wired into Vestra's
 product reconstruction settings yet.
 
+The deferred pre-voxel cloud comparison on the same artifact reports:
+
+- 921,600 points on both sides;
+- identical ordered per-frame ownership counts and zero RGB mismatches;
+- position MAE `0.0037483`, maximum absolute position delta `0.0218819`;
+- radius MAE `0.000002392`, maximum delta `0.000007704`.
+
+Run it with:
+
+```bash
+cargo run -q -p vestra-cli -- oracle-compare \
+  --fixture /tmp/vestra-closed-loop.vps \
+  --reference /tmp/vestra-closed-loop.vpo
+```
+
+The position thresholds have not yet been frozen because the deliberately
+different F32/F64 storage boundary must first be measured on an independent
+fixture. Count, ownership and colour are already hard equality checks.
+
 ## Fixture interchange
 
 `VPS1` v3 adds a branch bitmap after `minimum_overlap_points`:

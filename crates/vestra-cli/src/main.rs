@@ -10,10 +10,10 @@ use sha2::{Digest, Sha256};
 use vestra_core::{
     BackprojectionSettings, CppPr2Fixture, CppPr2StreamOutput, ReconstructionSettings, SceneBundle,
     SceneProvenance, VideoExtractionSettings, WindowSettings, capture_cpp_pr2_fixture,
-    cpp_pr2_fixture_alignment_reports, emit_cpp_pr2_reference_cloud, export_camera_json,
-    export_fused_glb, export_fused_ply, export_fused_splat, extract_video_frames,
-    fuse_scene_bundle, fused_topology, load_decoded_frame_cache, load_decoded_rgb24_cache,
-    plan_windows, reconstruct_frames,
+    cpp_pr2_fixture_alignment_reports, emit_cpp_pr2_loop_closed_reference_cloud,
+    emit_cpp_pr2_reference_cloud, export_camera_json, export_fused_glb, export_fused_ply,
+    export_fused_splat, extract_video_frames, fuse_scene_bundle, fused_topology,
+    load_decoded_frame_cache, load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
 use vestra_studio::{IntakeConfig, serve, serve_intake};
@@ -482,7 +482,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let fixture = CppPr2Fixture::read_vps1(&mut fixture_reader)?;
             let mut reference_reader = BufReader::new(File::open(reference)?);
             let reference = CppPr2StreamOutput::read_vpo1(&mut reference_reader)?;
-            let rust = emit_cpp_pr2_reference_cloud(&fixture)?;
+            let rust = if fixture.branches.loop_close {
+                emit_cpp_pr2_loop_closed_reference_cloud(&fixture)?
+            } else {
+                emit_cpp_pr2_reference_cloud(&fixture)?
+            };
             let shared = rust.points.len().min(reference.radius.len());
             let mut position_absolute_sum = 0.0_f64;
             let mut position_absolute_max = 0.0_f32;
