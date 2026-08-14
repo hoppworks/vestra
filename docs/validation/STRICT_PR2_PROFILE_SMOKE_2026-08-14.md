@@ -71,3 +71,48 @@ Both runs found no loop in this short clip. This 79-surfel difference means
 end-to-end video parity is **open**. The harness and output SHA-256 are retained
 for diagnosis (`df2436cacff65f81df324a131929f0a4262c2aa7dfacbc8985068bf83cfa2704`);
 no relative performance or parity claim is made from this probe.
+
+## Raw-geometry differential — resolved 2026-08-14
+
+The C++ C-API probe alone mixes two distinct boundaries: DA3 inference and
+streaming geometry.  To prevent a cloud-count difference from being attributed
+to the wrong layer, Vestra captured a `VPS1` fixture from its exact 24-frame
+Rust inference output and replayed that immutable fixture through both
+implementations of the PR #2 streaming geometry.
+
+| Input / result | Value |
+|---|---:|
+| Frames / schedule | 24 / 12-frame windows with 3-frame overlap |
+| C++ raw points from the shared `VPS1` | 1,902,168 |
+| Rust raw points from the shared `VPS1` | 1,902,168 |
+| Per-frame ownership counts | Exact match |
+| RGB mismatches in ordered emission | 0 |
+| Ordered position MAE / max | 5.99e-9 / 2.38e-7 |
+| Radius MAE / max | 0 / 0 |
+| Camera-position MAE / max | 6.42e-9 / 1.19e-7 |
+| Camera-forward MAE / max | 1.11e-8 / 5.96e-8 |
+
+This accepts the Rust PR #2 **raw geometry** path for the captured tensor
+fixture: confidence percentile, inverse/backprojection boundary, sequential
+Sim(3), first-owner scheduling, radii, colours and frame trajectory agree with
+the pinned C++ implementation to F32 output precision.
+
+The live C-API comparison remains deliberately open.  With fresh inference in
+each runtime, C++ emitted 1,902,167 raw points and Rust emitted 1,902,168;
+their camera positions still agreed within 2.39e-6.  The one-pixel-per-frame
+selection differences shift ordered cloud indices, so the resulting raw
+position/RGB mismatch is not evidence against the accepted geometry replay.
+It is evidence that the next parity gate belongs at the DA3 model-output
+boundary (depth, confidence, intrinsics and extrinsics), before more work is
+done on the stitcher or TSDF.
+
+The comparison is executable, not a manual analysis:
+
+```bash
+vestra oracle-compare --fixture real.vps --reference cpp-raw.vpo
+vestra oracle-compare-capi --fixture real.vps --reference cpp-raw.cps
+```
+
+`CPS1` is produced by `tools/cpp-pr2-oracle/capi_stream_dump.cpp`; its command
+now records the fusion, ICP and loop switches explicitly, so a reference run
+cannot silently use a different geometry branch.
