@@ -604,19 +604,15 @@ fn cpp_pr2_huber_irls_similarity(
     let mut residuals = vec![0.0; matches.len()];
     let mut transform = SimilarityTransform::IDENTITY;
     for iteration in 0..8 {
-        let weighted = matches
-            .iter()
-            .zip(&weights)
-            .map(|(item, &weight)| Match { weight, ..*item })
-            .collect::<Vec<_>>();
-        let selected = (0..weighted.len()).collect::<Vec<_>>();
-        transform = fit_similarity(&weighted, &selected)?;
-        let source_energy = weighted_source_energy(&weighted)?;
+        // Keep this solver deliberately separate from `fit_similarity`.
+        // The upstream PR #2 seam path accepts an ill-conditioned rotation and
+        // keeps it at identity, while the production gate correctly rejects
+        // that geometry. Applying the latter gate here made the reference
+        // profile reject ordinary, nearly planar video overlap.
+        let (next, source_energy) = cpp_pr2_solve_once(matches, &weights)?;
+        transform = next;
         for (residual, item) in residuals.iter_mut().zip(matches) {
-            *residual = distance(
-                transform.apply(item.source.map(|value| value as f32)),
-                item.target.map(|value| value as f32),
-            ) as f64;
+            *residual = cpp_pr2_residual(transform, *item);
         }
         let mut sorted = residuals.clone();
         sorted.sort_by(f64::total_cmp);
@@ -666,29 +662,116 @@ fn cpp_pr2_huber_irls_similarity(
     Ok((transform, (weighted_squared / total_weight).sqrt() as f32))
 }
 
-fn weighted_source_energy(matches: &[Match]) -> Result<f64, StitchError> {
-    let total = matches.iter().map(|item| item.weight).sum::<f64>();
+/// One C++ PR #2 compatible weighted Horn/Umeyama solve. Unlike the generic
+/// production estimator, a rank-deficient quaternion problem is not fatal:
+/// the reference keeps the identity rotation and still estimates scale and
+/// translation. This is essential for legitimate planar overlap in video.
+fn cpp_pr2_solve_once(
+    matches: &[Match],
+    weights: &[f64],
+) -> Result<(SimilarityTransform, f64), StitchError> {
+    let total = weights.iter().sum::<f64>();
     if !total.is_finite() || total <= 0.0 {
         return Err(StitchError::DegenerateGeometry);
     }
-    let mut mean = [0.0; 3];
-    for item in matches {
-        for (dimension, value) in mean.iter_mut().enumerate() {
-            *value += item.weight * item.source[dimension];
+    let mut source_mean = [0.0; 3];
+    let mut target_mean = [0.0; 3];
+    for (item, &weight) in matches.iter().zip(weights) {
+        for axis in 0..3 {
+            source_mean[axis] += weight * item.source[axis];
+            target_mean[axis] += weight * item.target[axis];
         }
     }
-    for value in &mut mean {
-        *value /= total;
+    for axis in 0..3 {
+        source_mean[axis] /= total;
+        target_mean[axis] /= total;
     }
-    Ok(matches
-        .iter()
-        .map(|item| {
-            item.weight
-                * (0..3)
-                    .map(|d| (item.source[d] - mean[d]).powi(2))
-                    .sum::<f64>()
-        })
-        .sum())
+    let mut covariance = [[0.0; 3]; 3];
+    let mut source_energy = 0.0;
+    for (item, &weight) in matches.iter().zip(weights) {
+        let source: [f64; 3] = std::array::from_fn(|axis| item.source[axis] - source_mean[axis]);
+        let target: [f64; 3] = std::array::from_fn(|axis| item.target[axis] - target_mean[axis]);
+        source_energy += weight * dot(source, source);
+        for row in 0..3 {
+            for column in 0..3 {
+                covariance[row][column] += weight * source[row] * target[column];
+            }
+        }
+    }
+    let rotation = cpp_pr2_rotation_or_identity(covariance);
+    let mut trace = 0.0;
+    for row in 0..3 {
+        for column in 0..3 {
+            trace += rotation[row * 3 + column] * covariance[column][row];
+        }
+    }
+    let scale = if source_energy > 1e-30 {
+        let value = trace / source_energy;
+        if value.is_finite() && value > 0.0 {
+            value
+        } else {
+            1.0
+        }
+    } else {
+        1.0
+    };
+    let rotated_mean = mat_vec(rotation, source_mean);
+    let translation = std::array::from_fn(|axis| target_mean[axis] - scale * rotated_mean[axis]);
+    if !rotation.iter().all(|value| value.is_finite())
+        || !translation.iter().all(|value| value.is_finite())
+    {
+        return Err(StitchError::DegenerateGeometry);
+    }
+    Ok((
+        SimilarityTransform {
+            scale: scale as f32,
+            rotation: rotation.map(|value| value as f32),
+            translation: translation.map(|value| value as f32),
+        },
+        source_energy,
+    ))
+}
+
+fn cpp_pr2_rotation_or_identity(covariance: [[f64; 3]; 3]) -> [f64; 9] {
+    let s = covariance;
+    let horn = [
+        [
+            s[0][0] + s[1][1] + s[2][2],
+            s[1][2] - s[2][1],
+            s[2][0] - s[0][2],
+            s[0][1] - s[1][0],
+        ],
+        [
+            s[1][2] - s[2][1],
+            s[0][0] - s[1][1] - s[2][2],
+            s[0][1] + s[1][0],
+            s[0][2] + s[2][0],
+        ],
+        [
+            s[2][0] - s[0][2],
+            s[0][1] + s[1][0],
+            -s[0][0] + s[1][1] - s[2][2],
+            s[1][2] + s[2][1],
+        ],
+        [
+            s[0][1] - s[1][0],
+            s[0][2] + s[2][0],
+            s[1][2] + s[2][1],
+            -s[0][0] - s[1][1] + s[2][2],
+        ],
+    ];
+    largest_symmetric_eigenvector(horn)
+        .map(rotation_from_quaternion)
+        .unwrap_or(SimilarityTransform::IDENTITY.rotation.map(f64::from))
+}
+
+fn cpp_pr2_residual(transform: SimilarityTransform, item: Match) -> f64 {
+    let rotation = transform.rotation.map(f64::from);
+    let translated = mat_vec(rotation, item.source).map(|value| value * f64::from(transform.scale));
+    let delta = std::array::from_fn(|axis| {
+        translated[axis] + f64::from(transform.translation[axis]) - item.target[axis]
+    });
+    dot(delta, delta).sqrt()
 }
 
 fn normalized_rms_residual(
