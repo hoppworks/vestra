@@ -29,9 +29,7 @@ const REPLAY_VERSION: u16 = 1;
 struct ReplayCache {
     root: PathBuf,
     bundle: SceneBundle,
-    measured_hashes: Vec<String>,
-    first_window_end: usize,
-    window_step: usize,
+    frame_hashes: BTreeMap<usize, String>,
     current_hash: String,
     current_window: WindowMeasuredChunk,
 }
@@ -982,43 +980,49 @@ fn replay_frame(root: &Path, request_path: &str) -> (&'static str, &'static str,
         if cache.as_ref().is_none_or(|entry| entry.root != root) {
             let bundle = SceneBundle::open(root)?;
             let manifest = bundle.manifest()?;
-            let first_hash = manifest
-                .measured_chunk_hashes
-                .first()
-                .ok_or("scene has no measured evidence")?
-                .clone();
-            let first_window = bundle.read_measured_window(&first_hash)?;
-            let window_step = manifest
-                .measured_chunk_hashes
-                .get(1)
-                .map(|hash| bundle.read_measured_window(hash))
-                .transpose()?
-                .map_or(first_window.window.len(), |second| {
-                    second
-                        .window
-                        .start
-                        .saturating_sub(first_window.window.start)
-                });
-            if window_step == 0 {
-                return Err("replay window schedule has no forward progress".into());
+            let mut owners = BTreeMap::new();
+            let mut first = None;
+            for hash in &manifest.measured_chunk_hashes {
+                let window = bundle.read_measured_window(hash)?;
+                for view in &window.views {
+                    // Chunks are content-addressed and therefore hash-sorted,
+                    // not capture-ordered. Select the lowest window index for
+                    // an overlap frame so replay exactly follows first-owner
+                    // reconstruction semantics.
+                    match owners.entry(view.frame_index) {
+                        std::collections::btree_map::Entry::Vacant(entry) => {
+                            entry.insert((window.window.index, hash.clone()));
+                        }
+                        std::collections::btree_map::Entry::Occupied(mut entry)
+                            if window.window.index < entry.get().0 =>
+                        {
+                            entry.insert((window.window.index, hash.clone()));
+                        }
+                        std::collections::btree_map::Entry::Occupied(_) => {}
+                    }
+                }
+                match &first {
+                    Some((index, _, _)) if *index <= window.window.index => {}
+                    _ => first = Some((window.window.index, hash.clone(), window)),
+                }
             }
+            let (_, first_hash, first_window) = first.ok_or("scene has no measured evidence")?;
+            let frame_hashes = owners
+                .into_iter()
+                .map(|(frame, (_, hash))| (frame, hash))
+                .collect();
             *cache = Some(ReplayCache {
                 root: root.to_path_buf(),
                 bundle,
-                measured_hashes: manifest.measured_chunk_hashes,
-                first_window_end: first_window.window.end,
-                window_step,
+                frame_hashes,
                 current_hash: first_hash,
                 current_window: first_window,
             });
         }
         let entry = cache.as_mut().expect("replay cache initialized");
-        let window_index =
-            replay_window_index(frame_index, entry.first_window_end, entry.window_step)
-                .ok_or("source frame precedes the reconstruction")?;
         let hash = entry
-            .measured_hashes
-            .get(window_index)
+            .frame_hashes
+            .get(&frame_index)
             .ok_or("source frame is outside the reconstruction")?;
         if entry.current_hash != *hash {
             entry.current_window = entry.bundle.read_measured_window(hash)?;
@@ -1044,21 +1048,6 @@ fn replay_frame_index(request_path: &str) -> Option<usize> {
         .strip_suffix(".bin")?
         .parse::<usize>()
         .ok()
-}
-
-fn replay_window_index(
-    frame_index: usize,
-    first_window_end: usize,
-    window_step: usize,
-) -> Option<usize> {
-    if window_step == 0 {
-        return None;
-    }
-    Some(if frame_index < first_window_end {
-        0
-    } else {
-        1 + (frame_index - first_window_end) / window_step
-    })
 }
 
 /// `VRPL` v1: magic, version, reserved, sample count, raster width, raster
@@ -1359,8 +1348,7 @@ mod tests {
         assert_eq!(u16::from_le_bytes(payload[14..16].try_into().unwrap()), 333);
         assert_eq!(&payload[16..23], &[4, 0, 2, 0, 7, 8, 9]);
         assert_eq!(replay_frame_index("/replay/frames/42.bin"), Some(42));
-        assert_eq!(replay_window_index(20, 12, 9), Some(1));
-        assert_eq!(replay_window_index(21, 12, 9), Some(2));
+        assert_eq!(replay_frame_index("/replay/frames/42.json"), None);
     }
 
     #[test]
