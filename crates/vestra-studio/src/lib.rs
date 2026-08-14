@@ -1334,6 +1334,14 @@ mod tests {
     }
 
     #[test]
+    fn studio_caps_a_dense_binary_world_to_a_responsive_even_preview() {
+        assert!(INDEX_HTML.contains("const MAX_VISUAL_CHUNKS=24"));
+        assert!(INDEX_HTML.contains("function selectVisualChunkUrls(urls,binary)"));
+        assert!(INDEX_HTML.contains("await loadLayer(visualUrls,Boolean(binary),hasFused)"));
+        assert!(INDEX_HTML.contains("selectVisualChunkUrls(fusedUrls,fusedBinary)"));
+    }
+
+    #[test]
     fn studio_replay_uses_the_completed_local_input_video() {
         assert_eq!(intake_world_path("/input-video"), Some("/input-video"));
         assert_eq!(
