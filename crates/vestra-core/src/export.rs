@@ -436,6 +436,7 @@ mod tests {
                     },
                     points: Vec::new(),
                 }],
+                cpp_pr2_emission_confidence_threshold: None,
             })
             .unwrap();
         bundle

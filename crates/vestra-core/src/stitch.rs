@@ -1537,6 +1537,7 @@ mod tests {
                 },
                 points,
             }],
+            cpp_pr2_emission_confidence_threshold: None,
         }
     }
     fn p(i: u32, pos: [f32; 3]) -> MeasuredPoint {

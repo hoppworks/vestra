@@ -21,6 +21,9 @@ use crate::{
 pub struct ReconstructionSettings {
     pub windows: WindowSettings,
     pub backprojection: BackprojectionSettings,
+    /// Capture dense PR #2-compatible raw evidence plus the per-window
+    /// confidence percentile needed for deterministic first-owner emission.
+    pub cpp_pr2_relative_capture: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +93,8 @@ pub enum ReconstructionError {
     Stitch(#[from] crate::StitchError),
     #[error("oracle capture produced inconsistent output dimensions")]
     OracleOutputShape,
+    #[error("PR #2-relative fusion requires a scene captured with the PR #2 evidence profile")]
+    MissingCppPr2CaptureProfile,
     #[error(
         "persisted checkpoint for window {window_index} is incompatible with this reconstruction schedule"
     )]
@@ -138,6 +143,12 @@ pub fn fuse_scene_bundle_cpp_pr2_relative(
         .map(|hash| bundle.read_measured_window(hash))
         .collect::<Result<Vec<_>, _>>()?;
     windows.sort_by_key(|chunk| chunk.window.index);
+    if windows
+        .iter()
+        .any(|window| window.cpp_pr2_emission_confidence_threshold.is_none())
+    {
+        return Err(ReconstructionError::MissingCppPr2CaptureProfile);
+    }
     let overlap = windows
         .windows(2)
         .map(|pair| pair[0].window.end.saturating_sub(pair[1].window.start))
@@ -154,6 +165,9 @@ pub fn fuse_scene_bundle_cpp_pr2_relative(
     let mut observations = Vec::new();
     let mut cameras = Vec::new();
     for (window, pose) in windows.iter().zip(poses) {
+        let threshold = window
+            .cpp_pr2_emission_confidence_threshold
+            .expect("validated PR #2 capture profile");
         for frame in &window.views {
             if !emitted_frames.insert(frame.frame_index) {
                 continue;
@@ -164,7 +178,7 @@ pub fn fuse_scene_bundle_cpp_pr2_relative(
             for point in &frame.points {
                 if !point.position.iter().all(|value| value.is_finite())
                     || !point.confidence.is_finite()
-                    || point.confidence <= 0.0
+                    || point.confidence < threshold
                     || !point.radius.is_finite()
                     || point.radius <= 0.0
                 {
@@ -889,6 +903,11 @@ fn cpp_pr2_first_owner_key_cloud(window: &WindowMeasuredChunk, overlap: usize) -
         .iter()
         .skip(first_owned)
         .flat_map(|view| view.points.iter())
+        .filter(|point| {
+            window
+                .cpp_pr2_emission_confidence_threshold
+                .is_none_or(|threshold| point.confidence >= threshold)
+        })
         .filter_map(|point| {
             point
                 .position
@@ -1116,6 +1135,13 @@ fn cpp_pr2_fixture_windows(
                 end: start + measured_views.len(),
             },
             views: measured_views,
+            cpp_pr2_emission_confidence_threshold: Some(cpp_pr2_percentile(
+                &views
+                    .iter()
+                    .flat_map(|view| view.confidence.iter().copied())
+                    .collect::<Vec<_>>(),
+                fixture.confidence_percentile,
+            )),
         });
     }
     Ok(windows)
@@ -1159,36 +1185,66 @@ pub fn reconstruct_frames(
             });
         }
 
+        let emission_threshold = settings.cpp_pr2_relative_capture.then(|| {
+            let confidences = inference
+                .views
+                .iter()
+                .flat_map(|output| output.conf.iter().copied())
+                .collect::<Vec<_>>();
+            cpp_pr2_percentile(&confidences, 55.0)
+        });
         let mut views = Vec::with_capacity(frame_slice.len());
         let mut measured_points = 0;
         for (offset, (frame, output)) in frame_slice.iter().zip(inference.views).enumerate() {
             let rgb = rgb_at_inference_resolution(frame, output.w, output.h);
-            let points = backproject_measured_view(
-                MeasuredView {
-                    rgb_hwc_u8: &rgb,
-                    depth: &output.depth,
-                    confidence: &output.conf,
-                    width: output.w,
-                    height: output.h,
-                    camera: CameraCalibration {
-                        world_to_camera: output.extrinsics,
-                        intrinsics: output.intrinsics,
+            let camera = CameraCalibration {
+                world_to_camera: output.extrinsics,
+                intrinsics: output.intrinsics,
+            };
+            let points = if settings.cpp_pr2_relative_capture {
+                let frame = CppPr2Frame {
+                    intrinsics: output.intrinsics,
+                    world_to_camera: output.extrinsics,
+                    depth: output.depth,
+                    confidence: output.conf,
+                    rgb_hwc_u8: rgb,
+                };
+                backproject_frame_cpp_pr2_f32(
+                    &frame,
+                    output.w,
+                    output.h,
+                    BackprojectionSettings {
+                        minimum_confidence: -f32::MAX,
+                        pixel_stride: 1,
+                        surfel_radius_pixels: 1.0,
                     },
-                },
-                settings.backprojection,
-            )?;
+                )?
+            } else {
+                backproject_measured_view(
+                    MeasuredView {
+                        rgb_hwc_u8: &rgb,
+                        depth: &output.depth,
+                        confidence: &output.conf,
+                        width: output.w,
+                        height: output.h,
+                        camera,
+                    },
+                    settings.backprojection,
+                )?
+            };
             measured_points += points.len();
             views.push(MeasuredFrameChunk {
                 frame_index: window.start + offset,
-                camera: CameraCalibration {
-                    world_to_camera: output.extrinsics,
-                    intrinsics: output.intrinsics,
-                },
+                camera,
                 points,
             });
         }
 
-        let chunk_hash = bundle.write_measured_window(&WindowMeasuredChunk { window, views })?;
+        let chunk_hash = bundle.write_measured_window(&WindowMeasuredChunk {
+            window,
+            views,
+            cpp_pr2_emission_confidence_threshold: emission_threshold,
+        })?;
         progress.push(ReconstructionProgress {
             window,
             chunk_hash,
@@ -1312,6 +1368,7 @@ mod tests {
                     },
                 ],
             }],
+            cpp_pr2_emission_confidence_threshold: None,
         };
         assert_eq!(
             cpp_pr2_fixture_key_cloud(&fixture, 0, &window),
@@ -1399,6 +1456,7 @@ mod tests {
                     points: Vec::new(),
                 },
             ],
+            cpp_pr2_emission_confidence_threshold: None,
         };
         let progress =
             validated_checkpoint_progress(window, checkpoint, "checkpoint".into()).unwrap();
@@ -1416,6 +1474,7 @@ mod tests {
         let checkpoint = WindowMeasuredChunk {
             window: FrameWindow { end: 10, ..window },
             views: Vec::new(),
+            cpp_pr2_emission_confidence_threshold: None,
         };
         assert!(matches!(
             validated_checkpoint_progress(window, checkpoint, "checkpoint".into()),
@@ -1468,6 +1527,7 @@ mod tests {
                     point(3, [5.0, -3.0, 3.0]),
                 ],
             }],
+            cpp_pr2_emission_confidence_threshold: None,
         };
         let source = WindowMeasuredChunk {
             window: FrameWindow {
@@ -1485,6 +1545,7 @@ mod tests {
                     point(3, [0.0, 0.0, 1.0]),
                 ],
             }],
+            cpp_pr2_emission_confidence_threshold: None,
         };
         bundle.write_measured_window(&source).unwrap();
         bundle.write_measured_window(&target).unwrap();

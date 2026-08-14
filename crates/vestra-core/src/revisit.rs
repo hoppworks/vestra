@@ -256,6 +256,7 @@ mod tests {
                 end: 2,
             },
             views: vec![valid, invalid],
+            cpp_pr2_emission_confidence_threshold: None,
         };
         let path = window_camera_path(&window);
         assert_eq!(path.window_index, 3);

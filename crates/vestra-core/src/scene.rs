@@ -78,6 +78,11 @@ pub struct FusedSceneSummary {
 pub struct WindowMeasuredChunk {
     pub window: FrameWindow,
     pub views: Vec<MeasuredFrameChunk>,
+    /// PR #2's per-window percentile threshold over the complete confidence
+    /// rasters. Legacy/general captures omit it; a PR #2-relative rebuild must
+    /// refuse those rather than silently approximate its key/emission cloud.
+    #[serde(default)]
+    pub cpp_pr2_emission_confidence_threshold: Option<f32>,
 }
 
 /// Measured evidence owned by one source frame inside an overlapping window.
@@ -445,6 +450,7 @@ mod tests {
                     source_pixel: [7, 8],
                 }],
             }],
+            cpp_pr2_emission_confidence_threshold: None,
         };
         let first_hash = bundle.write_measured_window(&chunk).unwrap();
         let second_hash = bundle.write_measured_window(&chunk).unwrap();
@@ -477,6 +483,7 @@ mod tests {
                 end: 1,
             },
             views: Vec::new(),
+            cpp_pr2_emission_confidence_threshold: None,
         };
         let measured_hash = bundle.write_measured_window(&measured).unwrap();
         let fused = crate::FusedSceneChunk {

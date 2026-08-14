@@ -272,6 +272,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     overlap,
                     minimum_confidence,
                     pixel_stride,
+                    cpp_pr2_relative,
                 )?,
             };
             let bundle = if resume {
@@ -323,10 +324,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         overlap,
                     },
                     backprojection: BackprojectionSettings {
-                        minimum_confidence,
-                        pixel_stride,
+                        minimum_confidence: if cpp_pr2_relative {
+                            -f32::MAX
+                        } else {
+                            minimum_confidence
+                        },
+                        pixel_stride: if cpp_pr2_relative { 1 } else { pixel_stride },
                         ..BackprojectionSettings::default()
                     },
+                    cpp_pr2_relative_capture: cpp_pr2_relative,
                 },
             )?;
             for checkpoint in &progress {
@@ -1003,10 +1009,11 @@ fn settings_fingerprint(
     overlap: usize,
     minimum_confidence: f32,
     pixel_stride: usize,
+    cpp_pr2_relative: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let video_hash = sha256_file(video)?;
     let settings = format!(
-        "video={video_hash};frames={frames};width={width};height={height};chunk={chunk_size};overlap={overlap};minimum_confidence={minimum_confidence:?};pixel_stride={pixel_stride}"
+        "video={video_hash};frames={frames};width={width};height={height};chunk={chunk_size};overlap={overlap};minimum_confidence={minimum_confidence:?};pixel_stride={pixel_stride};cpp_pr2_relative={cpp_pr2_relative}"
     );
     Ok(Sha256::digest(settings.as_bytes())
         .iter()
