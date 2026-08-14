@@ -40,6 +40,8 @@ with the accepted geometry-plus-TSDF win: the Rust geometry pipeline is 4.11%
 faster on its locked model-free fixture, but the current multi-view transformer
 implementation remains the dominant blocker for a complete end-to-end win.
 
-The next optimization must profile and improve the multi-view backbone/global
-attention path under this precise runner. It may not lower the number of
-frames, resolution, model precision, window schedule or thread budget.
+The resolved follow-up is recorded in
+[`final-30-per-arm/RESULTS.md`](final-30-per-arm/RESULTS.md). The AVX-512
+multi-view Flash route removed this deficit and achieved a 1.089% statistically
+resolved Rust win under the same locked runner. This baseline remains retained
+as the pre-optimization record; it was not overwritten.
