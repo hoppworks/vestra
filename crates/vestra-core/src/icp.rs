@@ -175,6 +175,26 @@ pub(crate) fn refine_point_to_plane(
 }
 
 pub(crate) fn estimate_normals(points: &[[f32; 3]], radius: f32) -> Vec<[f32; 3]> {
+    estimate_normals_with_optional_orientation(points, radius, None)
+}
+
+/// Computes the same PCA normals as [`estimate_normals`] and orients each
+/// independent result toward its nearest camera before the worker stores it.
+/// TSDF is the sole caller: fusing this post-pass avoids a full extra normal
+/// buffer traversal and Rayon scheduling phase.
+pub(crate) fn estimate_normals_oriented(
+    points: &[[f32; 3]],
+    radius: f32,
+    cameras: &[[f32; 3]],
+) -> Vec<[f32; 3]> {
+    estimate_normals_with_optional_orientation(points, radius, Some(cameras))
+}
+
+fn estimate_normals_with_optional_orientation(
+    points: &[[f32; 3]],
+    radius: f32,
+    cameras: Option<&[[f32; 3]]>,
+) -> Vec<[f32; 3]> {
     let hash = SpatialHash::new(points, radius);
     points
         .par_iter()
@@ -218,9 +238,26 @@ pub(crate) fn estimate_normals(points: &[[f32; 3]], radius: f32) -> Vec<[f32; 3]
                 vectors[1][minimum],
                 vectors[2][minimum],
             ];
-            normalize64(normal)
+            let mut normal = normalize64(normal)
                 .map(|normal| normal.map(|value| value as f32))
-                .unwrap_or([0.0; 3])
+                .unwrap_or([0.0; 3]);
+            if normal != [0.0; 3]
+                && let Some(cameras) = cameras.filter(|cameras| !cameras.is_empty())
+            {
+                let mut camera = cameras[0];
+                let mut nearest_distance = squared_distance(camera, point);
+                for &candidate in &cameras[1..] {
+                    let distance = squared_distance(candidate, point);
+                    if distance < nearest_distance {
+                        camera = candidate;
+                        nearest_distance = distance;
+                    }
+                }
+                if dot(normal, subtract(camera, point)) < 0.0 {
+                    normal = normal.map(|value| -value);
+                }
+            }
+            normal
         })
         .collect()
 }
@@ -488,5 +525,27 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn fused_camera_orientation_matches_the_previous_separate_pass() {
+        let points = plane(0.0);
+        let cameras = [[0.0, 0.0, 1.0], [0.3, -0.2, 1.2]];
+        let mut separate = estimate_normals(&points, 0.15);
+        for (point, normal) in points.iter().zip(&mut separate) {
+            if *normal == [0.0; 3] {
+                continue;
+            }
+            let camera = cameras
+                .iter()
+                .min_by(|left, right| {
+                    squared_distance(**left, *point).total_cmp(&squared_distance(**right, *point))
+                })
+                .unwrap();
+            if dot(*normal, subtract(*camera, *point)) < 0.0 {
+                *normal = normal.map(|value| -value);
+            }
+        }
+        assert_eq!(estimate_normals_oriented(&points, 0.15, &cameras), separate);
     }
 }

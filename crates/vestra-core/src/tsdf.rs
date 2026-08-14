@@ -7,10 +7,9 @@
 
 use std::{collections::HashMap, time::Instant};
 
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::icp::estimate_normals;
+use crate::icp::estimate_normals_oriented;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TsdfSettings {
@@ -111,8 +110,7 @@ pub fn fuse_normal_space_tsdf(
         .map(f64::from)
         .unwrap_or(2.5 * voxel)
         .max(1e-6);
-    let mut normals = estimate_normals(&positions, normal_radius as f32);
-    orient_normals_toward_cameras(&positions, &mut normals, camera_centres);
+    let normals = estimate_normals_oriented(&positions, normal_radius as f32, camera_centres);
     let normals_at = Instant::now();
 
     let band = (truncation / voxel).ceil() as i32;
@@ -307,45 +305,8 @@ fn resolved_voxel_size(points: &[[f32; 3]], settings: TsdfSettings) -> f64 {
             }
         })
 }
-fn orient_normals_toward_cameras(
-    points: &[[f32; 3]],
-    normals: &mut [[f32; 3]],
-    cameras: &[[f32; 3]],
-) {
-    if cameras.is_empty() {
-        return;
-    }
-    points
-        .par_iter()
-        .zip(normals.par_iter_mut())
-        .for_each(|(point, normal)| {
-            if *normal == [0.0; 3] {
-                return;
-            }
-            // Matches the reference's strict `<` tie-break: the first camera is
-            // retained when two centres are equally distant.
-            let mut camera = cameras[0];
-            let mut nearest_distance = squared_distance(camera, *point);
-            for &candidate in &cameras[1..] {
-                let distance = squared_distance(candidate, *point);
-                if distance < nearest_distance {
-                    camera = candidate;
-                    nearest_distance = distance;
-                }
-            }
-            if dot(*normal, subtract(camera, *point)) < 0.0 {
-                *normal = normal.map(|value| -value);
-            }
-        });
-}
 fn subtract(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
     [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
-}
-fn squared_distance(left: [f32; 3], right: [f32; 3]) -> f32 {
-    subtract(left, right)
-        .iter()
-        .map(|value| value * value)
-        .sum()
 }
 fn dot(left: [f32; 3], right: [f32; 3]) -> f32 {
     left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
