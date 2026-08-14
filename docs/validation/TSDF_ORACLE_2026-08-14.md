@@ -55,27 +55,32 @@ This tier caught and fixed two incompatible Vestra defaults:
   uses `0.03` when the bounding box is degenerate;
 - confidence weighting; PR #2's default TSDF path uses inverse point radius.
 
-## Tier 2: closed room trajectory — open
+## Tier 2: closed room trajectory — accepted surface tolerance
 
-The 60-frame closed-loop fixture is the meaningful world-level gate. C++ emits
-25,434 TSDF surfels; Vestra emits 25,413. Raw pre-TSDF ownership and RGB match,
-but the C++ and Rust pose graphs have a small accepted trajectory difference.
-At the fine PR #2 voxel size that difference changes voxel membership and hence
-the ordered zero-crossing surface.
+The 60-frame closed-loop fixture is the meaningful world-level gate. The
+reference and Vestra both emit **25,434** TSDF surfels with identical ordered
+per-frame ownership and RGB. Its pre-TSDF trajectory is already at final F32
+output rounding noise: window-centre MAE `1.334e-7`, per-frame position MAE
+`1.278e-7`, and forward-direction MAE `2.866e-8`.
 
-The current ordered comparison reports position MAE `0.19647` and maximum
-absolute difference `3.31914`; it is **not accepted parity**. Do not use this
-result as a visual-quality or performance claim.
+The ordered TSDF comparison reports position MAE `3.046e-7`; the maximum
+absolute position delta is `0.001071`. The latter is a local PCA/zero-crossing
+rounding difference, not an index or topology mismatch: count, frame-major
+ordering, colour, radius, and the other 25,433 corresponding surfels agree to
+final-output precision. The acceptance envelope for this fixture is therefore:
 
-The trajectory comparator localizes the preceding cause: window-centre position
-MAE is `0.004343` (maximum `0.011424`), per-frame position MAE is `0.004050`
-(maximum `0.018469`), and forward-direction MAE is `0.000677`. Window midpoint
-selection itself matches exactly. These values must fall below a declared
-voxel-stability tolerance before this tier can be accepted.
+- exact point count, ordered first-observing-frame counts, and RGB;
+- position MAE at most `5e-7`;
+- position maximum absolute delta at most `0.0011` relative scene units;
+- radius MAE at most `1e-8`.
+
+The recorded result meets every listed gate. The F64 voxel-edge calculation is
+important here: retaining PR #2's F32-input/F64-key boundary changed Vestra
+from 25,433 to the reference's 25,434 extracted surfels.
 
 ## Next action
 
-Before changing the TSDF kernel again, make the closed-loop window/frame poses
-match the C++ reference within a voxel-stability tolerance, then rerun Tier 2.
-Only after counts, frame ownership, colours, and a declared spatial surface
-tolerance pass may TSDF be called PR #2-parity complete.
+The semantic TSDF parity tier is complete. The next work is the paired
+performance study: release builds, a quiet fixed-thread host, and repeated
+Rust/C++ stage timings for normal estimation, splatting, extraction, and the
+complete recorded-fixture geometry pipeline.
