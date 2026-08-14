@@ -5,7 +5,11 @@
 //! band, and extracted zero-crossing voxels are sorted frame-major for a stable
 //! progressive reveal.
 
-use std::{collections::HashMap, time::Instant};
+use std::{
+    collections::HashMap,
+    hash::{BuildHasherDefault, Hash, Hasher},
+    time::Instant,
+};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -118,7 +122,8 @@ pub fn fuse_normal_space_tsdf(
     let normals_at = Instant::now();
 
     let band = (truncation / voxel).ceil() as i32;
-    let mut field = HashMap::<VoxelKey, Cell>::with_capacity(observations.len());
+    let mut field =
+        TsdfField::with_capacity_and_hasher(observations.len(), BuildHasherDefault::default());
     for (observation, normal) in observations.iter().zip(normals) {
         if normal == [0.0; 3] {
             continue;
@@ -233,11 +238,47 @@ pub fn fuse_normal_space_tsdf(
     surfels
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+type TsdfField = HashMap<VoxelKey, Cell, BuildHasherDefault<VoxelKeyHasher>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct VoxelKey {
     x: i32,
     y: i32,
     z: i32,
+}
+
+/// The PR #2 TSDF field uses this exact three-axis integer mixer. The field is
+/// private, bounded reconstruction data, so a deterministic numeric hash is
+/// appropriate and avoids the cost of the standard adversarial-input hasher in
+/// the serial splat loop.
+#[derive(Default)]
+struct VoxelKeyHasher(u64);
+
+impl Hasher for VoxelKeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 ^= u64::from(byte);
+            self.0 = self.0.wrapping_mul(0x100_0000_01B3);
+        }
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
+}
+
+impl Hash for VoxelKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let x = u64::from(self.x as u32).wrapping_mul(0x9E37_79B1_85EB_CA87);
+        let y = u64::from(self.y as u32).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+        let z = u64::from(self.z as u32).wrapping_mul(0x1656_67B1_9E37_79F9);
+        let h = x ^ y.wrapping_add((x << 6).wrapping_add(x >> 2));
+        state.write_u64(h ^ z.wrapping_add((h << 6).wrapping_add(h >> 2)));
+    }
 }
 
 impl VoxelKey {
@@ -384,6 +425,15 @@ fn linear_to_srgb(value: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voxel_key_hash_matches_the_pinned_cpp_pr2_mixer() {
+        let key = VoxelKey { x: -3, y: 7, z: 11 };
+        let mut hasher = VoxelKeyHasher::default();
+        key.hash(&mut hasher);
+        assert_eq!(hasher.finish(), 0xA61A_9E35_6A21_0E25);
+    }
+
     fn plane(z: f32, frame: i32, color: [u8; 3]) -> Vec<TsdfObservation> {
         (-5..=5)
             .flat_map(|y| {
