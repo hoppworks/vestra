@@ -116,6 +116,13 @@ branches—not a claim that those features already exist:
     and served six progressive binary chunks through local Studio. The
     reproducible run is documented in
     [the current product-world record](docs/validation/CURRENT_PRODUCT_WORLD_IMG_2269_2026-08-13.md).
+18. In the locked model-free PR #2 closed-loop geometry-plus-TSDF workload,
+    Vestra now completes ten fresh-process trials at 831.797 ms mean versus
+    the pinned C++ reference at 867.421 ms (4.11% faster; non-overlapping
+    95% t intervals). The fixture, output oracle, raw samples, binary hashes,
+    16-thread budget and scoped claim are recorded in
+    [the geometry benchmark](docs/benchmarks/2026-08-14-pr2-geometry/RESULTS.md).
+    This is not an inference, quantized-model, GPU, or end-to-end video claim.
 
 The next hard performance gate is a device-resident end-to-end backbone and
 DPT/pose-head path with the same oracle discipline. Only then can a CUDA
