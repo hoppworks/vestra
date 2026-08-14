@@ -21,8 +21,8 @@ pub mod tsdf;
 pub mod video;
 
 pub use cpp_pr2_oracle::{
-    CppPr2CapiStreamOutput, CppPr2Fixture, CppPr2Frame, CppPr2OracleError, CppPr2StreamBranches,
-    CppPr2StreamOutput,
+    CppPr2CapiStreamOutput, CppPr2Fixture, CppPr2Frame, CppPr2MultiViewOutput, CppPr2MultiViewView,
+    CppPr2OracleError, CppPr2StreamBranches, CppPr2StreamOutput,
 };
 pub use export::{
     ExportError, export_camera_json, export_fused_glb, export_fused_ply, export_fused_splat,

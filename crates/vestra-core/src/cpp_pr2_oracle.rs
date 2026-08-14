@@ -12,6 +12,8 @@ const FIXTURE_MAGIC: [u8; 4] = *b"VPS1";
 const OUTPUT_MAGIC: [u8; 4] = *b"VPO1";
 const CAPI_STREAM_MAGIC: [u8; 4] = *b"CPS1";
 const CAPI_STREAM_VERSION: u32 = 1;
+const MULTIVIEW_MAGIC: [u8; 4] = *b"MVO1";
+const MULTIVIEW_VERSION: u32 = 1;
 /// Version 2 established the base sequential streaming oracle. Version 3 adds
 /// explicit opt-in geometry branches while retaining a reader for the durable
 /// V2 evidence artifacts.
@@ -110,6 +112,25 @@ pub struct CppPr2CapiStreamOutput {
     pub counts: Vec<i32>,
     pub frame_pos: Vec<f32>,
     pub frame_fwd: Vec<f32>,
+}
+
+/// One C++ `Engine::depth_pose_multi` result before any geometry work.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CppPr2MultiViewView {
+    pub depth: Vec<f32>,
+    pub confidence: Vec<f32>,
+    pub world_to_camera: [f32; 12],
+    pub intrinsics: [f32; 9],
+}
+
+/// Exact C++ multi-view model boundary recorded by `MVO1`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CppPr2MultiViewOutput {
+    pub frame_count: usize,
+    pub windows: WindowSettings,
+    pub views: Vec<Vec<CppPr2MultiViewView>>,
+    pub width: usize,
+    pub height: usize,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -456,6 +477,93 @@ impl CppPr2CapiStreamOutput {
     }
 }
 
+impl CppPr2MultiViewOutput {
+    /// Reads a complete C++ `Engine::depth_pose_multi` dump. The reader is
+    /// intentionally strict: a mismatched schedule or tensor shape is proof
+    /// that the two runtime arms did not perform the same model workload.
+    pub fn read_mvo1(reader: &mut impl Read) -> Result<Self, CppPr2OracleError> {
+        let mut magic = [0; 4];
+        read_exact(reader, &mut magic)?;
+        if magic != MULTIVIEW_MAGIC {
+            return Err(CppPr2OracleError::Magic);
+        }
+        let version = read_u32(reader)?;
+        if version != MULTIVIEW_VERSION {
+            return Err(CppPr2OracleError::Version(version));
+        }
+        let frame_count = read_u32(reader)? as usize;
+        let chunk_size = read_u32(reader)? as usize;
+        let overlap = read_u32(reader)? as usize;
+        let window_count = read_u32(reader)? as usize;
+        if frame_count == 0 || chunk_size < 2 || overlap >= chunk_size || window_count == 0 {
+            return Err(CppPr2OracleError::InvalidHeader);
+        }
+        let expected = window_lengths(
+            frame_count,
+            WindowSettings {
+                chunk_size,
+                overlap,
+            },
+        );
+        if expected.len() != window_count {
+            return Err(CppPr2OracleError::InconsistentPayload);
+        }
+        let mut views = Vec::with_capacity(window_count);
+        let mut dimensions = None;
+        for (window_index, expected_views) in expected.into_iter().enumerate() {
+            let start = read_u32(reader)? as usize;
+            let view_count = read_u32(reader)? as usize;
+            let height = read_u32(reader)? as usize;
+            let width = read_u32(reader)? as usize;
+            let expected_start = window_index * (chunk_size - overlap);
+            let pixels = height
+                .checked_mul(width)
+                .ok_or(CppPr2OracleError::InvalidHeader)?;
+            if start != expected_start || view_count != expected_views || pixels == 0 {
+                return Err(CppPr2OracleError::InconsistentPayload);
+            }
+            match dimensions {
+                Some(existing) if existing != (width, height) => {
+                    return Err(CppPr2OracleError::InconsistentPayload);
+                }
+                None => dimensions = Some((width, height)),
+                _ => {}
+            }
+            let mut window_views = Vec::with_capacity(view_count);
+            for _ in 0..view_count {
+                let depth = read_f32_vec(reader, pixels)?;
+                let confidence = read_f32_vec(reader, pixels)?;
+                let world_to_camera = read_f32_array::<12>(reader)?;
+                let intrinsics = read_f32_array::<9>(reader)?;
+                window_views.push(CppPr2MultiViewView {
+                    depth,
+                    confidence,
+                    world_to_camera,
+                    intrinsics,
+                });
+            }
+            views.push(window_views);
+        }
+        let mut extra = [0; 1];
+        if reader.read(&mut extra).map_err(io_error)? != 0 {
+            return Err(CppPr2OracleError::TrailingBytes);
+        }
+        let Some((width, height)) = dimensions else {
+            return Err(CppPr2OracleError::InvalidHeader);
+        };
+        Ok(Self {
+            frame_count,
+            windows: WindowSettings {
+                chunk_size,
+                overlap,
+            },
+            views,
+            width,
+            height,
+        })
+    }
+}
+
 fn io_error(error: std::io::Error) -> CppPr2OracleError {
     CppPr2OracleError::Io(error.to_string())
 }
@@ -506,6 +614,24 @@ fn read_u8_vec(reader: &mut impl Read, count: usize) -> Result<Vec<u8>, CppPr2Or
 }
 fn read_f32_vec(reader: &mut impl Read, count: usize) -> Result<Vec<f32>, CppPr2OracleError> {
     (0..count).map(|_| read_f32(reader)).collect()
+}
+fn read_f32_array<const N: usize>(reader: &mut impl Read) -> Result<[f32; N], CppPr2OracleError> {
+    let values = read_f32_vec(reader, N)?;
+    values
+        .try_into()
+        .map_err(|_| CppPr2OracleError::InconsistentPayload)
+}
+
+fn window_lengths(frame_count: usize, windows: WindowSettings) -> Vec<usize> {
+    let step = windows.chunk_size - windows.overlap;
+    let mut lengths = Vec::new();
+    for start in (0..frame_count).step_by(step) {
+        lengths.push((frame_count - start).min(windows.chunk_size));
+        if start + windows.chunk_size >= frame_count {
+            break;
+        }
+    }
+    lengths
 }
 fn read_i32_vec(reader: &mut impl Read, count: usize) -> Result<Vec<i32>, CppPr2OracleError> {
     (0..count).map(|_| read_i32(reader)).collect()

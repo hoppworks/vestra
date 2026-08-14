@@ -29,6 +29,14 @@ target_link_libraries(vestra_cpp_capi_stream_dump PRIVATE depthanything)
 target_include_directories(vestra_cpp_capi_stream_dump PRIVATE
     "${CPP_PR2_SOURCE}/include")
 
+# Records the actual multi-view DA3 output before any backprojection or
+# streaming geometry. This is the only valid model-parity boundary for PR #2:
+# single-image C API output does not exercise cross-view global attention.
+add_executable(vestra_cpp_multiview_dump multiview_dump.cpp)
+target_link_libraries(vestra_cpp_multiview_dump PRIVATE depthanything)
+target_include_directories(vestra_cpp_multiview_dump PRIVATE
+    "${CPP_PR2_SOURCE}/src")
+
 # Deterministic diagnostic evidence for the exact PR #2 closed-trajectory
 # regression. It only writes a VPS1 fixture; it never modifies or links to the
 # pinned C++ source tree.

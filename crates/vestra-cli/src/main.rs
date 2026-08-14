@@ -8,9 +8,9 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vestra_core::{
-    BackprojectionSettings, CppPr2CapiStreamOutput, CppPr2Fixture, CppPr2StreamOutput,
-    ReconstructionSettings, SceneBundle, SceneProvenance, StitchSettings, SurfaceFusion,
-    TsdfSettings, VideoExtractionSettings, WindowSettings, capture_cpp_pr2_fixture,
+    BackprojectionSettings, CppPr2CapiStreamOutput, CppPr2Fixture, CppPr2MultiViewOutput,
+    CppPr2StreamOutput, ReconstructionSettings, SceneBundle, SceneProvenance, StitchSettings,
+    SurfaceFusion, TsdfSettings, VideoExtractionSettings, WindowSettings, capture_cpp_pr2_fixture,
     cpp_pr2_fixture_alignment_reports, cpp_pr2_fixture_trajectory,
     emit_cpp_pr2_loop_closed_reference_cloud, emit_cpp_pr2_reference_cloud,
     emit_cpp_pr2_tsdf_reference_cloud, export_camera_json, export_fused_glb, export_fused_ply,
@@ -227,6 +227,14 @@ enum Command {
         /// Compare normal-space TSDF output rather than the pre-voxel cloud.
         #[arg(long)]
         tsdf: bool,
+    },
+    /// Compare C++ and Rust DA3 multi-view tensors before any geometry phase.
+    /// Both sides must use the identical decoded frames and 12/3-style schedule.
+    OracleCompareModel {
+        #[arg(long)]
+        fixture: PathBuf,
+        #[arg(long)]
+        reference: PathBuf,
     },
     /// Run Vestra's pinned PR #2 geometry oracle without comparison I/O.
     ///
@@ -676,6 +684,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             );
         }
+        Command::OracleCompareModel { fixture, reference } => {
+            let mut fixture_reader = BufReader::new(File::open(fixture)?);
+            let fixture = CppPr2Fixture::read_vps1(&mut fixture_reader)?;
+            let mut reference_reader = BufReader::new(File::open(reference)?);
+            let reference = CppPr2MultiViewOutput::read_mvo1(&mut reference_reader)?;
+            let schedule_matches = reference.frame_count == fixture.frame_count
+                && reference.windows == fixture.windows
+                && reference.width == fixture.width
+                && reference.height == fixture.height
+                && reference.views.len() == fixture.window_views.len();
+            let mut depth = DifferenceStats::default();
+            let mut confidence = DifferenceStats::default();
+            let mut extrinsics = DifferenceStats::default();
+            let mut intrinsics = DifferenceStats::default();
+            let mut views_match = schedule_matches;
+            for (cpp_window, rust_window) in reference.views.iter().zip(&fixture.window_views) {
+                if cpp_window.len() != rust_window.len() {
+                    views_match = false;
+                    continue;
+                }
+                for (cpp, rust) in cpp_window.iter().zip(rust_window) {
+                    views_match &= cpp.depth.len() == rust.depth.len()
+                        && cpp.confidence.len() == rust.confidence.len();
+                    depth.extend(&cpp.depth, &rust.depth);
+                    confidence.extend(&cpp.confidence, &rust.confidence);
+                    extrinsics.extend(&cpp.world_to_camera, &rust.world_to_camera);
+                    intrinsics.extend(&cpp.intrinsics, &rust.intrinsics);
+                }
+            }
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.cpp-pr2-multiview-model-comparison/v1",
+                    "schedule_matches": schedule_matches,
+                    "view_tensor_shapes_match": views_match,
+                    "windows": reference.views.len(),
+                    "depth": depth.json(),
+                    "confidence": confidence.json(),
+                    "extrinsics": extrinsics.json(),
+                    "intrinsics": intrinsics.json(),
+                })
+            );
+        }
         Command::OracleRun { fixture, tsdf } => {
             let mut fixture_reader = BufReader::new(File::open(fixture)?);
             let fixture = CppPr2Fixture::read_vps1(&mut fixture_reader)?;
@@ -816,6 +867,35 @@ fn trajectory_difference(left: &[[f32; 3]], right_flat: &[f32]) -> (f64, f32) {
         }
     }
     (sum / (shared * 3) as f64, maximum)
+}
+
+#[derive(Default)]
+struct DifferenceStats {
+    count: usize,
+    absolute_sum: f64,
+    maximum: f32,
+    bitwise_mismatches: usize,
+}
+
+impl DifferenceStats {
+    fn extend(&mut self, left: &[f32], right: &[f32]) {
+        for (&left, &right) in left.iter().zip(right) {
+            let delta = (left - right).abs();
+            self.count += 1;
+            self.absolute_sum += f64::from(delta);
+            self.maximum = self.maximum.max(delta);
+            self.bitwise_mismatches += usize::from(left.to_bits() != right.to_bits());
+        }
+    }
+
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "values_compared": self.count,
+            "mae": if self.count == 0 { 0.0 } else { self.absolute_sum / self.count as f64 },
+            "max_abs": self.maximum,
+            "bitwise_mismatches": self.bitwise_mismatches,
+        })
+    }
 }
 
 /// Makes command-line cancellation bounded independently of the current
