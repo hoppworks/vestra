@@ -172,7 +172,9 @@ pub fn fuse_scene_bundle_cpp_pr2_relative(
             if !emitted_frames.insert(frame.frame_index) {
                 continue;
             }
-            if let Some(camera) = camera_centre_direction(frame.frame_index, frame.camera) {
+            if let Some(camera) =
+                camera_centre_direction_cpp_pr2(frame.frame_index, frame.camera.world_to_camera)
+            {
                 cameras.push(pose.apply(camera.centre_local));
             }
             for point in &frame.points {
@@ -744,7 +746,9 @@ pub fn cpp_pr2_loop_oracle_for_windows(
             window
                 .views
                 .iter()
-                .filter_map(|view| camera_centre_direction(view.frame_index, view.camera))
+                .filter_map(|view| {
+                    camera_centre_direction_cpp_pr2(view.frame_index, view.camera.world_to_camera)
+                })
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
@@ -1374,6 +1378,76 @@ mod tests {
             cpp_pr2_fixture_key_cloud(&fixture, 0, &window),
             vec![[1.0, 0.0, 1.0]]
         );
+    }
+
+    #[test]
+    fn product_loop_keys_require_the_captured_pr2_confidence_threshold() {
+        let camera = CameraCalibration {
+            world_to_camera: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            intrinsics: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        };
+        let point = |x, confidence| MeasuredPoint {
+            position: [x, 0.0, 1.0],
+            normal: [0.0, 0.0, 1.0],
+            color_srgb: [0; 3],
+            confidence,
+            radius: 1.0,
+            source_pixel: [x as u32, 0],
+        };
+        let window = WindowMeasuredChunk {
+            window: FrameWindow {
+                index: 0,
+                start: 0,
+                end: 1,
+            },
+            views: vec![MeasuredFrameChunk {
+                frame_index: 0,
+                camera,
+                points: vec![point(0.0, 0.49), point(1.0, 0.5), point(2.0, 0.9)],
+            }],
+            cpp_pr2_emission_confidence_threshold: Some(0.5),
+        };
+
+        assert_eq!(
+            cpp_pr2_first_owner_key_cloud(&window, 0),
+            vec![[1.0, 0.0, 1.0], [2.0, 0.0, 1.0]]
+        );
+    }
+
+    #[test]
+    fn cpp_pr2_relative_fusion_rejects_legacy_capture_without_evidence_profile() {
+        let root = std::env::temp_dir().join(format!(
+            "vestra-pr2-profile-required-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let bundle = SceneBundle::create(
+            &root,
+            SceneProvenance {
+                engine_revision: "test".into(),
+                kernel_revision: "test".into(),
+                model_fingerprint: "test".into(),
+                settings_fingerprint: "test".into(),
+            },
+        )
+        .unwrap();
+        bundle
+            .write_measured_window(&WindowMeasuredChunk {
+                window: FrameWindow {
+                    index: 0,
+                    start: 0,
+                    end: 1,
+                },
+                views: Vec::new(),
+                cpp_pr2_emission_confidence_threshold: None,
+            })
+            .unwrap();
+
+        assert!(matches!(
+            fuse_scene_bundle_cpp_pr2_relative(&bundle, None),
+            Err(ReconstructionError::MissingCppPr2CaptureProfile)
+        ));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
