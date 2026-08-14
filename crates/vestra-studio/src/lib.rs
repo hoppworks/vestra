@@ -1318,8 +1318,9 @@ mod tests {
         assert!(INDEX_HTML.contains("id=\"replay-points\""));
         assert!(INDEX_HTML.contains("src=\"/input-video\""));
         assert!(INDEX_HTML.contains("function updateReplay()"));
-        assert!(INDEX_HTML.contains("function replayAspectMatchesVideo(samples)"));
-        assert!(INDEX_HTML.contains("replay withheld"));
+        assert!(INDEX_HTML.contains("original capture · 3:2 crop"));
+        assert!(INDEX_HTML.contains("same 3:2 crop"));
+        assert!(INDEX_HTML.contains("object-fit:cover"));
         assert!(INDEX_HTML.contains("replay-landscape"));
         assert!(INDEX_HTML.contains("function arrangeReplay()"));
         assert!(INDEX_HTML.contains("function setReplay(open)"));

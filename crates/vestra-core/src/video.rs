@@ -63,6 +63,10 @@ pub enum VideoInputError {
     Probe(String),
     #[error("video duration must be finite and positive, got {0:?}")]
     InvalidDuration(Option<String>),
+    #[error(
+        "portrait capture {width}x{height} cannot be reconstructed with Vestra's locked 3:2 landscape raster; record in landscape"
+    )]
+    PortraitCapture { width: usize, height: usize },
     #[error("ffmpeg is unavailable or failed: {0}")]
     Decode(String),
     #[error("decoded frame directory already exists at {0}")]
@@ -90,6 +94,13 @@ pub fn extract_video_frames(
         return Err(VideoInputError::InvalidSettings);
     }
     let duration_seconds = probe_duration(video)?;
+    let geometry = probe_geometry(video)?;
+    if geometry.width < geometry.height {
+        return Err(VideoInputError::PortraitCapture {
+            width: geometry.width,
+            height: geometry.height,
+        });
+    }
 
     let decoded_directory = work_directory.into();
     if decoded_directory.exists() {
@@ -97,10 +108,7 @@ pub fn extract_video_frames(
     }
     fs::create_dir_all(&decoded_directory)?;
     let frame_pattern = decoded_directory.join("frame-%06d.ppm");
-    let filter = format!(
-        "fps={}/{duration_seconds:.9},scale={}:{}:flags=lanczos",
-        settings.max_frames, settings.width, settings.height
-    );
+    let filter = center_crop_filter(duration_seconds, settings, geometry)?;
     let decode = Command::new("ffmpeg")
         .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
         .arg(video)
@@ -117,6 +125,45 @@ pub fn extract_video_frames(
     }
 
     load_decoded_frame_cache_with_duration(&decoded_directory, settings, duration_seconds)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VideoGeometry {
+    width: usize,
+    height: usize,
+}
+
+/// Builds Vestra's locked image transform: crop the source around its centre
+/// to the reconstruction aspect ratio, then resize. This avoids the geometric
+/// distortion caused by a direct non-uniform scale.
+fn center_crop_filter(
+    duration_seconds: f64,
+    settings: VideoExtractionSettings,
+    geometry: VideoGeometry,
+) -> Result<String, VideoInputError> {
+    let target_width = settings.width;
+    let target_height = settings.height;
+    let (crop_width, crop_height) =
+        if geometry.width * target_height >= geometry.height * target_width {
+            (
+                geometry.height * target_width / target_height,
+                geometry.height,
+            )
+        } else {
+            (
+                geometry.width,
+                geometry.width * target_height / target_width,
+            )
+        };
+    if crop_width == 0 || crop_height == 0 {
+        return Err(VideoInputError::InvalidSettings);
+    }
+    let crop_x = (geometry.width - crop_width) / 2;
+    let crop_y = (geometry.height - crop_height) / 2;
+    Ok(format!(
+        "fps={}/{duration_seconds:.9},crop={crop_width}:{crop_height}:{crop_x}:{crop_y},scale={target_width}:{target_height}:flags=lanczos",
+        settings.max_frames,
+    ))
 }
 
 /// Loads the deterministic decode cache produced by [`extract_video_frames`].
@@ -162,6 +209,45 @@ fn probe_duration(video: &Path) -> Result<f64, VideoInputError> {
         return Err(VideoInputError::InvalidDuration(Some(duration_text)));
     };
     Ok(duration_seconds)
+}
+
+fn probe_geometry(video: &Path) -> Result<VideoGeometry, VideoInputError> {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0:s=x",
+        ])
+        .arg(video)
+        .output()
+        .map_err(|error| VideoInputError::Probe(error.to_string()))?;
+    if !output.status.success() {
+        return Err(VideoInputError::Probe(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ));
+    }
+    let dimensions = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let Some((width, height)) = dimensions.split_once('x') else {
+        return Err(VideoInputError::Probe(format!(
+            "ffprobe did not return video dimensions: {dimensions:?}"
+        )));
+    };
+    let width = width.parse::<usize>().ok();
+    let height = height.parse::<usize>().ok();
+    match (
+        width.filter(|value| *value > 0),
+        height.filter(|value| *value > 0),
+    ) {
+        (Some(width), Some(height)) => Ok(VideoGeometry { width, height }),
+        _ => Err(VideoInputError::Probe(format!(
+            "ffprobe returned invalid video dimensions: {dimensions:?}"
+        ))),
+    }
 }
 
 fn load_decoded_frame_cache_with_duration(
@@ -425,5 +511,36 @@ mod tests {
             assess_capture_quality(&[dark, bright]).disposition,
             CaptureDisposition::Ready
         );
+    }
+
+    #[test]
+    fn landscape_16_by_9_is_center_cropped_to_three_by_two_before_resize() {
+        let filter = center_crop_filter(
+            12.0,
+            VideoExtractionSettings::default(),
+            VideoGeometry {
+                width: 1920,
+                height: 1080,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            filter,
+            "fps=120/12.000000000,crop=1620:1080:150:0,scale=504:336:flags=lanczos"
+        );
+    }
+
+    #[test]
+    fn crop_filter_keeps_an_already_three_by_two_source_unchanged() {
+        let filter = center_crop_filter(
+            1.0,
+            VideoExtractionSettings::default(),
+            VideoGeometry {
+                width: 1500,
+                height: 1000,
+            },
+        )
+        .unwrap();
+        assert!(filter.contains("crop=1500:1000:0:0"));
     }
 }
