@@ -59,6 +59,9 @@ Run it before using model-derived data:
 ```bash
 python3 tools/cpp-pr2-oracle/make_identity_fixture.py /tmp/identity.vps
 /tmp/vestra-cpp-pr2-build/vestra_cpp_stream_fixture_dump /tmp/identity.vps /tmp/identity.vpo
+
+# Optional normal-space TSDF branch used by the PR #2 C API.
+/tmp/vestra-cpp-pr2-build/vestra_cpp_stream_fixture_dump /tmp/identity.vps /tmp/identity-tsdf.vpo --tsdf
 ```
 
 ## Output (`VPO1`)
@@ -80,3 +83,8 @@ The header is `VPO1`, `u32 version`, `u32 frame_count`, `u32 height`, `u32 width
 before voxel fusion: point ownership/counts and seam trajectory first, then
 point-cloud distances. Do not claim end-to-end PR parity from model-output parity
 alone.
+
+Passing `--tsdf` applies the exact PR #2 `fuse_tsdf` default profile after
+streaming. The result remains `VPO1`; its point sequence and per-frame counts
+describe the frame-major, first-observing TSDF surface. This makes TSDF a
+separate, differential parity tier rather than an unrecorded viewer-only step.

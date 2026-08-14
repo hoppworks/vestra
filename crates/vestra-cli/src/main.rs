@@ -11,10 +11,11 @@ use vestra_core::{
     BackprojectionSettings, CppPr2Fixture, CppPr2StreamOutput, ReconstructionSettings, SceneBundle,
     SceneProvenance, StitchSettings, SurfaceFusion, TsdfSettings, VideoExtractionSettings,
     WindowSettings, capture_cpp_pr2_fixture, cpp_pr2_fixture_alignment_reports,
-    emit_cpp_pr2_loop_closed_reference_cloud, emit_cpp_pr2_reference_cloud, export_camera_json,
-    export_fused_glb, export_fused_ply, export_fused_splat, extract_video_frames,
-    fuse_scene_bundle_cpp_pr2_relative, fuse_scene_bundle_with_settings, fused_topology,
-    load_decoded_frame_cache, load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
+    emit_cpp_pr2_loop_closed_reference_cloud, emit_cpp_pr2_reference_cloud,
+    emit_cpp_pr2_tsdf_reference_cloud, export_camera_json, export_fused_glb, export_fused_ply,
+    export_fused_splat, extract_video_frames, fuse_scene_bundle_cpp_pr2_relative,
+    fuse_scene_bundle_with_settings, fused_topology, load_decoded_frame_cache,
+    load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
 use vestra_studio::{IntakeConfig, serve, serve_intake};
@@ -207,6 +208,9 @@ enum Command {
         fixture: PathBuf,
         #[arg(long)]
         reference: PathBuf,
+        /// Compare the normal-space TSDF tier. The C++ VPO1 must use `--tsdf`.
+        #[arg(long)]
+        tsdf: bool,
     },
 }
 
@@ -499,12 +503,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             );
         }
-        Command::OracleCompare { fixture, reference } => {
+        Command::OracleCompare {
+            fixture,
+            reference,
+            tsdf,
+        } => {
             let mut fixture_reader = BufReader::new(File::open(fixture)?);
             let fixture = CppPr2Fixture::read_vps1(&mut fixture_reader)?;
             let mut reference_reader = BufReader::new(File::open(reference)?);
             let reference = CppPr2StreamOutput::read_vpo1(&mut reference_reader)?;
-            let rust = if fixture.branches.loop_close {
+            let rust = if tsdf {
+                emit_cpp_pr2_tsdf_reference_cloud(&fixture)?
+            } else if fixture.branches.loop_close {
                 emit_cpp_pr2_loop_closed_reference_cloud(&fixture)?
             } else {
                 emit_cpp_pr2_reference_cloud(&fixture)?

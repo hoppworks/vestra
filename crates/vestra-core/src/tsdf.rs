@@ -90,12 +90,14 @@ pub fn fuse_normal_space_tsdf(
         .iter()
         .map(|point| point.position)
         .collect::<Vec<_>>();
-    let diagonal = bounding_diagonal(&positions);
-    let voxel = settings
-        .voxel_size
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or_else(|| (settings.voxel_fraction.max(0.0) * diagonal).max(0.03));
-    let truncation = settings.truncation_multiple.max(0.0).max(4.0) * voxel;
+    let voxel = resolved_voxel_size(&positions, settings);
+    let truncation_multiple =
+        if settings.truncation_multiple.is_finite() && settings.truncation_multiple > 0.0 {
+            settings.truncation_multiple
+        } else {
+            4.0
+        };
+    let truncation = truncation_multiple * voxel;
     let normal_radius = settings.normal_radius.unwrap_or(2.5 * voxel).max(1e-6);
     let mut normals = estimate_normals(&positions, normal_radius);
     orient_normals_toward_cameras(&positions, &mut normals, camera_centres);
@@ -106,7 +108,11 @@ pub fn fuse_normal_space_tsdf(
         if normal == [0.0; 3] {
             continue;
         }
-        let weight = observation.confidence.max(1e-12) as f64;
+        // PR #2's C API deliberately uses the TSDF kernel's default weight:
+        // inverse point radius. Radius already encodes local sample spacing from
+        // the streaming backprojector, so near/high-confidence evidence receives
+        // the stronger contribution without changing this branch's public input.
+        let weight = 1.0 / (f64::from(observation.radius) + 1e-12);
         let linear = observation.color_srgb.map(srgb_to_linear);
         let mut previous = None;
         for step in -band..=band {
@@ -246,6 +252,22 @@ fn bounding_diagonal(points: &[[f32; 3]]) -> f32 {
         .sum::<f32>()
         .sqrt()
 }
+
+fn resolved_voxel_size(points: &[[f32; 3]], settings: TsdfSettings) -> f32 {
+    settings
+        .voxel_size
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or_else(|| {
+            let relative = settings.voxel_fraction * bounding_diagonal(points);
+            if relative.is_finite() && relative > 0.0 {
+                relative
+            } else {
+                // PR #2 only falls back to 0.03 for a degenerate extent; it
+                // does not impose a minimum voxel edge on small valid scenes.
+                0.03
+            }
+        })
+}
 fn orient_normals_toward_cameras(
     points: &[[f32; 3]],
     normals: &mut [[f32; 3]],
@@ -341,5 +363,11 @@ mod tests {
                 .iter()
                 .any(|point| point.color_srgb[0] > 150 && point.color_srgb[1] > 150)
         );
+    }
+
+    #[test]
+    fn valid_small_scene_uses_the_pr_relative_voxel_size_without_clamping() {
+        let points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        assert_eq!(resolved_voxel_size(&points, TsdfSettings::default()), 0.004);
     }
 }

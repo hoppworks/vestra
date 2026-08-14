@@ -3,6 +3,7 @@
 // Vestra fixture can distinguish geometry/stitching differences from inference
 // differences.  The binary format is documented in README.md next to this file.
 #include "stream.hpp"
+#include "tsdf.hpp"
 
 #include <array>
 #include <cmath>
@@ -158,8 +159,9 @@ bool write_output(const std::string& path, const da::StreamCloud& cloud, std::ui
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 3) {
-        std::cerr << "usage: vestra_cpp_stream_fixture_dump INPUT.vps OUTPUT.vpo\n";
+    const bool tsdf = argc == 4 && std::string(argv[3]) == "--tsdf";
+    if (argc != 3 && !tsdf) {
+        std::cerr << "usage: vestra_cpp_stream_fixture_dump INPUT.vps OUTPUT.vpo [--tsdf]\n";
         return 64;
     }
     std::uint32_t frames = 0, h = 0, w = 0;
@@ -188,8 +190,34 @@ int main(int argc, char** argv) {
     if (!da::stream_points_core(static_cast<int>(frames), params, source, cloud, error)) {
         std::cerr << "stream error: " << error << '\n'; return 66;
     }
+    if (tsdf) {
+        std::vector<int> in_frame;
+        in_frame.reserve(cloud.radius.size());
+        for (std::size_t frame = 0; frame < cloud.counts.size(); ++frame) {
+            for (int point = 0; point < cloud.counts[frame]; ++point) {
+                in_frame.push_back(static_cast<int>(frame));
+            }
+        }
+        if (in_frame.size() != cloud.radius.size()) {
+            std::cerr << "stream output has inconsistent frame-major counts\n";
+            return 67;
+        }
+        da::TsdfParams params;
+        std::vector<int> out_frame;
+        const int points = da::fuse_tsdf(
+            cloud.xyz, cloud.rgb, cloud.radius, params, nullptr, &cloud.frame_pos,
+            &in_frame, &out_frame);
+        if (points != static_cast<int>(cloud.radius.size()) || out_frame.size() != cloud.radius.size()) {
+            std::cerr << "TSDF output has inconsistent point ownership\n";
+            return 68;
+        }
+        cloud.counts.assign(frames, 0);
+        for (const int frame : out_frame) {
+            if (frame >= 0 && frame < static_cast<int>(frames)) ++cloud.counts[frame];
+        }
+    }
     if (!write_output(argv[2], cloud, frames, h, w, error)) {
-        std::cerr << "output error: " << error << '\n'; return 67;
+        std::cerr << "output error: " << error << '\n'; return 69;
     }
     std::cout << "VPO1 points=" << cloud.radius.size() << " windows=" << cloud.window_mid_frame.size()
               << " warnings=" << cloud.warnings << " loops=" << cloud.loops_found << '\n';

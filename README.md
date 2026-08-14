@@ -106,7 +106,10 @@ branches—not a claim that those features already exist:
     Sim(3), first-owner point emission, 9,931,557 ordered points, per-frame
     ownership and RGB. The numerical cloud comparison is recorded in
     [the streaming oracle record](docs/validation/CPP_PR2_STREAMING_ORACLE_2026-08-13.md).
-16. The corrected current Rust product pipeline has also reconstructed the
+16. The PR #2 normal-space TSDF branch has an exact identity-control oracle and
+    an explicitly open closed-loop trajectory tier; the acceptance boundary and
+    reproduction commands are in [the TSDF oracle record](docs/validation/TSDF_ORACLE_2026-08-14.md).
+17. The corrected current Rust product pipeline has also reconstructed the
     same 120-frame capture into 296,596 finite fused surfels across 13 windows
     and served six progressive binary chunks through local Studio. The
     reproducible run is documented in

@@ -378,6 +378,111 @@ pub fn emit_cpp_pr2_loop_closed_reference_cloud(
     emit_cpp_pr2_cloud_with_poses(fixture, &windows, alignments, poses)
 }
 
+/// Applies the PR #2 normal-space TSDF defaults to the loop-optimized
+/// first-owner fixture cloud. This is a distinct oracle tier: C++'s VPO1
+/// reference must also have been produced with the harness `--tsdf` flag.
+pub fn emit_cpp_pr2_loop_closed_tsdf_reference_cloud(
+    fixture: &CppPr2Fixture,
+) -> Result<CppPr2ReferenceCloud, ReconstructionError> {
+    let windows = cpp_pr2_fixture_windows(fixture)?;
+    let oracle = cpp_pr2_closed_loop_oracle(fixture)?;
+    let alignments = windows
+        .windows(2)
+        .map(|pair| Ok(align_overlapping_windows_cpp_pr2(&pair[1], &pair[0])?))
+        .collect::<Result<Vec<_>, ReconstructionError>>()?;
+    let poses = oracle
+        .optimized_window_poses
+        .iter()
+        .map(|pose| pose.local_to_world)
+        .collect::<Vec<_>>();
+    emit_cpp_pr2_tsdf_cloud_with_poses(fixture, &windows, alignments, poses)
+}
+
+/// Applies the PR #2 TSDF profile to either a sequential or loop-closed
+/// fixture. This preserves the fixture's recorded geometry branch rather than
+/// inventing a loop policy for a sequential control.
+pub fn emit_cpp_pr2_tsdf_reference_cloud(
+    fixture: &CppPr2Fixture,
+) -> Result<CppPr2ReferenceCloud, ReconstructionError> {
+    if fixture.branches.loop_close {
+        return emit_cpp_pr2_loop_closed_tsdf_reference_cloud(fixture);
+    }
+    let windows = cpp_pr2_fixture_windows(fixture)?;
+    let mut alignments = Vec::with_capacity(windows.len().saturating_sub(1));
+    let mut poses = vec![SimilarityTransform::IDENTITY];
+    for pair in windows.windows(2) {
+        let report = align_overlapping_windows_cpp_pr2(&pair[1], &pair[0])?;
+        let previous = *poses.last().expect("sequential origin exists");
+        poses.push(previous.compose(report.transform));
+        alignments.push(report);
+    }
+    emit_cpp_pr2_tsdf_cloud_with_poses(fixture, &windows, alignments, poses)
+}
+
+fn emit_cpp_pr2_tsdf_cloud_with_poses(
+    fixture: &CppPr2Fixture,
+    windows: &[WindowMeasuredChunk],
+    alignments: Vec<AlignmentReport>,
+    poses: Vec<SimilarityTransform>,
+) -> Result<CppPr2ReferenceCloud, ReconstructionError> {
+    let raw = emit_cpp_pr2_cloud_with_poses(fixture, windows, alignments, poses.clone())?;
+    let cameras = first_owner_camera_centres(windows, &poses);
+    let observations = raw
+        .points
+        .iter()
+        .map(|point| crate::TsdfObservation {
+            position: point.position,
+            color_srgb: point.color_srgb,
+            confidence: point.confidence,
+            radius: point.radius,
+            frame_index: point.first_observing_frame,
+        })
+        .collect::<Vec<_>>();
+    let points = fuse_normal_space_tsdf(&observations, &cameras, TsdfSettings::default())
+        .into_iter()
+        .map(|surfel| FusedPoint {
+            position: surfel.position,
+            normal: surfel.normal,
+            color_srgb: surfel.color_srgb,
+            confidence: 1.0,
+            radius: surfel.radius,
+            first_observing_frame: surfel.first_observing_frame,
+            contributors: surfel.contributors,
+        })
+        .collect::<Vec<_>>();
+    let mut frame_owned_points = vec![0_i32; fixture.frame_count];
+    for point in &points {
+        if let Some(count) = frame_owned_points.get_mut(point.first_observing_frame.max(0) as usize)
+        {
+            *count = count.saturating_add(1);
+        }
+    }
+    Ok(CppPr2ReferenceCloud {
+        alignments: raw.alignments,
+        window_poses: raw.window_poses,
+        points,
+        frame_owned_points,
+    })
+}
+
+fn first_owner_camera_centres(
+    windows: &[WindowMeasuredChunk],
+    poses: &[SimilarityTransform],
+) -> Vec<[f32; 3]> {
+    let mut emitted_frames = std::collections::HashSet::new();
+    let mut cameras = Vec::new();
+    for (window, pose) in windows.iter().zip(poses) {
+        for frame in &window.views {
+            if emitted_frames.insert(frame.frame_index)
+                && let Some(camera) = camera_centre_direction(frame.frame_index, frame.camera)
+            {
+                cameras.push(pose.apply(camera.centre_local));
+            }
+        }
+    }
+    cameras
+}
+
 fn emit_cpp_pr2_cloud_with_poses(
     fixture: &CppPr2Fixture,
     windows: &[WindowMeasuredChunk],
