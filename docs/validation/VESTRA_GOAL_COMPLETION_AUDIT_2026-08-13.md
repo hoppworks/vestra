@@ -16,8 +16,9 @@
 | Rust reconstruction pipeline | `vestra-core` owns FFmpeg frame extraction, ordered multi-view inference, calibrated backprojection, sequential Sim(3), quality gates, deferred fusion, progressive scene publication, and exports. The current 120-frame real-video run completed all 13 windows. | Accepted |
 | Coherent relative-scale point/surfel world | Current real run produced 296,596 finite fused surfels, with 12 accepted sequential seams and a versioned relative-scale scene manifest. No metric claim is made. | Accepted |
 | Interactive browser delivery | `vestra-studio` serves progressive binary surfel chunks, measured/fused-layer controls, camera/frustum and seam overlays, source-frame PiP, and local evidence. The current scene served a manifest, six binary chunks, 156 camera rays, and 12 seam links; the intake success path also opened a viewer for a completed job. | Accepted |
-| Vestra Engine and Kernels ownership | Root Cargo patches import the separately versioned `vestra-engine` and `vestra-kernels` projects. The current run records Engine `e6c8d0f` and Kernels `9740a98` in scene provenance. | Accepted |
-| Validated PR #2 multiview reconstruction parity | S=2/S=3/S=12 inference parity is recorded in `MULTIVIEW_S2_2026-08-13.md`. The pinned PR #2 base stream replay additionally matched all 12 real-fixture Huber-IRLS seam scales/RMS values and 9,931,557 ordered pre-voxel emitted points: exact count, ownership, RGB; position MAE `1.0073384563168364e-7`; radius MAE `9.551295881469472e-11`. | Accepted |
+| Vestra Engine and Kernels ownership | Root Cargo patches import the separately versioned `vestra-engine` and `vestra-kernels` projects. `vestra.lock.toml` pins Engine `e6c8d0f` and Kernels `85c9dc2`, whose CPU F32 multi-view Flash kernel is independently qualified below. | Accepted |
+| Validated PR #2 multiview reconstruction parity | S=2/S=3/S=12 inference parity is recorded in `MULTIVIEW_S2_2026-08-13.md`. The pinned PR #2 base stream replay additionally matched all 12 real-fixture Huber-IRLS seam scales/RMS values and 9,931,557 ordered pre-voxel emitted points: exact count, ownership, RGB; position MAE `1.0073384563168364e-7`; radius MAE `9.551295881469472e-11`. The closed-loop and normal-space TSDF tiers are additionally accepted in `CLOSED_LOOP_ORACLE_2026-08-14.md` and `TSDF_ORACLE_2026-08-14.md`. | Accepted |
+| Fair stage-by-stage CPU F32 performance evidence | The locked model-free geometry-plus-TSDF stage is 4.11% faster than C++ in ten fresh trials. The locked 24-frame PR #2 multi-view depth/confidence/pose stage is 1.089% faster in a balanced 30/30 fresh-process study; the Welch C++ minus Rust difference CI is [61.338, 125.748] ms. Both retain exact artifacts, hashes, source revisions and raw samples. | Accepted |
 
 ## Verification commands
 
@@ -28,15 +29,20 @@ vestra reconstruct --video room.mov --model depth-anything-base-f32.gguf --outpu
 vestra serve --scene room.vestra
 ```
 
-The final source verification completed with 54 `vestra-core`, 7
+The historical source verification completed with 54 `vestra-core`, 7
 `vestra-studio`, and 4 CLI unit tests passing. The current real product-world
 and browser-intake validations are recorded in
 [CURRENT_PRODUCT_WORLD_IMG_2269_2026-08-13.md](CURRENT_PRODUCT_WORLD_IMG_2269_2026-08-13.md).
+The benchmark revisions and final raw data are recorded in
+[`../benchmarks/2026-08-14-pr2-geometry/RESULTS.md`](../benchmarks/2026-08-14-pr2-geometry/RESULTS.md)
+and
+[`../benchmarks/2026-08-14-pr2-multiview-model/final-30-per-arm/RESULTS.md`](../benchmarks/2026-08-14-pr2-multiview-model/final-30-per-arm/RESULTS.md).
 
 ## Explicit non-goals
 
 This closure does not claim metric measurements, an editable floorplan, a
-semantic mesh, generated/unobserved geometry, TSDF, accepted loop closure for
-this particular capture, or an end-to-end CUDA throughput result. Those are
-future, separately validated extensions and are not required by the stated
-relative-scale point/surfel world goal.
+semantic mesh, generated/unobserved geometry, a successful loop closure for
+every arbitrary room capture, or end-to-end CUDA throughput. Normal-space
+TSDF and synthetic closed-loop reference tiers are implemented and validated;
+metric scale and a production GPU speed claim remain deliberately outside this
+relative-scale CPU-F32 parity closure.

@@ -123,6 +123,16 @@ branches—not a claim that those features already exist:
     16-thread budget and scoped claim are recorded in
     [the geometry benchmark](docs/benchmarks/2026-08-14-pr2-geometry/RESULTS.md).
     This is not an inference, quantized-model, GPU, or end-to-end video claim.
+19. In the separately locked CPU F32 PR #2 multi-view model stage (24 frames,
+    504×336, three 12/3 windows, 16 threads), Vestra's AVX-512 multi-view
+    Flash route completes 30 fresh-process trials at 8494.734 ms mean versus
+    8588.277 ms for the pinned C++ reference: 1.089% faster. The independent
+    C++ minus Rust 95% Welch interval is [61.338, 125.748] ms. Input/model
+    preparation and output serialization are excluded for both arms; raw
+    samples and hashes are recorded in
+    [the final model benchmark](docs/benchmarks/2026-08-14-pr2-multiview-model/final-30-per-arm/RESULTS.md).
+    This is a model-stage claim, not an end-to-end video, quantized-model, or
+    GPU claim.
 
 The next hard performance gate is a device-resident end-to-end backbone and
 DPT/pose-head path with the same oracle discipline. Only then can a CUDA
@@ -151,8 +161,10 @@ the window cameras remain raw diagnostic evidence. Their final local-to-fused
 world transforms are persisted with the derived world and can be exported for
 inspection; they are not silently rewritten into a misleading global W2C pose.
 
-There is no claim yet that the complete Vestra world pipeline is faster than
-the C++ PR. The existing qualified speed result covers single-image CPU F32.
+There is no claim yet that the complete video-to-published-world pipeline is
+faster than the C++ PR. The qualified CPU F32 evidence now covers both the
+locked PR #2 multi-view model stage and the locked geometry-plus-TSDF stage;
+their separate timings must not be summed into an end-to-end claim.
 
 ## Development
 
