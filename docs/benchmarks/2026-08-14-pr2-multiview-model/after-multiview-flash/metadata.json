@@ -1,0 +1,22 @@
+{
+  "schema": "vestra.pr2-multiview-model-benchmark-metadata/v1",
+  "status": "inconclusive-narrow-rust-mean-lead",
+  "rust_source_commit": "ed9dc378f230ad157a674d0084cc942bb130732d",
+  "rust_kernel_commit": "85c9dc2",
+  "cpp_commit": "f56e9be43a22c12ef575584d2fa57a6a5d5be7ae",
+  "rust_binary_sha256": "7f72ac722ed03f33580f619661d07fa7ea19b71276262d649422afcfe884ec8d",
+  "cpp_binary_sha256": "ff08cb33cf6f059545e29d6b5f707036ddf744c4b6a1c34bf38c372f84fe3238",
+  "model_sha256": "1b13b166e8a8b4f2c862f42d36edb2f9aab995a18cc527a52b9f160b99c6b8da",
+  "decoded_frames": 24,
+  "resolution": "504x336",
+  "window_schedule": "12/3",
+  "threads": 16,
+  "warmup_per_trial": 1,
+  "measured_repeats_per_trial": 1,
+  "trials_per_arm": 12,
+  "host_cpu": "AMD Ryzen 9 9950X",
+  "rustflags": "-C target-cpu=znver5",
+  "timed_scope": "model preparation plus PR2 multiview depth/confidence/pose only; model loading, PPM decoding, input-window assembly and output serialization excluded",
+  "raw_sha256": "b2091cd63de96b04482fd78a36e9d26526610fffa7c726b93abb71fe251ec14b",
+  "protocol_note": "The initially specified 20-arm order accidentally contained 11 C++ and 9 Rust trials. It was corrected by appending one fresh Rust/C++ pair and then two fresh Rust trials, yielding 12 fresh processes per arm. No recorded sample was removed."
+}
