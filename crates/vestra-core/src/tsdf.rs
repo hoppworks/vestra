@@ -7,6 +7,7 @@
 
 use std::{collections::HashMap, time::Instant};
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::icp::estimate_normals;
@@ -314,20 +315,28 @@ fn orient_normals_toward_cameras(
     if cameras.is_empty() {
         return;
     }
-    for (point, normal) in points.iter().zip(normals) {
-        if *normal == [0.0; 3] {
-            continue;
-        }
-        let camera = cameras
-            .iter()
-            .min_by(|left, right| {
-                squared_distance(**left, *point).total_cmp(&squared_distance(**right, *point))
-            })
-            .expect("nonempty cameras");
-        if dot(*normal, subtract(*camera, *point)) < 0.0 {
-            *normal = normal.map(|value| -value);
-        }
-    }
+    points
+        .par_iter()
+        .zip(normals.par_iter_mut())
+        .for_each(|(point, normal)| {
+            if *normal == [0.0; 3] {
+                return;
+            }
+            // Matches the reference's strict `<` tie-break: the first camera is
+            // retained when two centres are equally distant.
+            let mut camera = cameras[0];
+            let mut nearest_distance = squared_distance(camera, *point);
+            for &candidate in &cameras[1..] {
+                let distance = squared_distance(candidate, *point);
+                if distance < nearest_distance {
+                    camera = candidate;
+                    nearest_distance = distance;
+                }
+            }
+            if dot(*normal, subtract(camera, *point)) < 0.0 {
+                *normal = normal.map(|value| -value);
+            }
+        });
 }
 fn subtract(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
     [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
