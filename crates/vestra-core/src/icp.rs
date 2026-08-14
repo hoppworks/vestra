@@ -4,7 +4,10 @@
 //! in `stitch`: PR #2 re-establishes nearest neighbours on every iteration and
 //! retains the scale of the preceding Sim(3) estimate.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    hash::{BuildHasherDefault, Hasher},
+};
 
 use rayon::prelude::*;
 
@@ -252,13 +255,13 @@ fn plane_rms(
 struct SpatialHash {
     cell: f32,
     points: Vec<[f32; 3]>,
-    cells: HashMap<(i32, i32, i32), Vec<usize>>,
+    cells: FastHashMap<(i32, i32, i32), Vec<usize>>,
 }
 
 impl SpatialHash {
     fn new(points: &[[f32; 3]], cell: f32) -> Self {
         let cell = cell.max(1e-6);
-        let mut cells = HashMap::new();
+        let mut cells = FastHashMap::default();
         for (index, &point) in points.iter().enumerate() {
             cells
                 .entry(cell_for(point, cell))
@@ -311,6 +314,36 @@ impl SpatialHash {
         result
     }
 }
+
+/// Deterministic non-cryptographic hasher for private spatial-grid keys.
+///
+/// These keys come only from finite reconstructed coordinates, never untrusted
+/// request fields. SipHash dominated the millions of fixed-radius PCA lookups
+/// in the TSDF path; this FNV-1a boundary matches the reference's assumption
+/// of a local numeric voxel grid while preserving `HashMap` equality checks.
+#[derive(Default)]
+struct SpatialKeyHasher(u64);
+
+impl Hasher for SpatialKeyHasher {
+    fn finish(&self) -> u64 {
+        if self.0 == 0 {
+            0xcbf2_9ce4_8422_2325
+        } else {
+            self.0
+        }
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut state = self.finish();
+        for byte in bytes {
+            state ^= u64::from(*byte);
+            state = state.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        self.0 = state;
+    }
+}
+
+type FastHashMap<K, V> = HashMap<K, V, BuildHasherDefault<SpatialKeyHasher>>;
 
 fn cell_for(point: [f32; 3], cell: f32) -> (i32, i32, i32) {
     (
