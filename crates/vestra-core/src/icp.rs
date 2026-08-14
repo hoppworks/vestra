@@ -391,72 +391,8 @@ fn rank_truncated_solve(
     (solution, rank)
 }
 
-/// Fixed-size version of the generic maximum-pivot Jacobi solver. Normal
-/// estimation invokes this 921,600 times for the PR #2 fixture; keeping the
-/// same pivot order and arithmetic while removing generic iterator/index loops
-/// gives LLVM a compact 3×3 hot path.
-fn jacobi_eigen_3(mut matrix: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
-    let mut vectors = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    for _ in 0..(3 * 3 * 32) {
-        let mut p = 0;
-        let mut q = 1;
-        let mut largest = matrix[0][1].abs();
-        if matrix[0][2].abs() >= largest {
-            p = 0;
-            q = 2;
-            largest = matrix[0][2].abs();
-        }
-        if matrix[1][2].abs() >= largest {
-            p = 1;
-            q = 2;
-            largest = matrix[1][2].abs();
-        }
-        if largest <= 1e-14 {
-            break;
-        }
-        let phi = 0.5 * (2.0 * matrix[p][q]).atan2(matrix[q][q] - matrix[p][p]);
-        let (sine, cosine) = phi.sin_cos();
-        match (p, q) {
-            (0, 1) => rotate_jacobi_3(&mut matrix, &mut vectors, 0, 1, 2, sine, cosine),
-            (0, 2) => rotate_jacobi_3(&mut matrix, &mut vectors, 0, 2, 1, sine, cosine),
-            (1, 2) => rotate_jacobi_3(&mut matrix, &mut vectors, 1, 2, 0, sine, cosine),
-            _ => unreachable!("the fixed 3x3 pivot set is exhaustive"),
-        }
-    }
-    ([matrix[0][0], matrix[1][1], matrix[2][2]], vectors)
-}
-
-#[inline(always)]
-fn rotate_jacobi_3(
-    matrix: &mut [[f64; 3]; 3],
-    vectors: &mut [[f64; 3]; 3],
-    p: usize,
-    q: usize,
-    other: usize,
-    sine: f64,
-    cosine: f64,
-) {
-    let mp = matrix[other][p];
-    let mq = matrix[other][q];
-    matrix[other][p] = cosine * mp - sine * mq;
-    matrix[p][other] = matrix[other][p];
-    matrix[other][q] = sine * mp + cosine * mq;
-    matrix[q][other] = matrix[other][q];
-
-    let pp = matrix[p][p];
-    let qq = matrix[q][q];
-    let pq = matrix[p][q];
-    matrix[p][p] = cosine * cosine * pp - 2.0 * sine * cosine * pq + sine * sine * qq;
-    matrix[q][q] = sine * sine * pp + 2.0 * sine * cosine * pq + cosine * cosine * qq;
-    matrix[p][q] = 0.0;
-    matrix[q][p] = 0.0;
-
-    for row in vectors {
-        let vp = row[p];
-        let vq = row[q];
-        row[p] = cosine * vp - sine * vq;
-        row[q] = sine * vp + cosine * vq;
-    }
+fn jacobi_eigen_3(matrix: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
+    jacobi_eigen(matrix)
 }
 fn jacobi_eigen_6(matrix: [[f64; 6]; 6]) -> ([f64; 6], [[f64; 6]; 6]) {
     jacobi_eigen(matrix)
@@ -552,17 +488,5 @@ mod tests {
             )
             .is_none()
         );
-    }
-
-    #[test]
-    fn specialized_pca_eigen_solver_is_bitwise_identical_to_the_generic_path() {
-        let matrices = [
-            [[3.0, 2.0, -1.0], [2.0, 4.0, 0.5], [-1.0, 0.5, 2.0]],
-            [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]],
-            [[5.0, -3.0, 4.0], [-3.0, 6.0, -2.0], [4.0, -2.0, 7.0]],
-        ];
-        for matrix in matrices {
-            assert_eq!(jacobi_eigen_3(matrix), jacobi_eigen::<3>(matrix));
-        }
     }
 }
