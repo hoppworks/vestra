@@ -178,13 +178,13 @@ pub(crate) fn estimate_normals(points: &[[f32; 3]], radius: f32) -> Vec<[f32; 3]
     let hash = SpatialHash::new(points, radius);
     points
         .par_iter()
-        .map(|&point| {
-            let neighbours = hash.radius(point, radius);
+        .map_init(Vec::<usize>::new, |neighbours, &point| {
+            hash.radius_into(point, radius, neighbours);
             if neighbours.len() < 3 {
                 return [0.0; 3];
             }
             let mut mean = [0.0_f64; 3];
-            for &index in &neighbours {
+            for &index in neighbours.iter() {
                 for axis in 0..3 {
                     mean[axis] += f64::from(points[index][axis]);
                 }
@@ -193,7 +193,7 @@ pub(crate) fn estimate_normals(points: &[[f32; 3]], radius: f32) -> Vec<[f32; 3]
                 *value /= neighbours.len() as f64;
             }
             let mut covariance = [[0.0_f64; 3]; 3];
-            for &index in &neighbours {
+            for &index in neighbours.iter() {
                 let centered: [f64; 3] =
                     std::array::from_fn(|axis| f64::from(points[index][axis]) - mean[axis]);
                 for row in 0..3 {
@@ -265,10 +265,13 @@ impl SpatialHash {
         }
     }
 
-    fn radius(&self, point: [f32; 3], radius: f32) -> Vec<usize> {
+    /// Appends radius-neighbours in exactly the historical cell/key/index order.
+    /// The caller owns the scratch vector so a Rayon worker can reuse it for its
+    /// next independent PCA query instead of allocating one Vec per point.
+    fn radius_into(&self, point: [f32; 3], radius: f32, output: &mut Vec<usize>) {
+        output.clear();
         let base = cell_for(point, self.cell);
         let span = (radius / self.cell).ceil() as i32;
-        let mut output = Vec::new();
         for x in base.0 - span..=base.0 + span {
             for y in base.1 - span..=base.1 + span {
                 for z in base.2 - span..=base.2 + span {
@@ -278,7 +281,6 @@ impl SpatialHash {
         }
         let radius_squared = radius * radius;
         output.retain(|&index| squared_distance(self.points[index], point) <= radius_squared);
-        output
     }
 
     fn nearest(&self, point: [f32; 3], maximum_distance: f32) -> Option<usize> {
