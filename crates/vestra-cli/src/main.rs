@@ -171,6 +171,12 @@ enum Command {
         point_size: f32,
         #[arg(long, default_value_t = 50)]
         minimum_overlap_points: usize,
+        /// Enable PR #2's per-seam point-to-plane ICP in the C++ oracle.
+        #[arg(long)]
+        icp_refine: bool,
+        /// Enable PR #2's non-adjacent loop-closure and Sim(3) pose graph in the C++ oracle.
+        #[arg(long)]
+        loop_close: bool,
     },
     /// Validate and summarize a VPO1 output from the pinned C++ streaming oracle.
     OracleInspect {
@@ -366,6 +372,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             confidence_percentile,
             point_size,
             minimum_overlap_points,
+            icp_refine,
+            loop_close,
         } => {
             if output.exists() {
                 return Err(std::io::Error::new(
@@ -396,6 +404,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 confidence_percentile,
                 point_size,
                 minimum_overlap_points,
+                vestra_core::CppPr2StreamBranches {
+                    icp_refine,
+                    loop_close,
+                },
             )?;
             let mut file = File::options().write(true).create_new(true).open(&output)?;
             fixture.write_vps1(&mut file)?;
@@ -442,12 +454,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut input = BufReader::new(File::open(input)?);
             let fixture = CppPr2Fixture::read_vps1(&mut input)?;
             let alignments = cpp_pr2_fixture_alignment_reports(&fixture)?;
+            let fused = vestra_core::stitch_cpp_pr2_fixture_as_vestra(&fixture)?;
+            let cpp_pr2_loop = vestra_core::cpp_pr2_closed_loop_oracle(&fixture)?;
             println!(
                 "{}",
                 serde_json::json!({
                     "schema": "vestra.cpp-pr2-transform-oracle/v1",
                     "frames": fixture.frame_count,
                     "windows": fixture.window_views.len(),
+                    "requested_icp_refine": fixture.branches.icp_refine,
+                    "requested_loop_close": fixture.branches.loop_close,
+                    "vestra_loop_edges": fused.pose_graph.as_ref().map(|report| report.loop_edges).unwrap_or(0),
+                    "vestra_pose_graph": fused.pose_graph,
+                    "vestra_window_poses": fused.window_poses,
+                    "cpp_pr2_loop_oracle": {
+                        "edges": cpp_pr2_loop.loop_edges,
+                        "pose_graph": cpp_pr2_loop.pose_graph,
+                        "sequential_window_poses": cpp_pr2_loop.sequential_window_poses,
+                        "optimized_window_poses": cpp_pr2_loop.optimized_window_poses,
+                    },
                     "alignments": alignments,
                 })
             );

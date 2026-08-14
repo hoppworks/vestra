@@ -9,6 +9,7 @@ use vestra_engine::{Engine, EngineError, MultiViewInferOut, ViewInput};
 pub mod cpp_pr2_oracle;
 pub mod export;
 pub mod geometry;
+mod icp;
 pub mod pose_graph;
 pub mod reconstruction;
 pub mod revisit;
@@ -16,7 +17,9 @@ pub mod scene;
 pub mod stitch;
 pub mod video;
 
-pub use cpp_pr2_oracle::{CppPr2Fixture, CppPr2Frame, CppPr2OracleError, CppPr2StreamOutput};
+pub use cpp_pr2_oracle::{
+    CppPr2Fixture, CppPr2Frame, CppPr2OracleError, CppPr2StreamBranches, CppPr2StreamOutput,
+};
 pub use export::{
     ExportError, export_camera_json, export_fused_glb, export_fused_ply, export_fused_splat,
 };
@@ -29,10 +32,11 @@ pub use pose_graph::{
     optimize_relative_pose_graph, pose_edge_residual,
 };
 pub use reconstruction::{
-    CppPr2ReferenceCloud, FusionProgress, ReconstructionError, ReconstructionProgress,
-    ReconstructionSettings, capture_cpp_pr2_fixture, cpp_pr2_fixture_alignment_reports,
-    emit_cpp_pr2_reference_cloud, fuse_scene_bundle, fuse_scene_bundle_with_settings,
-    reconstruct_frames, stitch_cpp_pr2_fixture_as_vestra,
+    CppPr2LoopOracle, CppPr2ReferenceCloud, FusionProgress, ReconstructionError,
+    ReconstructionProgress, ReconstructionSettings, capture_cpp_pr2_fixture,
+    cpp_pr2_closed_loop_oracle, cpp_pr2_fixture_alignment_reports, emit_cpp_pr2_reference_cloud,
+    fuse_scene_bundle, fuse_scene_bundle_with_settings, reconstruct_frames,
+    stitch_cpp_pr2_fixture_as_vestra, stitch_cpp_pr2_fixture_with_settings,
 };
 pub use revisit::{
     CameraCentreDirection, RevisitProposal, RevisitProposalSettings, WindowCameraPath,

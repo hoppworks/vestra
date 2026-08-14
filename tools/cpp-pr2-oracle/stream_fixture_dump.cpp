@@ -16,8 +16,12 @@
 
 namespace {
 
-constexpr std::uint32_t kFixtureVersion = 2;
+constexpr std::uint32_t kFixtureVersion = 3;
+constexpr std::uint32_t kLegacyFixtureVersion = 2;
 constexpr std::uint32_t kOutputVersion = 1;
+constexpr std::uint32_t kBranchIcpRefine = 1u << 0;
+constexpr std::uint32_t kBranchLoopClose = 1u << 1;
+constexpr std::uint32_t kSupportedBranches = kBranchIcpRefine | kBranchLoopClose;
 constexpr char kFixtureMagic[4] = {'V', 'P', 'S', '1'};
 constexpr char kOutputMagic[4] = {'V', 'P', 'O', '1'};
 
@@ -69,10 +73,10 @@ bool read_fixture(const std::string& path, std::uint32_t& frames, std::uint32_t&
     double conf_pct = 0;
     float point_size = 0;
     if (!in.read(magic, 4) || std::string(magic, 4) != std::string(kFixtureMagic, 4) ||
-        !read_exact(in, version) || version != kFixtureVersion ||
+        !read_exact(in, version) || (version != kFixtureVersion && version != kLegacyFixtureVersion) ||
         !read_exact(in, frames) || !read_exact(in, h) || !read_exact(in, w) ||
         !read_exact(in, chunk) || !read_exact(in, overlap) || !read_exact(in, conf_pct) ||
-        !read_exact(in, point_size) || !read_exact(in, min_overlap) || !read_exact(in, window_count)) {
+        !read_exact(in, point_size) || !read_exact(in, min_overlap)) {
         error = "invalid VPS1 header"; return false;
     }
     std::size_t plane = 0;
@@ -85,9 +89,16 @@ bool read_fixture(const std::string& path, std::uint32_t& frames, std::uint32_t&
     params.conf_pct = conf_pct;
     params.point_size = point_size;
     params.min_overlap_pts = static_cast<int>(min_overlap);
+    std::uint32_t branches = 0;
+    if (version == kFixtureVersion && !read_exact(in, branches)) {
+        error = "truncated VPS1 branch settings"; return false;
+    }
+    if (!read_exact(in, window_count) || branches & ~kSupportedBranches) {
+        error = "unsupported VPS1 branch settings"; return false;
+    }
     params.global_budget = 0;
-    params.icp_refine = false;
-    params.loop_close = false;
+    params.icp_refine = (branches & kBranchIcpRefine) != 0;
+    params.loop_close = (branches & kBranchLoopClose) != 0;
     const std::uint32_t step = chunk - overlap;
     std::uint32_t expected_windows = 0;
     for (std::uint32_t w0 = 0; w0 < frames; w0 += step) {

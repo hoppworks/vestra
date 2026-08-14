@@ -32,12 +32,13 @@ not be represented by one global prediction.
 | Field | Type |
 | --- | --- |
 | magic | 4 bytes: `VPS1` |
-| version | `u32`, currently 2 |
+| version | `u32`, currently 3 (`2` remains readable) |
 | frame count, height, width | three `u32` |
 | chunk size, overlap | two `u32` |
 | confidence percentile | `f64` |
 | point-size multiplier | `f32` |
 | minimum overlap points | `u32` |
+| branch bitmap | `u32`, V3 only: bit 0 ICP, bit 1 loop closure |
 | window count | `u32`, must equal the schedule-derived count |
 | per window view count | `u32`, must equal that window's length |
 | per window/view intrinsics | 9 × `f32`, row-major 3×3 |
@@ -46,10 +47,10 @@ not be represented by one global prediction.
 | per window/view confidence | `height × width` × `f32` |
 | per window/view colour | `height × width × 3` bytes, RGB row-major |
 
-The harness intentionally locks `global_budget=0`, `icp_refine=false`,
-`loop_close=false`, and `metric=false`. These belong to later oracle tiers. The
-first tier proves the deterministic sequential stitch path without conflating it
-with optional policy/optimization branches.
+The harness locks `global_budget=0` and `metric=false`. V2 fixtures and V3
+fixtures with a zero branch bitmap prove the deterministic sequential path. V3
+can opt into the reference's ICP and loop-closure branches; the executable does
+not accept an arbitrary policy flag that is absent from the evidence artifact.
 
 `make_identity_fixture.py` creates the smallest deterministic control fixture:
 four identical calibrated plane views, two 3/1 windows, and one identity seam.

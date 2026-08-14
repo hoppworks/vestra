@@ -10,8 +10,42 @@ use crate::WindowSettings;
 
 const FIXTURE_MAGIC: [u8; 4] = *b"VPS1";
 const OUTPUT_MAGIC: [u8; 4] = *b"VPO1";
-const FIXTURE_VERSION: u32 = 2;
+/// Version 2 established the base sequential streaming oracle. Version 3 adds
+/// explicit opt-in geometry branches while retaining a reader for the durable
+/// V2 evidence artifacts.
+const FIXTURE_VERSION: u32 = 3;
+const LEGACY_FIXTURE_VERSION: u32 = 2;
 const OUTPUT_VERSION: u32 = 1;
+const BRANCH_ICP_REFINE: u32 = 1 << 0;
+const BRANCH_LOOP_CLOSE: u32 = 1 << 1;
+const SUPPORTED_BRANCHES: u32 = BRANCH_ICP_REFINE | BRANCH_LOOP_CLOSE;
+
+/// Optional C++ PR #2 geometry phases to include in one oracle run.
+///
+/// Metric scale and model-dependent branches deliberately remain absent: this
+/// interchange isolates the relative-scale streaming geometry that can be
+/// reproduced from recorded model outputs alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CppPr2StreamBranches {
+    pub icp_refine: bool,
+    pub loop_close: bool,
+}
+
+impl CppPr2StreamBranches {
+    const fn bits(self) -> u32 {
+        (self.icp_refine as u32) * BRANCH_ICP_REFINE | (self.loop_close as u32) * BRANCH_LOOP_CLOSE
+    }
+
+    fn from_bits(bits: u32) -> Result<Self, CppPr2OracleError> {
+        if bits & !SUPPORTED_BRANCHES != 0 {
+            return Err(CppPr2OracleError::InvalidHeader);
+        }
+        Ok(Self {
+            icp_refine: bits & BRANCH_ICP_REFINE != 0,
+            loop_close: bits & BRANCH_LOOP_CLOSE != 0,
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CppPr2Frame {
@@ -32,6 +66,9 @@ pub struct CppPr2Fixture {
     pub confidence_percentile: f64,
     pub point_size: f32,
     pub minimum_overlap_points: usize,
+    /// Optional host-geometry phases executed by the pinned C++ stream oracle.
+    /// V2 artifacts decode as [`CppPr2StreamBranches::default`].
+    pub branches: CppPr2StreamBranches,
     /// One ordered inference result set per multi-view window. Overlap views
     /// are intentionally repeated because DA3 re-infers them per window.
     pub window_views: Vec<Vec<CppPr2Frame>>,
@@ -83,7 +120,7 @@ impl CppPr2Fixture {
             return Err(CppPr2OracleError::Magic);
         }
         let version = read_u32(reader)?;
-        if version != FIXTURE_VERSION {
+        if version != FIXTURE_VERSION && version != LEGACY_FIXTURE_VERSION {
             return Err(CppPr2OracleError::Version(version));
         }
         let frame_count = read_u32(reader)? as usize;
@@ -94,6 +131,11 @@ impl CppPr2Fixture {
         let confidence_percentile = read_f64(reader)?;
         let point_size = read_f32(reader)?;
         let minimum_overlap_points = read_u32(reader)? as usize;
+        let branches = if version == FIXTURE_VERSION {
+            CppPr2StreamBranches::from_bits(read_u32(reader)?)?
+        } else {
+            CppPr2StreamBranches::default()
+        };
         let window_count = read_u32(reader)? as usize;
         let windows = WindowSettings {
             chunk_size,
@@ -147,6 +189,7 @@ impl CppPr2Fixture {
             confidence_percentile,
             point_size,
             minimum_overlap_points,
+            branches,
             window_views,
         };
         fixture.validate()?;
@@ -168,6 +211,7 @@ impl CppPr2Fixture {
             .and_then(|()| write_f64(writer, self.confidence_percentile))
             .and_then(|()| write_f32(writer, self.point_size))
             .and_then(|()| write_u32(writer, self.minimum_overlap_points as u32))
+            .and_then(|()| write_u32(writer, self.branches.bits()))
             .and_then(|()| write_u32(writer, self.window_views.len() as u32))
             .map_err(io_error)?;
         for views in &self.window_views {
@@ -406,6 +450,7 @@ mod tests {
             confidence_percentile: 55.0,
             point_size: 1.2,
             minimum_overlap_points: 3,
+            branches: CppPr2StreamBranches::default(),
             window_views: vec![
                 vec![frame.clone(), frame.clone()],
                 vec![frame.clone(), frame],
@@ -430,6 +475,40 @@ mod tests {
             invalid.write_vps1(&mut Vec::new()),
             Err(CppPr2OracleError::InconsistentPayload)
         );
+    }
+
+    #[test]
+    fn vps3_preserves_opt_in_geometry_branches() {
+        let mut fixture = fixture();
+        fixture.branches = CppPr2StreamBranches {
+            icp_refine: true,
+            loop_close: true,
+        };
+        let mut bytes = Vec::new();
+        fixture.write_vps1(&mut bytes).unwrap();
+        assert_eq!(&bytes[4..8], &FIXTURE_VERSION.to_le_bytes());
+        assert_eq!(
+            CppPr2Fixture::read_vps1(&mut bytes.as_slice())
+                .unwrap()
+                .branches,
+            fixture.branches
+        );
+    }
+
+    #[test]
+    fn vps2_decodes_without_optional_geometry_branches() {
+        let fixture = fixture();
+        let mut v3 = Vec::new();
+        fixture.write_vps1(&mut v3).unwrap();
+        let mut v2 = Vec::with_capacity(v3.len() - 4);
+        v2.extend_from_slice(&v3[..4]);
+        v2.extend_from_slice(&LEGACY_FIXTURE_VERSION.to_le_bytes());
+        // The V3-only branch bitmap follows the common 44-byte header.
+        v2.extend_from_slice(&v3[8..44]);
+        v2.extend_from_slice(&v3[48..]);
+        let decoded = CppPr2Fixture::read_vps1(&mut v2.as_slice()).unwrap();
+        assert_eq!(decoded.branches, CppPr2StreamBranches::default());
+        assert_eq!(decoded.window_views, fixture.window_views);
     }
 
     #[test]

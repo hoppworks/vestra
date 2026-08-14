@@ -551,6 +551,29 @@ pub fn align_overlapping_windows_cpp_pr2(
     })
 }
 
+/// Fits PR #2's Huber-IRLS Sim(3) from explicitly paired local points.
+///
+/// This intentionally has a small interface: loop correspondence policy is a
+/// caller concern, while the reference's solver is shared by seam and loop
+/// oracle code. The returned measurement maps `source` points into `target`.
+pub(crate) fn cpp_pr2_similarity_from_pairs(
+    pairs: &[([f32; 3], [f32; 3])],
+) -> Result<(SimilarityTransform, f32), StitchError> {
+    if pairs.len() < 3 {
+        return Err(StitchError::InsufficientCorrespondences);
+    }
+    let matches = pairs
+        .iter()
+        .map(|&(source, target)| Match {
+            source: source.map(f64::from),
+            target: target.map(f64::from),
+            target_normal: [0.0, 0.0, 1.0],
+            weight: 1.0,
+        })
+        .collect::<Vec<_>>();
+    cpp_pr2_huber_irls_similarity(&matches)
+}
+
 fn cpp_pr2_huber_irls_similarity(
     matches: &[Match],
 ) -> Result<(SimilarityTransform, f32), StitchError> {

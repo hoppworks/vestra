@@ -20,3 +20,10 @@ target_link_libraries(vestra_cpp_stream_fixture_dump PRIVATE depthanything)
 target_include_directories(vestra_cpp_stream_fixture_dump PRIVATE
     "${CPP_PR2_SOURCE}/src"
     "${CPP_PR2_SOURCE}/include")
+
+# Deterministic diagnostic evidence for the exact PR #2 closed-trajectory
+# regression. It only writes a VPS1 fixture; it never modifies or links to the
+# pinned C++ source tree.
+add_executable(vestra_cpp_closed_loop_fixture make_closed_loop_fixture.cpp)
+target_include_directories(vestra_cpp_closed_loop_fixture PRIVATE
+    "${CPP_PR2_SOURCE}/tests")

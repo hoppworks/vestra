@@ -1,15 +1,16 @@
 //! The deterministic bridge from multi-view inference to durable measured chunks.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use vestra_engine::Engine;
 
 use crate::{
     AlignmentReport, BackprojectionError, BackprojectionSettings, CameraCalibration, CppPr2Fixture,
-    CppPr2Frame, FrameWindow, FusedPoint, FusedSceneChunk, FusedWindowPose, MeasuredFrameChunk,
-    MeasuredView, OwnedFrame, SceneBundle, SceneBundleError, SimilarityTransform,
-    WindowMeasuredChunk, WindowSettings, align_overlapping_windows_cpp_pr2,
-    backproject_measured_view, infer_ordered_window, plan_windows,
+    CppPr2Frame, CppPr2StreamBranches, FrameWindow, FusedPoint, FusedSceneChunk, FusedWindowPose,
+    MeasuredFrameChunk, MeasuredView, OwnedFrame, PoseGraphEdge, PoseGraphReport,
+    RelativePoseGraph, SceneBundle, SceneBundleError, SimilarityTransform, WindowMeasuredChunk,
+    WindowSettings, align_overlapping_windows_cpp_pr2, backproject_measured_view,
+    camera_centre_direction, infer_ordered_window, optimize_relative_pose_graph, plan_windows,
     stitch_measured_windows_with_settings,
 };
 
@@ -47,6 +48,18 @@ pub struct CppPr2ReferenceCloud {
     pub window_poses: Vec<FusedWindowPose>,
     pub points: Vec<FusedPoint>,
     pub frame_owned_points: Vec<i32>,
+}
+
+/// Diagnostic output for the PR #2 closed-loop tier before point fusion.
+///
+/// It retains sequential and pose-graph-optimized transforms separately. This
+/// makes it impossible for a fused voxel cloud to hide a missed loop closure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CppPr2LoopOracle {
+    pub sequential_window_poses: Vec<FusedWindowPose>,
+    pub loop_edges: Vec<PoseGraphEdge>,
+    pub optimized_window_poses: Vec<FusedWindowPose>,
+    pub pose_graph: Option<PoseGraphReport>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -109,6 +122,7 @@ pub fn capture_cpp_pr2_fixture(
     confidence_percentile: f64,
     point_size: f32,
     minimum_overlap_points: usize,
+    branches: CppPr2StreamBranches,
 ) -> Result<CppPr2Fixture, ReconstructionError> {
     let schedule = plan_windows(frames.len(), windows)?;
     let mut window_views = Vec::with_capacity(schedule.len());
@@ -151,26 +165,51 @@ pub fn capture_cpp_pr2_fixture(
         confidence_percentile,
         point_size,
         minimum_overlap_points,
+        branches,
         window_views,
     })
 }
 
-/// Runs Vestra's sequential Sim(3) estimator over exactly the window-scoped
-/// evidence supplied to the C++ PR #2 stitcher. This is transform-tier oracle
-/// evidence; the returned chunk is not a claim of raw-cloud equivalence.
+/// Runs an explicit Vestra geometry policy over exactly the window-scoped
+/// evidence supplied to the C++ PR #2 stitcher. This keeps oracle experiments
+/// separate from product defaults and makes the enabled loop branch visible in
+/// durable fixture provenance.
+pub fn stitch_cpp_pr2_fixture_with_settings(
+    fixture: &CppPr2Fixture,
+    settings: crate::StitchSettings,
+) -> Result<FusedSceneChunk, ReconstructionError> {
+    let windows = cpp_pr2_fixture_windows(fixture)?;
+    Ok(stitch_measured_windows_with_settings(&windows, settings)?)
+}
+
+/// Runs Vestra's transform-tier estimator over the same evidence as the pinned
+/// PR #2 stitcher. A V2 fixture remains a sequential no-op. V3 only enables
+/// Vestra's automatic loop probe when the C++ branch was explicitly requested;
+/// it does not claim PR #2 loop parity by merely sharing a file format.
 pub fn stitch_cpp_pr2_fixture_as_vestra(
     fixture: &CppPr2Fixture,
 ) -> Result<FusedSceneChunk, ReconstructionError> {
-    let windows = cpp_pr2_fixture_windows(fixture)?;
     let settings = crate::StitchSettings {
         minimum_correspondences: fixture.minimum_overlap_points,
         minimum_inlier_ratio: 0.0,
         maximum_normalized_rms_residual: f32::INFINITY,
         minimum_scale: 1e-9,
         maximum_scale: 1e9,
-        loop_closure: None,
+        loop_closure: fixture
+            .branches
+            .loop_close
+            .then_some(crate::LoopClosureSettings {
+                minimum_window_gap: 3,
+                candidate_distance_radii: 80.0,
+                minimum_forward_cosine: 0.3,
+                match_distance_radii: 4.0,
+                minimum_correspondences: 150,
+                minimum_inlier_ratio: 0.0,
+                maximum_rms_radii: f32::INFINITY,
+                information: 5.0,
+            }),
     };
-    Ok(stitch_measured_windows_with_settings(&windows, settings)?)
+    stitch_cpp_pr2_fixture_with_settings(fixture, settings)
 }
 
 /// Computes only the sequential PR #2 seam reports. This deliberately avoids
@@ -258,6 +297,262 @@ pub fn emit_cpp_pr2_reference_cloud(
         points,
         frame_owned_points: counts,
     })
+}
+
+/// Runs the PR #2 loop *proposal and correspondence* policy over one recorded
+/// fixture. It uses first-owner local key clouds, the reference's absolute
+/// relative-scene gates, many-to-one nearest matches, and iterative
+/// point-to-plane ICP before accepting a loop edge.
+pub fn cpp_pr2_closed_loop_oracle(
+    fixture: &CppPr2Fixture,
+) -> Result<CppPr2LoopOracle, ReconstructionError> {
+    let windows = cpp_pr2_fixture_windows(fixture)?;
+    let sequential = cpp_pr2_sequential_window_poses(&windows)?;
+    let sequential_window_poses = windows
+        .iter()
+        .zip(&sequential)
+        .map(|(window, &local_to_world)| FusedWindowPose {
+            window_index: window.window.index,
+            local_to_world,
+        })
+        .collect::<Vec<_>>();
+
+    if !fixture.branches.loop_close || windows.len() <= 3 {
+        return Ok(CppPr2LoopOracle {
+            sequential_window_poses: sequential_window_poses.clone(),
+            loop_edges: Vec::new(),
+            optimized_window_poses: sequential_window_poses,
+            pose_graph: None,
+        });
+    }
+
+    let keys = windows
+        .iter()
+        .map(|window| cpp_pr2_first_owner_key_cloud(window, fixture.windows.overlap))
+        .collect::<Vec<_>>();
+    let paths = windows
+        .iter()
+        .map(|window| {
+            window
+                .views
+                .iter()
+                .filter_map(|view| camera_centre_direction(view.frame_index, view.camera))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    let mut loop_edges = Vec::new();
+    for earlier in 0..windows.len() {
+        for later in earlier + 3..windows.len() {
+            if !cpp_pr2_windows_overlap(
+                &paths[earlier],
+                &paths[later],
+                sequential[earlier],
+                sequential[later],
+            ) {
+                continue;
+            }
+            let Some(measurement) = cpp_pr2_loop_measurement(
+                &keys[earlier],
+                &keys[later],
+                sequential[earlier],
+                sequential[later],
+            )?
+            else {
+                continue;
+            };
+            loop_edges.push(PoseGraphEdge {
+                from: earlier,
+                to: later,
+                measurement,
+                information: 5.0,
+                loop_closure: true,
+            });
+        }
+    }
+
+    let mut graph = RelativePoseGraph {
+        nodes: sequential.clone(),
+        edges: sequential
+            .windows(2)
+            .enumerate()
+            .map(|(from, pair)| PoseGraphEdge {
+                from,
+                to: from + 1,
+                measurement: pair[0]
+                    .inverse()
+                    .expect("sequential PR #2 transform is invertible")
+                    .compose(pair[1]),
+                information: 1.0,
+                loop_closure: false,
+            })
+            .chain(loop_edges.iter().cloned())
+            .collect(),
+        fixed: Vec::new(),
+    };
+    let pose_graph = (!loop_edges.is_empty())
+        .then(|| optimize_relative_pose_graph(&mut graph, crate::PoseGraphSettings::default()))
+        .transpose()
+        .map_err(crate::StitchError::from)?;
+    let optimized_window_poses = windows
+        .iter()
+        .zip(&graph.nodes)
+        .map(|(window, &local_to_world)| FusedWindowPose {
+            window_index: window.window.index,
+            local_to_world,
+        })
+        .collect();
+    Ok(CppPr2LoopOracle {
+        sequential_window_poses,
+        loop_edges,
+        optimized_window_poses,
+        pose_graph,
+    })
+}
+
+fn cpp_pr2_sequential_window_poses(
+    windows: &[WindowMeasuredChunk],
+) -> Result<Vec<SimilarityTransform>, ReconstructionError> {
+    let mut poses = Vec::with_capacity(windows.len());
+    if windows.is_empty() {
+        return Ok(poses);
+    }
+    poses.push(SimilarityTransform::IDENTITY);
+    for pair in windows.windows(2) {
+        let previous = *poses.last().expect("first reference pose exists");
+        let report = align_overlapping_windows_cpp_pr2(&pair[1], &pair[0])?;
+        poses.push(previous.compose(report.transform));
+    }
+    Ok(poses)
+}
+
+fn cpp_pr2_first_owner_key_cloud(window: &WindowMeasuredChunk, overlap: usize) -> Vec<[f32; 3]> {
+    let first_owned = if window.window.index == 0 {
+        0
+    } else {
+        overlap.min(window.views.len())
+    };
+    let owned = window
+        .views
+        .iter()
+        .skip(first_owned)
+        .flat_map(|view| view.points.iter())
+        .filter_map(|point| {
+            point
+                .position
+                .iter()
+                .all(|value| value.is_finite())
+                .then_some(point.position)
+        })
+        .collect::<Vec<_>>();
+    let stride = (owned.len() / 3_000).max(1);
+    owned.into_iter().step_by(stride).collect()
+}
+
+fn cpp_pr2_windows_overlap(
+    earlier: &[crate::CameraCentreDirection],
+    later: &[crate::CameraCentreDirection],
+    earlier_pose: SimilarityTransform,
+    later_pose: SimilarityTransform,
+) -> bool {
+    earlier.iter().any(|first| {
+        later.iter().any(|second| {
+            let first_position = earlier_pose.apply(first.centre_local);
+            let second_position = later_pose.apply(second.centre_local);
+            let delta = [
+                first_position[0] - second_position[0],
+                first_position[1] - second_position[1],
+                first_position[2] - second_position[2],
+            ];
+            let distance_squared = delta.iter().map(|value| value * value).sum::<f32>();
+            let first_direction = earlier_pose.rotate(first.forward_local);
+            let second_direction = later_pose.rotate(second.forward_local);
+            let cosine = first_direction
+                .iter()
+                .zip(second_direction)
+                .map(|(left, right)| left * right)
+                .sum::<f32>();
+            distance_squared <= 3.0_f32.powi(2) && cosine >= 0.3
+        })
+    })
+}
+
+fn cpp_pr2_loop_measurement(
+    earlier: &[[f32; 3]],
+    later: &[[f32; 3]],
+    earlier_pose: SimilarityTransform,
+    later_pose: SimilarityTransform,
+) -> Result<Option<SimilarityTransform>, ReconstructionError> {
+    const MATCH_DISTANCE: f32 = 0.30;
+    const MINIMUM_CORRESPONDENCES: usize = 150;
+    if earlier.len() < MINIMUM_CORRESPONDENCES || later.len() < MINIMUM_CORRESPONDENCES {
+        return Ok(None);
+    }
+    let mut cells: HashMap<(i32, i32, i32), Vec<[f32; 3]>> = HashMap::new();
+    for &point in earlier {
+        cells
+            .entry(cpp_pr2_spatial_cell(point))
+            .or_default()
+            .push(point);
+    }
+    let seed = earlier_pose
+        .inverse()
+        .expect("sequential PR #2 transform is invertible")
+        .compose(later_pose);
+    let mut pairs = Vec::new();
+    for &source in later {
+        let seeded = seed.apply(source);
+        let base = cpp_pr2_spatial_cell(seeded);
+        let mut nearest: Option<([f32; 3], f32)> = None;
+        for x in base.0 - 1..=base.0 + 1 {
+            for y in base.1 - 1..=base.1 + 1 {
+                for z in base.2 - 1..=base.2 + 1 {
+                    for &target in cells.get(&(x, y, z)).into_iter().flatten() {
+                        let squared = target
+                            .iter()
+                            .zip(seeded)
+                            .map(|(left, right)| (left - right).powi(2))
+                            .sum::<f32>();
+                        if squared <= MATCH_DISTANCE.powi(2)
+                            && nearest.is_none_or(|(_, best)| squared < best)
+                        {
+                            nearest = Some((target, squared));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((target, _)) = nearest {
+            // PR #2 deliberately permits a target keypoint to serve multiple
+            // source points. Enforcing uniqueness here changes loop support.
+            pairs.push((source, target));
+        }
+    }
+    if pairs.len() < MINIMUM_CORRESPONDENCES {
+        return Ok(None);
+    }
+    let (transform, _) = crate::stitch::cpp_pr2_similarity_from_pairs(&pairs)?;
+    let scale_locked = SimilarityTransform {
+        scale: 1.0,
+        ..transform
+    };
+    let refined = crate::icp::refine_point_to_plane(
+        later,
+        earlier,
+        scale_locked,
+        crate::icp::IcpSettings::default(),
+    );
+    Ok(refined
+        .filter(|result| result.correspondences >= MINIMUM_CORRESPONDENCES)
+        .map(|result| result.transform))
+}
+
+fn cpp_pr2_spatial_cell(point: [f32; 3]) -> (i32, i32, i32) {
+    (
+        (point[0] / 0.30).floor() as i32,
+        (point[1] / 0.30).floor() as i32,
+        (point[2] / 0.30).floor() as i32,
+    )
 }
 
 fn cpp_pr2_percentile(values: &[f32], percentile: f64) -> f32 {
@@ -487,6 +782,7 @@ mod tests {
             confidence_percentile: 0.0,
             point_size: 1.0,
             minimum_overlap_points: 3,
+            branches: CppPr2StreamBranches::default(),
             window_views: vec![
                 vec![view([1, 2, 3]), view([4, 5, 6])],
                 vec![view([4, 5, 6]), view([7, 8, 9])],
