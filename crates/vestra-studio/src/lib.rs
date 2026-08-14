@@ -175,6 +175,26 @@ fn handle_intake(mut stream: TcpStream, state: &Arc<Mutex<IntakeState>>) -> std:
         }
     }
     if method == "GET" {
+        if path == "/input-video" {
+            let video = state.lock().ok().and_then(|guard| {
+                guard.active.as_ref().and_then(|job| {
+                    (job.outcome == IntakeOutcome::Complete && job.video.is_file())
+                        .then(|| job.video.clone())
+                })
+            });
+            return match video {
+                Some(video) => {
+                    let (status, content_type, body) = read_file(video, "video/mp4");
+                    write_response(&mut stream, status, content_type, &body)
+                }
+                None => write_response(
+                    &mut stream,
+                    "404 Not Found",
+                    "text/plain; charset=utf-8",
+                    b"completed input video not found",
+                ),
+            };
+        }
         let scene_path = intake_world_path(path);
         let scene = state.lock().ok().and_then(|guard| {
             guard.active.as_ref().and_then(|job| {
@@ -652,7 +672,7 @@ fn intake_world_path(path: &str) -> Option<&str> {
     }
     matches!(
         path,
-        "/manifest.json" | "/evidence.json" | "/camera-controls.js"
+        "/manifest.json" | "/evidence.json" | "/camera-controls.js" | "/input-video"
     )
     .then_some(path)
     .or_else(|| (path.starts_with("/chunks/") || path.starts_with("/sources/")).then_some(path))
@@ -1138,6 +1158,24 @@ mod tests {
         assert!(INDEX_HTML.contains("depth:true"));
         assert!(INDEX_HTML.contains("gl.enable(gl.DEPTH_TEST)"));
         assert!(INDEX_HTML.contains("gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT)"));
+    }
+
+    #[test]
+    fn studio_replay_uses_the_completed_local_input_video() {
+        assert_eq!(intake_world_path("/input-video"), Some("/input-video"));
+        assert!(INDEX_HTML.contains("id=\"input-video\""));
+        assert!(INDEX_HTML.contains("id=\"processed-video\""));
+        assert!(INDEX_HTML.contains("src=\"/input-video\""));
+        assert!(INDEX_HTML.contains("function synchronizeReplay()"));
+        assert!(INDEX_HTML.contains("function setReplay(open)"));
+    }
+
+    #[test]
+    fn studio_transforms_diagnostic_geometry_into_the_point_cloud_coordinate_system() {
+        assert!(INDEX_HTML.contains("cameraToViewer(rawRay.origin)"));
+        assert!(INDEX_HTML.contains("cameraToViewer(rawRay.forward)"));
+        assert!(INDEX_HTML.contains("cameraToViewer(link.from)"));
+        assert!(INDEX_HTML.contains("cameraToViewer(link.to)"));
     }
 
     #[test]
