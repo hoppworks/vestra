@@ -5,7 +5,7 @@
 //! band, and extracted zero-crossing voxels are sorted frame-major for a stable
 //! progressive reveal.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -62,6 +62,8 @@ pub fn fuse_normal_space_tsdf(
     camera_centres: &[[f32; 3]],
     settings: TsdfSettings,
 ) -> Vec<TsdfSurfel> {
+    let profile = std::env::var_os("VESTRA_TSDF_PROFILE").is_some();
+    let started = Instant::now();
     let observations = observations
         .iter()
         .copied()
@@ -73,6 +75,7 @@ pub fn fuse_normal_space_tsdf(
                 && point.radius > 0.0
         })
         .collect::<Vec<_>>();
+    let filtered_at = Instant::now();
     if observations.len() < 8 {
         return observations
             .into_iter()
@@ -109,6 +112,7 @@ pub fn fuse_normal_space_tsdf(
         .max(1e-6);
     let mut normals = estimate_normals(&positions, normal_radius as f32);
     orient_normals_toward_cameras(&positions, &mut normals, camera_centres);
+    let normals_at = Instant::now();
 
     let band = (truncation / voxel).ceil() as i32;
     let mut field = HashMap::<VoxelKey, Cell>::with_capacity(observations.len());
@@ -153,6 +157,7 @@ pub fn fuse_normal_space_tsdf(
             cell.first_frame = cell.first_frame.min(observation.frame_index);
         }
     }
+    let splat_at = Instant::now();
     let half = voxel * 0.5;
     let mut output = field
         .into_iter()
@@ -199,7 +204,23 @@ pub fn fuse_normal_space_tsdf(
             .collect();
     }
     output.sort_by_key(|(key, point)| (point.first_observing_frame, key.x, key.y, key.z));
-    output.into_iter().map(|(_, point)| point).collect()
+    let surfels = output
+        .into_iter()
+        .map(|(_, point)| point)
+        .collect::<Vec<_>>();
+    if profile {
+        eprintln!(
+            "vestra_tsdf_profile observations={} surfels={} filter_ms={:.3} normals_and_orient_ms={:.3} splat_ms={:.3} extract_and_sort_ms={:.3} total_ms={:.3}",
+            observations.len(),
+            surfels.len(),
+            filtered_at.duration_since(started).as_secs_f64() * 1_000.0,
+            normals_at.duration_since(filtered_at).as_secs_f64() * 1_000.0,
+            splat_at.duration_since(normals_at).as_secs_f64() * 1_000.0,
+            Instant::now().duration_since(splat_at).as_secs_f64() * 1_000.0,
+            started.elapsed().as_secs_f64() * 1_000.0,
+        );
+    }
+    surfels
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
