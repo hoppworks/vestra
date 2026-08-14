@@ -33,13 +33,14 @@ pub use pose_graph::{
     optimize_relative_pose_graph, pose_edge_residual,
 };
 pub use reconstruction::{
-    CppPr2LoopOracle, CppPr2ReferenceCloud, FusionProgress, ReconstructionError,
+    CppPr2LoopOracle, CppPr2ReferenceCloud, CppPr2Trajectory, FusionProgress, ReconstructionError,
     ReconstructionProgress, ReconstructionSettings, capture_cpp_pr2_fixture,
-    cpp_pr2_closed_loop_oracle, cpp_pr2_fixture_alignment_reports, cpp_pr2_loop_oracle_for_windows,
-    emit_cpp_pr2_loop_closed_reference_cloud, emit_cpp_pr2_loop_closed_tsdf_reference_cloud,
-    emit_cpp_pr2_reference_cloud, emit_cpp_pr2_tsdf_reference_cloud, fuse_scene_bundle,
-    fuse_scene_bundle_cpp_pr2_relative, fuse_scene_bundle_with_settings, reconstruct_frames,
-    stitch_cpp_pr2_fixture_as_vestra, stitch_cpp_pr2_fixture_with_settings,
+    cpp_pr2_closed_loop_oracle, cpp_pr2_fixture_alignment_reports, cpp_pr2_fixture_trajectory,
+    cpp_pr2_loop_oracle_for_windows, emit_cpp_pr2_loop_closed_reference_cloud,
+    emit_cpp_pr2_loop_closed_tsdf_reference_cloud, emit_cpp_pr2_reference_cloud,
+    emit_cpp_pr2_tsdf_reference_cloud, fuse_scene_bundle, fuse_scene_bundle_cpp_pr2_relative,
+    fuse_scene_bundle_with_settings, reconstruct_frames, stitch_cpp_pr2_fixture_as_vestra,
+    stitch_cpp_pr2_fixture_with_settings,
 };
 pub use revisit::{
     CameraCentreDirection, RevisitProposal, RevisitProposalSettings, WindowCameraPath,

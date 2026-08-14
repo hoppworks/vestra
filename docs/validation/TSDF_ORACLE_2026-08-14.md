@@ -67,6 +67,12 @@ The current ordered comparison reports position MAE `0.19647` and maximum
 absolute difference `3.31914`; it is **not accepted parity**. Do not use this
 result as a visual-quality or performance claim.
 
+The trajectory comparator localizes the preceding cause: window-centre position
+MAE is `0.004343` (maximum `0.011424`), per-frame position MAE is `0.004050`
+(maximum `0.018469`), and forward-direction MAE is `0.000677`. Window midpoint
+selection itself matches exactly. These values must fall below a declared
+voxel-stability tolerance before this tier can be accepted.
+
 ## Next action
 
 Before changing the TSDF kernel again, make the closed-loop window/frame poses

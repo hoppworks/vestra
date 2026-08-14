@@ -11,11 +11,11 @@ use vestra_core::{
     BackprojectionSettings, CppPr2Fixture, CppPr2StreamOutput, ReconstructionSettings, SceneBundle,
     SceneProvenance, StitchSettings, SurfaceFusion, TsdfSettings, VideoExtractionSettings,
     WindowSettings, capture_cpp_pr2_fixture, cpp_pr2_fixture_alignment_reports,
-    emit_cpp_pr2_loop_closed_reference_cloud, emit_cpp_pr2_reference_cloud,
-    emit_cpp_pr2_tsdf_reference_cloud, export_camera_json, export_fused_glb, export_fused_ply,
-    export_fused_splat, extract_video_frames, fuse_scene_bundle_cpp_pr2_relative,
-    fuse_scene_bundle_with_settings, fused_topology, load_decoded_frame_cache,
-    load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
+    cpp_pr2_fixture_trajectory, emit_cpp_pr2_loop_closed_reference_cloud,
+    emit_cpp_pr2_reference_cloud, emit_cpp_pr2_tsdf_reference_cloud, export_camera_json,
+    export_fused_glb, export_fused_ply, export_fused_splat, extract_video_frames,
+    fuse_scene_bundle_cpp_pr2_relative, fuse_scene_bundle_with_settings, fused_topology,
+    load_decoded_frame_cache, load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
 use vestra_studio::{IntakeConfig, serve, serve_intake};
@@ -519,6 +519,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 emit_cpp_pr2_reference_cloud(&fixture)?
             };
+            let trajectory = cpp_pr2_fixture_trajectory(&fixture)?;
             let shared = rust.points.len().min(reference.radius.len());
             let mut position_absolute_sum = 0.0_f64;
             let mut position_absolute_max = 0.0_f32;
@@ -539,6 +540,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             let position_values = shared.saturating_mul(3);
+            let (window_position_mae, window_position_max_abs) =
+                trajectory_difference(&trajectory.window_positions, &reference.window_pos);
+            let (frame_position_mae, frame_position_max_abs) =
+                trajectory_difference(&trajectory.frame_positions, &reference.frame_pos);
+            let (frame_forward_mae, frame_forward_max_abs) =
+                trajectory_difference(&trajectory.frame_forwards, &reference.frame_fwd);
             println!(
                 "{}",
                 serde_json::json!({
@@ -555,6 +562,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "position_max_abs": position_absolute_max,
                     "radius_mae": if shared == 0 { 0.0 } else { radius_absolute_sum / shared as f64 },
                     "radius_max_abs": radius_absolute_max,
+                    "window_mid_frames_match": trajectory.window_mid_frames == reference.window_mid_frame,
+                    "window_position_mae": window_position_mae,
+                    "window_position_max_abs": window_position_max_abs,
+                    "frame_position_mae": frame_position_mae,
+                    "frame_position_max_abs": frame_position_max_abs,
+                    "frame_forward_mae": frame_forward_mae,
+                    "frame_forward_max_abs": frame_forward_max_abs,
                     "alignments": rust.alignments,
                 })
             );
@@ -659,6 +673,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+fn trajectory_difference(left: &[[f32; 3]], right_flat: &[f32]) -> (f64, f32) {
+    let shared = left.len().min(right_flat.len() / 3);
+    if shared == 0 {
+        return (0.0, 0.0);
+    }
+    let mut sum = 0.0_f64;
+    let mut maximum = 0.0_f32;
+    for (index, point) in left.iter().take(shared).enumerate() {
+        for axis in 0..3 {
+            let delta = (point[axis] - right_flat[index * 3 + axis]).abs();
+            sum += f64::from(delta);
+            maximum = maximum.max(delta);
+        }
+    }
+    (sum / (shared * 3) as f64, maximum)
 }
 
 /// Makes command-line cancellation bounded independently of the current

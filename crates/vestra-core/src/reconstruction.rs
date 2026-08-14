@@ -63,6 +63,15 @@ pub struct CppPr2LoopOracle {
     pub pose_graph: Option<PoseGraphReport>,
 }
 
+/// Camera trajectory emitted by the PR #2 deferred-emission contract.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CppPr2Trajectory {
+    pub window_mid_frames: Vec<i32>,
+    pub window_positions: Vec<[f32; 3]>,
+    pub frame_positions: Vec<[f32; 3]>,
+    pub frame_forwards: Vec<[f32; 3]>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ReconstructionError {
     #[error("engine inference failed: {0}")]
@@ -419,6 +428,62 @@ pub fn emit_cpp_pr2_tsdf_reference_cloud(
     emit_cpp_pr2_tsdf_cloud_with_poses(fixture, &windows, alignments, poses)
 }
 
+/// Reconstructs the PR #2 camera evidence emitted alongside its deferred cloud.
+/// It is deliberately separate from point comparison because a trajectory drift
+/// can be visually hidden before it changes first-owner point counts.
+pub fn cpp_pr2_fixture_trajectory(
+    fixture: &CppPr2Fixture,
+) -> Result<CppPr2Trajectory, ReconstructionError> {
+    let windows = cpp_pr2_fixture_windows(fixture)?;
+    let poses = if fixture.branches.loop_close {
+        cpp_pr2_closed_loop_oracle(fixture)?
+            .optimized_window_poses
+            .into_iter()
+            .map(|pose| pose.local_to_world)
+            .collect::<Vec<_>>()
+    } else {
+        let mut poses = vec![SimilarityTransform::IDENTITY];
+        for pair in windows.windows(2) {
+            let report = align_overlapping_windows_cpp_pr2(&pair[1], &pair[0])?;
+            let previous = *poses.last().expect("sequential origin exists");
+            poses.push(previous.compose(report.transform));
+        }
+        poses
+    };
+    let mut window_mid_frames = Vec::with_capacity(windows.len());
+    let mut window_positions = Vec::with_capacity(windows.len());
+    let mut frame_positions = vec![[0.0; 3]; fixture.frame_count];
+    let mut frame_forwards = vec![[0.0; 3]; fixture.frame_count];
+    for (window, pose) in windows.iter().zip(&poses) {
+        let middle = window.views.len() / 2;
+        window_mid_frames.push((window.window.start + middle) as i32);
+        let mid = window
+            .views
+            .get(middle)
+            .and_then(|frame| camera_centre_direction(frame.frame_index, frame.camera));
+        window_positions
+            .push(mid.map_or(pose.translation, |camera| pose.apply(camera.centre_local)));
+        let first_owned = if window.window.index == 0 {
+            0
+        } else {
+            fixture.windows.overlap.min(window.views.len())
+        };
+        for frame in window.views.iter().skip(first_owned) {
+            if let Some(camera) = camera_centre_direction(frame.frame_index, frame.camera) {
+                frame_positions[frame.frame_index] = pose.apply(camera.centre_local);
+                frame_forwards[frame.frame_index] =
+                    normalize_direction(pose.rotate(camera.forward_local));
+            }
+        }
+    }
+    Ok(CppPr2Trajectory {
+        window_mid_frames,
+        window_positions,
+        frame_positions,
+        frame_forwards,
+    })
+}
+
 fn emit_cpp_pr2_tsdf_cloud_with_poses(
     fixture: &CppPr2Fixture,
     windows: &[WindowMeasuredChunk],
@@ -481,6 +546,19 @@ fn first_owner_camera_centres(
         }
     }
     cameras
+}
+
+fn normalize_direction(direction: [f32; 3]) -> [f32; 3] {
+    let length = direction
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+    if length.is_finite() && length > 0.0 {
+        direction.map(|value| value / length)
+    } else {
+        [0.0; 3]
+    }
 }
 
 fn emit_cpp_pr2_cloud_with_poses(
