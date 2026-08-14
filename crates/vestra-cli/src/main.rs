@@ -13,8 +13,8 @@ use vestra_core::{
     WindowSettings, capture_cpp_pr2_fixture, cpp_pr2_fixture_alignment_reports,
     emit_cpp_pr2_loop_closed_reference_cloud, emit_cpp_pr2_reference_cloud, export_camera_json,
     export_fused_glb, export_fused_ply, export_fused_splat, extract_video_frames,
-    fuse_scene_bundle_with_settings, fused_topology, load_decoded_frame_cache,
-    load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
+    fuse_scene_bundle_cpp_pr2_relative, fuse_scene_bundle_with_settings, fused_topology,
+    load_decoded_frame_cache, load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
 };
 use vestra_engine::{Engine, QuantPref};
 use vestra_studio::{IntakeConfig, serve, serve_intake};
@@ -71,6 +71,9 @@ enum Command {
         /// Build PR #2 normal-space TSDF surfels instead of compatibility voxel fusion.
         #[arg(long)]
         tsdf: bool,
+        /// Use the PR #2 relative seam and loop-closure profile.
+        #[arg(long)]
+        cpp_pr2_relative: bool,
     },
     /// Rebuild the derived world from a bundle's immutable measured windows.
     Fuse {
@@ -79,6 +82,9 @@ enum Command {
         /// Rebuild this derivative with PR #2 normal-space TSDF fusion.
         #[arg(long)]
         tsdf: bool,
+        /// Use the PR #2 relative seam and loop-closure profile.
+        #[arg(long)]
+        cpp_pr2_relative: bool,
     },
     /// Export the fused relative-scale world as an open ASCII PLY file.
     Export {
@@ -234,6 +240,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             minimum_confidence,
             pixel_stride,
             tsdf,
+            cpp_pr2_relative,
         } => {
             install_reconstruction_interrupt_handler()?;
             let provenance = SceneProvenance {
@@ -320,7 +327,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     checkpoint.measured_points
                 );
             }
-            let fusion = fuse_scene_bundle_with_settings(&bundle, fusion_settings(tsdf))?;
+            let fusion = if cpp_pr2_relative {
+                fuse_scene_bundle_cpp_pr2_relative(
+                    &bundle,
+                    tsdf.then_some(TsdfSettings::default()),
+                )?
+            } else {
+                fuse_scene_bundle_with_settings(&bundle, fusion_settings(tsdf))?
+            };
             eprintln!(
                 "fused {} measured windows into {} relative-scale points",
                 fusion.aligned_windows, fusion.points
@@ -535,9 +549,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             );
         }
-        Command::Fuse { scene, tsdf } => {
+        Command::Fuse {
+            scene,
+            tsdf,
+            cpp_pr2_relative,
+        } => {
             let bundle = SceneBundle::open(scene)?;
-            let fusion = fuse_scene_bundle_with_settings(&bundle, fusion_settings(tsdf))?;
+            let fusion = if cpp_pr2_relative {
+                fuse_scene_bundle_cpp_pr2_relative(
+                    &bundle,
+                    tsdf.then_some(TsdfSettings::default()),
+                )?
+            } else {
+                fuse_scene_bundle_with_settings(&bundle, fusion_settings(tsdf))?
+            };
             println!(
                 "{}",
                 serde_json::json!({

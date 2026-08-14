@@ -8,9 +8,10 @@ use crate::{
     AlignmentReport, BackprojectionError, BackprojectionSettings, CameraCalibration, CppPr2Fixture,
     CppPr2Frame, CppPr2StreamBranches, FrameWindow, FusedPoint, FusedSceneChunk, FusedWindowPose,
     MeasuredFrameChunk, MeasuredView, OwnedFrame, PoseGraphEdge, PoseGraphReport,
-    RelativePoseGraph, SceneBundle, SceneBundleError, SimilarityTransform, WindowMeasuredChunk,
-    WindowSettings, align_overlapping_windows_cpp_pr2, backproject_measured_view,
-    camera_centre_direction, infer_ordered_window, optimize_relative_pose_graph, plan_windows,
+    RelativePoseGraph, SceneBundle, SceneBundleError, SimilarityTransform, TsdfSettings,
+    WindowMeasuredChunk, WindowSettings, align_overlapping_windows_cpp_pr2,
+    backproject_measured_view, camera_centre_direction, fuse_normal_space_tsdf,
+    infer_ordered_window, optimize_relative_pose_graph, plan_windows,
     stitch_measured_windows_with_settings,
 };
 
@@ -109,6 +110,117 @@ pub fn fuse_scene_bundle_with_settings(
         chunk_hash,
         aligned_windows: windows.len(),
         points: fused.points.len(),
+    })
+}
+
+/// Rebuilds a scene with the PR #2 relative geometry profile. It uses
+/// first-owner key clouds, absolute revisit gates, scale-locked loop
+/// measurements, and iterative ICP before emitting the final surface.
+pub fn fuse_scene_bundle_cpp_pr2_relative(
+    bundle: &SceneBundle,
+    tsdf: Option<TsdfSettings>,
+) -> Result<FusionProgress, ReconstructionError> {
+    let manifest = bundle.manifest()?;
+    let mut windows = manifest
+        .measured_chunk_hashes
+        .iter()
+        .map(|hash| bundle.read_measured_window(hash))
+        .collect::<Result<Vec<_>, _>>()?;
+    windows.sort_by_key(|chunk| chunk.window.index);
+    let overlap = windows
+        .windows(2)
+        .map(|pair| pair[0].window.end.saturating_sub(pair[1].window.start))
+        .min()
+        .unwrap_or(0);
+    let solution = cpp_pr2_loop_oracle_for_windows(&windows, overlap, true)?;
+    let poses = solution
+        .optimized_window_poses
+        .iter()
+        .map(|pose| pose.local_to_world)
+        .collect::<Vec<_>>();
+    let mut emitted_frames = std::collections::HashSet::new();
+    let mut points = Vec::new();
+    let mut observations = Vec::new();
+    let mut cameras = Vec::new();
+    for (window, pose) in windows.iter().zip(poses) {
+        for frame in &window.views {
+            if !emitted_frames.insert(frame.frame_index) {
+                continue;
+            }
+            if let Some(camera) = camera_centre_direction(frame.frame_index, frame.camera) {
+                cameras.push(pose.apply(camera.centre_local));
+            }
+            for point in &frame.points {
+                if !point.position.iter().all(|value| value.is_finite())
+                    || !point.confidence.is_finite()
+                    || point.confidence <= 0.0
+                    || !point.radius.is_finite()
+                    || point.radius <= 0.0
+                {
+                    continue;
+                }
+                let position = pose.apply(point.position);
+                if tsdf.is_some() {
+                    observations.push(crate::TsdfObservation {
+                        position,
+                        color_srgb: point.color_srgb,
+                        confidence: point.confidence,
+                        radius: point.radius * pose.scale,
+                        frame_index: frame.frame_index as i32,
+                    });
+                } else {
+                    points.push(FusedPoint {
+                        position,
+                        normal: pose.rotate(point.normal),
+                        color_srgb: point.color_srgb,
+                        confidence: point.confidence,
+                        radius: point.radius * pose.scale,
+                        first_observing_frame: frame.frame_index as i32,
+                        contributors: 1,
+                    });
+                }
+            }
+        }
+    }
+    let (points, voxel_size) = if let Some(settings) = tsdf {
+        let points = fuse_normal_space_tsdf(&observations, &cameras, settings)
+            .into_iter()
+            .map(|surfel| FusedPoint {
+                position: surfel.position,
+                normal: surfel.normal,
+                color_srgb: surfel.color_srgb,
+                confidence: 1.0,
+                radius: surfel.radius,
+                first_observing_frame: surfel.first_observing_frame,
+                contributors: surfel.contributors,
+            })
+            .collect::<Vec<_>>();
+        let voxel_size = points
+            .first()
+            .map(|point| point.radius / 0.6)
+            .unwrap_or(0.0);
+        (points, voxel_size)
+    } else {
+        (points, 0.0)
+    };
+    let alignments = windows
+        .windows(2)
+        .map(|pair| Ok(align_overlapping_windows_cpp_pr2(&pair[1], &pair[0])?))
+        .collect::<Result<Vec<_>, ReconstructionError>>()?;
+    let fused = FusedSceneChunk {
+        alignments,
+        pose_graph_edges: solution.loop_edges,
+        pose_graph: solution.pose_graph,
+        window_poses: solution.optimized_window_poses,
+        voxel_size,
+        points,
+    };
+    let points = fused.points.len();
+    let chunk_hash = bundle.write_fused_scene(&fused)?;
+    Ok(FusionProgress {
+        chunk_hash,
+        aligned_windows: windows.len(),
+        points,
     })
 }
 
