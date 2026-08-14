@@ -111,7 +111,9 @@ pub fn fuse_normal_space_tsdf(
         .map(f64::from)
         .unwrap_or(2.5 * voxel)
         .max(1e-6);
+    let normal_estimation_started = Instant::now();
     let mut normals = estimate_normals(&positions, normal_radius as f32);
+    let normals_estimated_at = Instant::now();
     orient_normals_toward_cameras(&positions, &mut normals, camera_centres);
     let normals_at = Instant::now();
 
@@ -211,11 +213,18 @@ pub fn fuse_normal_space_tsdf(
         .collect::<Vec<_>>();
     if profile {
         eprintln!(
-            "vestra_tsdf_profile observations={} surfels={} filter_ms={:.3} normals_and_orient_ms={:.3} splat_ms={:.3} extract_and_sort_ms={:.3} total_ms={:.3}",
+            "vestra_tsdf_profile observations={} surfels={} filter_ms={:.3} normals_ms={:.3} orient_ms={:.3} splat_ms={:.3} extract_and_sort_ms={:.3} total_ms={:.3}",
             observations.len(),
             surfels.len(),
             filtered_at.duration_since(started).as_secs_f64() * 1_000.0,
-            normals_at.duration_since(filtered_at).as_secs_f64() * 1_000.0,
+            normals_estimated_at
+                .duration_since(normal_estimation_started)
+                .as_secs_f64()
+                * 1_000.0,
+            normals_at
+                .duration_since(normals_estimated_at)
+                .as_secs_f64()
+                * 1_000.0,
             splat_at.duration_since(normals_at).as_secs_f64() * 1_000.0,
             Instant::now().duration_since(splat_at).as_secs_f64() * 1_000.0,
             started.elapsed().as_secs_f64() * 1_000.0,
