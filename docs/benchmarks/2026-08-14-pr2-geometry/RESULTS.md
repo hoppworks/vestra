@@ -214,3 +214,32 @@ Vestra is now **1.052×** C++ wall time in the locked geometry-plus-TSDF tier
 The intervals remain separate, so this is an honest near-parity result rather
 than a performance win. Future work must target an observed phase gap; it may
 not alter the workload, model tensors, precision, schedule or thread budget.
+
+## Accepted win: PR #2 TSDF field hash
+
+The final remaining high-cost serial field operation used Rust's general-purpose
+hashing while PR #2 uses a three-axis numeric voxel mixer. Vestra now uses the
+same mixer for the private TSDF field. This does not change key equality,
+insertion order, cell accumulation, floating-point arithmetic, output sorting,
+or the TSDF representation. A unit oracle locks the mixer for signed voxel
+coordinates; the closed-loop C++ output oracle still verifies all 25,434
+surfels, frame ownership and RGB exactly, with position MAE `3.05e-7`.
+
+The full confirmation is retained in
+[`after-tsdf-pr2-hash/raw.jsonl`](after-tsdf-pr2-hash/raw.jsonl) and
+[`metadata.json`](after-tsdf-pr2-hash/metadata.json). The protocol is unchanged:
+one excluded fresh-process warm-up per arm, 10 fresh process trials per arm,
+one randomized order (seed `20260816`), no outlier removal, identical
+closed-loop VPS1 fixture and 16-thread budget.
+
+| Arm | n | Mean (ms) | Median (ms) | 95% t CI of mean (ms) |
+| --- | --: | --: | --: | ---: |
+| C++ PR #2 | 10 | 867.421 | 867.965 | [865.416, 869.426] |
+| Vestra Rust | 10 | 831.797 | 827.120 | [819.473, 844.120] |
+
+Vestra wins this locked PR #2 geometry-plus-TSDF workload by **4.11%** on the
+mean of trial medians (`0.959×` C++ wall time). The 95% intervals do not
+overlap, including the retained 870.656 ms Rust sample; this is a documented
+speed win, not an outlier-filtered claim. It is narrowly scoped to this
+model-free geometry fixture. It must not be presented as an end-to-end DA3
+inference or GPU result.
