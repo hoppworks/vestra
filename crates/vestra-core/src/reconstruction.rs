@@ -341,6 +341,22 @@ pub fn cpp_pr2_closed_loop_oracle(
     fixture: &CppPr2Fixture,
 ) -> Result<CppPr2LoopOracle, ReconstructionError> {
     let windows = cpp_pr2_fixture_windows(fixture)?;
+    cpp_pr2_loop_oracle_for_windows(
+        &windows,
+        fixture.windows.overlap,
+        fixture.branches.loop_close,
+    )
+}
+
+/// Solves the PR #2 relative loop-closure trajectory from immutable measured
+/// windows. This is the product-facing seam beneath the VPS fixture adapter:
+/// callers supply the same window schedule used at inference time and receive
+/// optimized poses before any surface emission is allowed.
+pub fn cpp_pr2_loop_oracle_for_windows(
+    windows: &[WindowMeasuredChunk],
+    overlap: usize,
+    loop_close: bool,
+) -> Result<CppPr2LoopOracle, ReconstructionError> {
     let sequential = cpp_pr2_sequential_window_poses(&windows)?;
     let sequential_window_poses = windows
         .iter()
@@ -351,7 +367,7 @@ pub fn cpp_pr2_closed_loop_oracle(
         })
         .collect::<Vec<_>>();
 
-    if !fixture.branches.loop_close || windows.len() <= 3 {
+    if !loop_close || windows.len() <= 3 {
         return Ok(CppPr2LoopOracle {
             sequential_window_poses: sequential_window_poses.clone(),
             loop_edges: Vec::new(),
@@ -362,7 +378,7 @@ pub fn cpp_pr2_closed_loop_oracle(
 
     let keys = windows
         .iter()
-        .map(|window| cpp_pr2_first_owner_key_cloud(window, fixture.windows.overlap))
+        .map(|window| cpp_pr2_first_owner_key_cloud(window, overlap))
         .collect::<Vec<_>>();
     let paths = windows
         .iter()
