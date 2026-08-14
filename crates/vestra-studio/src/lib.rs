@@ -8,6 +8,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex, OnceLock},
+    thread,
+    time::Duration,
 };
 
 use vestra_core::{
@@ -109,7 +111,14 @@ pub fn serve_intake(config: IntakeConfig) -> Result<(), StudioError> {
     let port = state.lock().expect("intake state lock").config.port;
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     for stream in listener.incoming().flatten() {
-        let _ = handle_intake(stream, &state);
+        // A browser may open a speculative connection and never send a full
+        // request. Keep it from blocking the local intake server (and video
+        // upload/polling) by isolating each connection with a bounded read.
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+        let state = Arc::clone(&state);
+        thread::spawn(move || {
+            let _ = handle_intake(stream, &state);
+        });
     }
     Ok(())
 }
