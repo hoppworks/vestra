@@ -225,82 +225,6 @@ pub(crate) fn estimate_normals(points: &[[f32; 3]], radius: f32) -> Vec<[f32; 3]
         .collect()
 }
 
-/// PR #2 TSDF normals retain the reference's F32-input/F64-geometry boundary.
-/// This deliberately has a separate implementation: converting through the
-/// production F32 spatial hash changes voxel-neighbour membership at edges.
-pub(crate) fn estimate_normals_f64(points: &[[f64; 3]], radius: f64) -> Vec<[f64; 3]> {
-    let cell = radius.max(1e-6);
-    let mut cells = HashMap::<(i32, i32, i32), Vec<usize>>::new();
-    for (index, &point) in points.iter().enumerate() {
-        cells
-            .entry(cell_for_f64(point, cell))
-            .or_default()
-            .push(index);
-    }
-    points
-        .par_iter()
-        .map_init(Vec::<usize>::new, |neighbours, &point| {
-            neighbours.clear();
-            let base = cell_for_f64(point, cell);
-            for x in base.0 - 1..=base.0 + 1 {
-                for y in base.1 - 1..=base.1 + 1 {
-                    for z in base.2 - 1..=base.2 + 1 {
-                        neighbours.extend(cells.get(&(x, y, z)).into_iter().flatten().copied());
-                    }
-                }
-            }
-            let radius_squared = radius * radius;
-            neighbours
-                .retain(|&index| squared_distance_f64(points[index], point) <= radius_squared);
-            if neighbours.len() < 3 {
-                return [0.0; 3];
-            }
-            let mut mean = [0.0; 3];
-            for &index in neighbours.iter() {
-                for axis in 0..3 {
-                    mean[axis] += points[index][axis];
-                }
-            }
-            for value in &mut mean {
-                *value /= neighbours.len() as f64;
-            }
-            let (mut xx, mut xy, mut xz, mut yy, mut yz, mut zz) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-            for &index in neighbours.iter() {
-                let x = points[index][0] - mean[0];
-                let y = points[index][1] - mean[1];
-                let z = points[index][2] - mean[2];
-                xx += x * x;
-                xy += x * y;
-                xz += x * z;
-                yy += y * y;
-                yz += y * z;
-                zz += z * z;
-            }
-            let (values, vectors) = jacobi_eigen_3([[xx, xy, xz], [xy, yy, yz], [xz, yz, zz]]);
-            let minimum = (0..3)
-                .min_by(|&a, &b| values[a].total_cmp(&values[b]))
-                .unwrap();
-            normalize64([
-                vectors[0][minimum],
-                vectors[1][minimum],
-                vectors[2][minimum],
-            ])
-            .unwrap_or([0.0; 3])
-        })
-        .collect()
-}
-
-fn cell_for_f64(point: [f64; 3], cell: f64) -> (i32, i32, i32) {
-    (
-        (point[0] / cell).floor() as i32,
-        (point[1] / cell).floor() as i32,
-        (point[2] / cell).floor() as i32,
-    )
-}
-fn squared_distance_f64(left: [f64; 3], right: [f64; 3]) -> f64 {
-    (left[0] - right[0]).powi(2) + (left[1] - right[1]).powi(2) + (left[2] - right[2]).powi(2)
-}
-
 fn plane_rms(
     source: &[[f32; 3]],
     target: &[[f32; 3]],
@@ -564,17 +488,5 @@ mod tests {
             )
             .is_none()
         );
-    }
-
-    #[test]
-    fn f64_normal_path_recovers_a_planar_normal() {
-        let points = plane(0.0)
-            .into_iter()
-            .map(|point| point.map(f64::from))
-            .collect::<Vec<_>>();
-        let normals = estimate_normals_f64(&points, 0.05);
-        let normal = normals[points.len() / 2];
-        assert!(normal[2].abs() > 0.999);
-        assert!(normal[0].abs() < 1e-8 && normal[1].abs() < 1e-8);
     }
 }
