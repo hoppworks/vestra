@@ -116,3 +116,40 @@ vestra oracle-compare-capi --fixture real.vps --reference cpp-raw.cps
 `CPS1` is produced by `tools/cpp-pr2-oracle/capi_stream_dump.cpp`; its command
 now records the fusion, ICP and loop switches explicitly, so a reference run
 cannot silently use a different geometry branch.
+
+## Multi-view model-output differential — open numerical work
+
+`MVO1` records the actual `Engine::depth_pose_multi` output for every C++
+window, before thresholding or geometry. The matching Rust input is the same
+`VPS1` fixture, so the comparison does exercise cross-view global attention
+rather than a misleading single-image path.
+
+On the same 24-frame F32 workload (three windows; 5,080,320 depth/confidence
+values), the current result is:
+
+| Tensor family | MAE | Maximum absolute delta |
+|---|---:|---:|
+| Depth | 1.67e-6 | 8.49e-5 |
+| Confidence | 3.27e-5 | 7.51e-4 |
+| Extrinsics | 5.42e-7 | 8.46e-6 |
+| Intrinsics | 1.22e-4 | 1.31e-3 |
+
+All tensor shapes and the 24-frame / 12-3 schedule match. The largest
+user-visible divergence is confidence near its percentile boundary: C++ and
+Rust selected respectively 914,459 and 914,458 pixels in the first window;
+the threshold difference was 7.44e-5. The next two windows selected equal
+totals but not necessarily the same boundary pixels. This explains the one
+point difference in live first-owner emission without assigning a false fault
+to geometry.
+
+The next implementation gate is therefore **DPT confidence numerical parity**.
+It must improve the `MVO1` confidence values without degrading depth or pose,
+then demonstrate identical per-window confidence selection and exact ordered
+raw CAPI cloud counts. The direct command is:
+
+```bash
+vestra oracle-compare-model --fixture real.vps --reference cpp.mvo
+```
+
+The C++ producer is `tools/cpp-pr2-oracle/multiview_dump.cpp`; it calls
+`Engine::depth_pose_multi` directly, with no C-API cloud/geometry work.
