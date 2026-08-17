@@ -18,6 +18,8 @@ from typing import Any
 
 
 SCHEMA = "vestra.da3-pose-conditioned-inspection/v1"
+RAW_SCHEMA = "vestra.da3-pose-conditioned/v1"
+CALIBRATED_SCHEMA = "vestra.da3-pose-conditioned-calibration/v2"
 
 
 def percentile(values: list[float], q: float) -> float | None:
@@ -54,8 +56,10 @@ def inspect(scene: Path, artifact: Path, pose_hash: str) -> dict[str, Any]:
 
     sidecar = json.loads((artifact / "manifest.json").read_text())
     pose = json.loads((scene / "chunks" / f"pose-{pose_hash}.json").read_text())
-    if sidecar.get("schema") != "vestra.da3-pose-conditioned/v1" or sidecar.get("pose_solution_hash") != pose_hash:
+    if sidecar.get("schema") not in {RAW_SCHEMA, CALIBRATED_SCHEMA} or sidecar.get("pose_solution_hash") != pose_hash:
         raise ValueError("artifact does not bind the requested pose solution")
+    if sidecar.get("schema") == CALIBRATED_SCHEMA and sidecar.get("decision") != "accepted":
+        raise ValueError("calibrated artifact was not accepted by its own evidence contract")
     trajectory = pose.get("global_trajectory")
     if not isinstance(trajectory, dict):
         raise ValueError("pose solution has no global trajectory")

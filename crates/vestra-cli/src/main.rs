@@ -459,6 +459,8 @@ struct Da3PoseConditionedArtifact {
     frames: Vec<usize>,
     #[serde(default)]
     published_frames: Option<Vec<usize>>,
+    #[serde(default)]
+    decision: Option<String>,
     ply: Da3PoseConditionedPly,
     depth_frames: Da3PoseConditionedDepthFrames,
 }
@@ -1383,12 +1385,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sidecar: Da3PoseConditionedArtifact = serde_json::from_reader(BufReader::new(
                 File::open(artifact.join("manifest.json"))?,
             ))?;
-            if sidecar.schema != "vestra.da3-pose-conditioned/v1"
+            let calibrated = sidecar.schema == "vestra.da3-pose-conditioned-calibration/v2";
+            if (sidecar.schema != "vestra.da3-pose-conditioned/v1" && !calibrated)
                 || sidecar.raster_fingerprint != raster.raster_fingerprint
                 || sidecar.pose_solution_hash != pose_solution
                 || !sidecar.align_to_input_ext_scale
             {
                 return Err("DA3 artifact does not bind this raster, COLMAP pose solution, and external pose scale".into());
+            }
+            if calibrated && sidecar.decision.as_deref() != Some("accepted") {
+                return Err("calibrated DA3 artifact was not accepted by its held-out evidence contract".into());
             }
             if sidecar.ply.schema != "vestra.da3-pose-conditioned-ply/v1"
                 || Path::new(&sidecar.ply.file)
@@ -1456,7 +1462,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             let cloud = import_colmap_fused_ply(artifact.join(&sidecar.ply.file))?;
-            let id = "da3-pose-conditioned-colmap-surfel";
+            let id = if calibrated {
+                "da3-pose-conditioned-colmap-calibrated-surfel"
+            } else {
+                "da3-pose-conditioned-colmap-surfel"
+            };
             let depth_target = bundle.root().join("depth").join(id);
             if depth_target.exists() {
                 fs::remove_dir_all(&depth_target)?;
@@ -1471,7 +1481,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let chunk_hash = bundle.write_fused_scene_as(
                 &cloud,
                 id,
-                "da3-base-pose-conditioned-colmap",
+                if calibrated {
+                    "da3-base-pose-conditioned-colmap-calibrated"
+                } else {
+                    "da3-base-pose-conditioned-colmap"
+                },
                 "surfel",
                 Some(pose_solution.clone()),
             )?;
@@ -1480,7 +1494,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "{}",
                 serde_json::json!({
-                    "schema": "vestra.da3-pose-conditioned-import/v1",
+                    "schema": if calibrated { "vestra.da3-pose-conditioned-calibrated-import/v2" } else { "vestra.da3-pose-conditioned-import/v1" },
                     "bundle": bundle.root(),
                     "artifact": artifact,
                     "pose_solution": pose_solution,

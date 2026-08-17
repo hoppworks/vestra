@@ -138,18 +138,32 @@ def run(args: argparse.Namespace) -> None:
         raise ValueError("source artifact does not bind this pose solution")
     evidence, cameras = scale_evidence(args.scene, args.pose_solution)
     args.output.mkdir(parents=True)
+    source_batches = [
+        {"file": str(batch["file"]), "sha256": str(batch["sha256"])}
+        for batch in source["batches"]
+    ]
     manifest = dict(source)
-    manifest["calibration"] = {
-        "schema": CALIBRATION_SCHEMA,
-        "source_artifact": str(args.artifact),
-        "source_manifest_sha256": sha256_file(args.artifact / "manifest.json"),
+    manifest["schema"] = CALIBRATION_SCHEMA
+    manifest["source"] = {
+        "raw_manifest_sha256": sha256_file(args.artifact / "manifest.json"),
+        "raster_fingerprint": source["raster_fingerprint"],
+        "pose_solution_hash": args.pose_solution,
+        "batch_files": source_batches,
+    }
+    manifest["contract"] = {
         "minimum_training_samples": args.minimum_training_samples,
         "minimum_held_out_samples": args.minimum_held_out_samples,
         "pixel_mapping": PIXEL_MAPPING,
         "track_split": TRACK_SPLIT,
+        "reprojection_error_px_max": 2.5,
         "maximum_held_out_median_log_error": args.maximum_held_out_median_log_error,
-        "frames": [],
+        "minimum_accepted_frame_fraction": 0.85,
     }
+    # Preserve the raw registered-frame identity at the top level; the
+    # calibration evidence has its own collection to avoid weakening import
+    # binding semantics.
+    manifest["frames"] = list(source["frames"])
+    manifest["calibration_frames"] = []
     paths: list[Path] = []
     for batch_index, batch in enumerate(manifest["batches"]):
         source_file = args.artifact / str(batch["file"])
@@ -167,40 +181,71 @@ def run(args: argparse.Namespace) -> None:
                 args.pose_solution, args.minimum_training_samples,
                 args.minimum_held_out_samples, np,
             )
-            result.update({"frame_index": frame_index, "batch_index": batch_index})
+            result.update({
+                "frame_index": frame_index,
+                "source_batch": source_file.name,
+                "source_slot": offset,
+                "calibrated_batch": f"batch-{batch_index:04d}.npz",
+                "batch_index": batch_index,
+            })
             if result["accepted"]:
                 depth[offset] *= float(result["scale"])
-            manifest["calibration"]["frames"].append(result)
+            manifest["calibration_frames"].append(result)
         target = args.output / f"batch-{batch_index:04d}.npz"
         np.savez_compressed(target, depth=depth, conf=conf, rgb=rgb, intrinsics=intrinsics, extrinsics=extrinsics, frame_indices=frame_indices)
         batch["file"] = target.name
         batch["sha256"] = sha256_file(target)
         paths.append(target)
-    rows = manifest["calibration"]["frames"]
-    # A frame can occur in an overlap twice. The first owner is the only
-    # prediction eligible for display/PLY emission, matching the sidecar's
-    # ownership rule. Later overlap copies remain only as seam evidence.
-    first_owner = {}
+    rows = manifest["calibration_frames"]
+    canonical = {}
     for row in rows:
-        first_owner.setdefault(row["frame_index"], row)
+        frame_index = row["frame_index"]
+        current = canonical.get(frame_index)
+        # Held-out data deliberately does not participate in this ordering.
+        key = (
+            row["train_median_log_error"] if row["train_median_log_error"] is not None else math.inf,
+            -row["train_samples"], row["batch_index"], row["source_slot"],
+        )
+        if current is None or key < current[0]:
+            canonical[frame_index] = (key, row)
     published = [
         frame_index
         for frame_index in source["frames"]
-        if (row := first_owner.get(frame_index)) is not None
+        if (candidate := canonical.get(frame_index)) is not None
+        and (row := candidate[1]) is not None
         and row["accepted"]
         and row["held_out_median_log_error"] <= args.maximum_held_out_median_log_error
     ]
     if len(published) / max(len(source["frames"]), 1) < 0.85:
         raise ValueError("fewer than 85% of registered frames passed held-out depth calibration")
-    published_set = set(published)
     manifest["published_frames"] = published
-    manifest["calibration"]["accepted_predictions"] = len(accepted := [row for row in rows if row["accepted"] and row["held_out_median_log_error"] <= args.maximum_held_out_median_log_error])
-    manifest["calibration"]["total_predictions"] = len(rows)
-    manifest["calibration"]["accepted_first_owner_frames"] = len(published)
-    manifest["calibration"]["total_registered_frames"] = len(source["frames"])
-    manifest["depth_frames"] = write_depth_frames(args.output / "depth-frames", paths, np, published_set)
+    manifest["decision"] = "accepted"
+    manifest["summary"] = {
+        "accepted_predictions": len([row for row in rows if row["accepted"] and row["held_out_median_log_error"] <= args.maximum_held_out_median_log_error]),
+        "total_predictions": len(rows),
+        "accepted_frames": len(published),
+        "total_registered_frames": len(source["frames"]),
+    }
+    selected = [canonical[frame][1] for frame in published]
+    selected_arrays = []
+    for row in selected:
+        with np.load(args.output / row["calibrated_batch"]) as arrays:
+            slot = row["source_slot"]
+            selected_arrays.append(tuple(arrays[name][slot] for name in ("depth", "conf", "rgb", "intrinsics", "extrinsics", "frame_indices")))
+    selected_path = args.output / "selected.npz"
+    np.savez_compressed(
+        selected_path,
+        depth=np.stack([item[0] for item in selected_arrays]),
+        conf=np.stack([item[1] for item in selected_arrays]),
+        rgb=np.stack([item[2] for item in selected_arrays]),
+        intrinsics=np.stack([item[3] for item in selected_arrays]),
+        extrinsics=np.stack([item[4] for item in selected_arrays]),
+        frame_indices=np.asarray([item[5] for item in selected_arrays], dtype=np.int64),
+    )
+    manifest["batches"] = [{"file": selected_path.name, "sha256": sha256_file(selected_path), "depth_shape": [len(selected), 336, 504]}]
+    manifest["depth_frames"] = write_depth_frames(args.output / "depth-frames", [selected_path], np)
     ply = args.output / "world.ply"
-    points = write_ply(ply, paths, args.confidence_percentile, args.pixel_stride, np, published_set)
+    points = write_ply(ply, [selected_path], args.confidence_percentile, args.pixel_stride, np)
     manifest["ply"] = {"schema": source["ply"]["schema"], "file": ply.name, "sha256": sha256_file(ply), "points": points, "confidence_percentile": args.confidence_percentile}
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
