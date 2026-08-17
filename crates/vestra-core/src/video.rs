@@ -10,7 +10,7 @@ use std::{
     process::Command,
 };
 
-use crate::OwnedFrame;
+use crate::{OwnedFrame, RasterCrop};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,6 +61,15 @@ pub struct VideoFrames {
     pub frames: Vec<OwnedFrame>,
     pub decoded_directory: PathBuf,
     pub capture_quality: CaptureQuality,
+}
+
+/// Exact source and crop geometry of the canonical decoded raster.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VideoRasterMetadata {
+    pub duration_seconds: f64,
+    pub source_width: usize,
+    pub source_height: usize,
+    pub crop: RasterCrop,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -140,6 +149,31 @@ pub fn extract_video_frames(
     load_decoded_frame_cache_with_duration(&decoded_directory, settings, duration_seconds)
 }
 
+/// Probes the immutable video-to-raster contract without decoding pixels. The
+/// caller persists it beside the decoded cache before invoking a pose provider.
+pub fn video_raster_metadata(
+    video: &Path,
+    settings: VideoExtractionSettings,
+) -> Result<VideoRasterMetadata, VideoInputError> {
+    if settings.width == 0 || settings.height == 0 || settings.max_frames == 0 {
+        return Err(VideoInputError::InvalidSettings);
+    }
+    let duration_seconds = probe_duration(video)?;
+    let geometry = probe_geometry(video)?;
+    if geometry.width < geometry.height {
+        return Err(VideoInputError::PortraitCapture {
+            width: geometry.width,
+            height: geometry.height,
+        });
+    }
+    Ok(VideoRasterMetadata {
+        duration_seconds,
+        source_width: geometry.width,
+        source_height: geometry.height,
+        crop: crop_geometry(settings, geometry)?,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct VideoGeometry {
     width: usize,
@@ -154,29 +188,43 @@ fn center_crop_filter(
     settings: VideoExtractionSettings,
     geometry: VideoGeometry,
 ) -> Result<String, VideoInputError> {
-    let target_width = settings.width;
-    let target_height = settings.height;
-    let (crop_width, crop_height) =
-        if geometry.width * target_height >= geometry.height * target_width {
-            (
-                geometry.height * target_width / target_height,
-                geometry.height,
-            )
-        } else {
-            (
-                geometry.width,
-                geometry.width * target_height / target_width,
-            )
-        };
-    if crop_width == 0 || crop_height == 0 {
+    let crop = crop_geometry(settings, geometry)?;
+    Ok(format!(
+        "fps={:.9},crop={}:{}:{}:{},scale={}:{}:flags=lanczos",
+        settings.candidate_fps,
+        crop.width,
+        crop.height,
+        crop.x,
+        crop.y,
+        settings.width,
+        settings.height,
+    ))
+}
+
+fn crop_geometry(
+    settings: VideoExtractionSettings,
+    geometry: VideoGeometry,
+) -> Result<RasterCrop, VideoInputError> {
+    let (width, height) = if geometry.width * settings.height >= geometry.height * settings.width {
+        (
+            geometry.height * settings.width / settings.height,
+            geometry.height,
+        )
+    } else {
+        (
+            geometry.width,
+            geometry.width * settings.height / settings.width,
+        )
+    };
+    if width == 0 || height == 0 {
         return Err(VideoInputError::InvalidSettings);
     }
-    let crop_x = (geometry.width - crop_width) / 2;
-    let crop_y = (geometry.height - crop_height) / 2;
-    Ok(format!(
-        "fps={:.9},crop={crop_width}:{crop_height}:{crop_x}:{crop_y},scale={target_width}:{target_height}:flags=lanczos",
-        settings.candidate_fps,
-    ))
+    Ok(RasterCrop {
+        x: (geometry.width - width) / 2,
+        y: (geometry.height - height) / 2,
+        width,
+        height,
+    })
 }
 
 /// Loads the deterministic decode cache produced by [`extract_video_frames`].

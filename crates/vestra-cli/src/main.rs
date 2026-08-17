@@ -1,7 +1,7 @@
 use std::{
     fs::File,
     io::{BufReader, Read},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Instant,
 };
 
@@ -10,14 +10,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vestra_core::{
     BackprojectionSettings, CppPr2CapiStreamOutput, CppPr2Fixture, CppPr2MultiViewOutput,
-    CppPr2StreamOutput, ReconstructionSettings, SceneBundle, SceneProvenance, StitchSettings,
-    SurfaceFusion, TsdfSettings, VideoExtractionSettings, WindowSettings, capture_cpp_pr2_fixture,
-    cpp_pr2_fixture_alignment_reports, cpp_pr2_fixture_trajectory,
-    emit_cpp_pr2_loop_closed_reference_cloud, emit_cpp_pr2_reference_cloud,
-    emit_cpp_pr2_tsdf_reference_cloud, export_camera_json, export_fused_glb, export_fused_ply,
-    export_fused_splat, extract_video_frames, fuse_scene_bundle_cpp_pr2_relative,
-    fuse_scene_bundle_with_settings, fused_topology, load_decoded_frame_cache,
-    load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
+    CppPr2StreamOutput, RasterFrame, RasterManifest, ReconstructionSettings, SceneBundle,
+    SceneProvenance, StitchSettings, SurfaceFusion, TsdfSettings, VideoExtractionSettings,
+    WindowSettings, capture_cpp_pr2_fixture, cpp_pr2_fixture_alignment_reports,
+    cpp_pr2_fixture_trajectory, emit_cpp_pr2_loop_closed_reference_cloud,
+    emit_cpp_pr2_reference_cloud, emit_cpp_pr2_tsdf_reference_cloud, export_camera_json,
+    export_fused_glb, export_fused_ply, export_fused_splat, extract_video_frames,
+    finalized_raster_manifest, fuse_scene_bundle_cpp_pr2_relative, fuse_scene_bundle_with_settings,
+    fused_topology, load_decoded_frame_cache, load_decoded_rgb24_cache, plan_windows,
+    reconstruct_frames, video_raster_metadata,
 };
 use vestra_engine::{Engine, QuantPref, ViewInput};
 use vestra_studio::{IntakeConfig, serve, serve_intake};
@@ -366,6 +367,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 extract_video_frames(&video, &decoded_directory, decode_settings)?
             };
             bundle.write_capture_quality(decoded.capture_quality.clone())?;
+            let raster = raster_manifest_for_decoded(&video, &decoded, decode_settings)?;
+            bundle.write_raster_manifest(&raster)?;
             if decoded.frames.is_empty() {
                 return Err("ffmpeg produced no frames".into());
             }
@@ -1306,7 +1309,7 @@ fn locked_revision(section: &str) -> Result<String, Box<dyn std::error::Error>> 
         .ok_or_else(|| format!("invalid revision for {section}").into())
 }
 
-fn sha256_file(path: &PathBuf) -> Result<String, Box<dyn std::error::Error>> {
+fn sha256_file(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
     let mut reader = BufReader::new(File::open(path)?);
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 1024 * 1024];
@@ -1322,6 +1325,41 @@ fn sha256_file(path: &PathBuf) -> Result<String, Box<dyn std::error::Error>> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect())
+}
+
+fn raster_manifest_for_decoded(
+    video: &Path,
+    decoded: &vestra_core::VideoFrames,
+    settings: VideoExtractionSettings,
+) -> Result<RasterManifest, Box<dyn std::error::Error>> {
+    let metadata = video_raster_metadata(video, settings)?;
+    let frames = decoded
+        .frames
+        .iter()
+        .enumerate()
+        .map(|(frame_index, _)| {
+            let file_name = format!("frame-{:06}.ppm", frame_index + 1);
+            Ok(RasterFrame {
+                frame_index,
+                sha256: sha256_file(&decoded.decoded_directory.join(&file_name))?,
+                file_name,
+                timestamp_millis: ((frame_index as f64 / settings.candidate_fps) * 1000.0).round()
+                    as u64,
+            })
+        })
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    Ok(finalized_raster_manifest(RasterManifest {
+        schema: String::new(),
+        source_sha256: sha256_file(video)?,
+        duration_seconds: metadata.duration_seconds,
+        source_width: metadata.source_width,
+        source_height: metadata.source_height,
+        crop: metadata.crop,
+        output_width: settings.width,
+        output_height: settings.height,
+        frames,
+        raster_fingerprint: String::new(),
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]

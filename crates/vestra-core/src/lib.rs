@@ -69,8 +69,8 @@ pub use stitch::{
 pub use tsdf::{TsdfObservation, TsdfSettings, TsdfSurfel, fuse_normal_space_tsdf};
 pub use video::{
     CaptureDisposition, CaptureQuality, VideoExtractionSettings, VideoFrames, VideoInputError,
-    assess_capture_quality, extract_video_frames, load_decoded_frame_cache,
-    load_decoded_rgb24_cache,
+    VideoRasterMetadata, assess_capture_quality, extract_video_frames, load_decoded_frame_cache,
+    load_decoded_rgb24_cache, video_raster_metadata,
 };
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
