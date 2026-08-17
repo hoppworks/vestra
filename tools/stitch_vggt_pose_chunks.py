@@ -51,7 +51,17 @@ def registered(data: dict) -> dict[int, dict]:
 
 def decompose(frame: dict) -> tuple[np.ndarray, np.ndarray]:
     value = np.asarray(frame["world_to_camera"], dtype=np.float64).reshape(3, 4)
-    return value[:, :3], value[:, 3]
+    return project_rotation(value[:, :3]), value[:, 3]
+
+
+def project_rotation(value: np.ndarray) -> np.ndarray:
+    """Projects a bf16/float camera matrix onto the nearest proper rotation."""
+    left, _, right_t = np.linalg.svd(value)
+    rotation = left @ right_t
+    if np.linalg.det(rotation) < 0:
+        left[:, -1] *= -1.0
+        rotation = left @ right_t
+    return rotation
 
 
 def centre(frame: dict) -> np.ndarray:
@@ -110,7 +120,9 @@ def main() -> int:
     fingerprint = chunks[0]["raster_fingerprint"]
     if any(chunk["raster_fingerprint"] != fingerprint for chunk in chunks):
         raise ValueError("all VGGT chunks must use the exact same raster manifest")
-    output = registered(chunks[0])
+    identity = np.eye(3)
+    zero = np.zeros(3)
+    output = {index: transform(frame, 1.0, identity, zero) for index, frame in registered(chunks[0]).items()}
     if not output:
         raise ValueError("first VGGT chunk has no registered frames")
     alignments = []
