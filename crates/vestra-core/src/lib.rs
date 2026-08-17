@@ -26,8 +26,8 @@ pub mod video;
 
 pub use architecture::{
     ArchitecturalPlane, ArchitectureClass, ArchitectureEvidenceError, ArchitectureExtraction,
-    ArchitectureSemanticEvidence, ArchitectureSemanticFrame, ArchitectureSettings,
-    extract_architectural_planes,
+    ArchitectureSemanticEvidence, ArchitectureSemanticFrame, ArchitectureSemanticVolume,
+    ArchitectureSettings, extract_architectural_planes,
 };
 pub use cpp_pr2_oracle::{
     CppPr2CapiStreamOutput, CppPr2Fixture, CppPr2Frame, CppPr2MultiViewOutput, CppPr2MultiViewView,

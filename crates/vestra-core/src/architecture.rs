@@ -6,7 +6,11 @@
 //! planar support.  Consequently a door-sized absence in a wall remains an
 //! opening rather than becoming invented geometry.
 
-use std::collections::{BTreeMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fs,
+    path::Path,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +32,18 @@ pub enum ArchitectureClass {
 }
 
 impl ArchitectureClass {
+    fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Unknown),
+            1 => Some(Self::Floor),
+            2 => Some(Self::Wall),
+            3 => Some(Self::CeilingOrRoof),
+            4 => Some(Self::DoorOrOpening),
+            5 => Some(Self::Window),
+            6 => Some(Self::NonArchitectural),
+            _ => None,
+        }
+    }
     #[must_use]
     pub const fn supports_surface(self) -> bool {
         matches!(self, Self::Floor | Self::Wall | Self::CeilingOrRoof)
@@ -134,6 +150,124 @@ pub enum ArchitectureEvidenceError {
     MalformedFrame { frame_index: usize },
     #[error("semantic evidence frames must be strictly ordered by frame index")]
     UnorderedFrames,
+    #[error("failed to read semantic raster payload: {0}")]
+    Io(String),
+    #[error("semantic raster payload is malformed: {0}")]
+    InvalidBinary(String),
+}
+
+/// Compact, dependency-free raster payload emitted by
+/// `run_architecture_semantics.py`.  This is intentionally separate from the
+/// JSON manifest: loading thousands of dense labels must not require parsing a
+/// gigantic JSON document.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArchitectureSemanticVolume {
+    frame_indices: Vec<usize>,
+    width: usize,
+    height: usize,
+    classes: Vec<u8>,
+    confidences: Vec<u8>,
+}
+
+impl ArchitectureSemanticVolume {
+    const MAGIC: &'static [u8] = b"VSEM1";
+
+    pub fn read(path: impl AsRef<Path>) -> Result<Self, ArchitectureEvidenceError> {
+        let bytes =
+            fs::read(path).map_err(|error| ArchitectureEvidenceError::Io(error.to_string()))?;
+        if !bytes.starts_with(Self::MAGIC) || bytes.len() < 17 {
+            return Err(ArchitectureEvidenceError::InvalidBinary(
+                "missing VSEM1 header".to_owned(),
+            ));
+        }
+        let u32_at = |offset: usize| {
+            bytes
+                .get(offset..offset + 4)
+                .and_then(|slice| <&[u8; 4]>::try_from(slice).ok())
+                .map(|slice| u32::from_le_bytes(*slice) as usize)
+        };
+        let frame_count = u32_at(5).ok_or_else(|| {
+            ArchitectureEvidenceError::InvalidBinary("truncated frame count".to_owned())
+        })?;
+        let width = u32_at(9).ok_or_else(|| {
+            ArchitectureEvidenceError::InvalidBinary("truncated width".to_owned())
+        })?;
+        let height = u32_at(13).ok_or_else(|| {
+            ArchitectureEvidenceError::InvalidBinary("truncated height".to_owned())
+        })?;
+        let pixels = width.checked_mul(height).ok_or_else(|| {
+            ArchitectureEvidenceError::InvalidBinary("raster dimensions overflow".to_owned())
+        })?;
+        let index_bytes = frame_count.checked_mul(4).ok_or_else(|| {
+            ArchitectureEvidenceError::InvalidBinary("frame-index count overflow".to_owned())
+        })?;
+        let data_bytes = frame_count.checked_mul(pixels).ok_or_else(|| {
+            ArchitectureEvidenceError::InvalidBinary("raster count overflow".to_owned())
+        })?;
+        let index_start = 17_usize;
+        let classes_start = index_start.checked_add(index_bytes).ok_or_else(|| {
+            ArchitectureEvidenceError::InvalidBinary("frame-index offset overflow".to_owned())
+        })?;
+        let confidence_start = classes_start.checked_add(data_bytes).ok_or_else(|| {
+            ArchitectureEvidenceError::InvalidBinary("class offset overflow".to_owned())
+        })?;
+        let end = confidence_start.checked_add(data_bytes).ok_or_else(|| {
+            ArchitectureEvidenceError::InvalidBinary("confidence offset overflow".to_owned())
+        })?;
+        if width == 0 || height == 0 || bytes.len() != end {
+            return Err(ArchitectureEvidenceError::InvalidBinary(
+                "unexpected binary length or zero raster dimension".to_owned(),
+            ));
+        }
+        let mut frame_indices = Vec::with_capacity(frame_count);
+        for offset in (index_start..classes_start).step_by(4) {
+            frame_indices.push(u32_at(offset).ok_or_else(|| {
+                ArchitectureEvidenceError::InvalidBinary("truncated frame index".to_owned())
+            })?);
+        }
+        if frame_indices.windows(2).any(|pair| pair[0] >= pair[1])
+            || bytes[classes_start..confidence_start]
+                .iter()
+                .any(|code| ArchitectureClass::from_code(*code).is_none())
+        {
+            return Err(ArchitectureEvidenceError::InvalidBinary(
+                "unordered frame indices or unknown class code".to_owned(),
+            ));
+        }
+        Ok(Self {
+            frame_indices,
+            width,
+            height,
+            classes: bytes[classes_start..confidence_start].to_vec(),
+            confidences: bytes[confidence_start..end].to_vec(),
+        })
+    }
+
+    #[must_use]
+    pub fn sample(
+        &self,
+        frame_index: usize,
+        x: usize,
+        y: usize,
+    ) -> Option<(ArchitectureClass, f32)> {
+        let frame = self.frame_indices.binary_search(&frame_index).ok()?;
+        let pixel = y.checked_mul(self.width)?.checked_add(x)?;
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let index = frame
+            .checked_mul(self.width.checked_mul(self.height)?)?
+            .checked_add(pixel)?;
+        Some((
+            ArchitectureClass::from_code(*self.classes.get(index)?)?,
+            f32::from(*self.confidences.get(index)?) / 255.0,
+        ))
+    }
+
+    #[must_use]
+    pub const fn dimensions(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
 }
 
 /// Settings are expressed as fractions of the scene diagonal because a
@@ -696,5 +830,34 @@ mod tests {
             malformed.validate(),
             Err(ArchitectureEvidenceError::MalformedFrame { frame_index: 7 })
         ));
+    }
+
+    #[test]
+    fn semantic_volume_reads_exact_frame_pixel_labels() {
+        let path = std::env::temp_dir().join(format!("vestra-vsem-{}.bin", std::process::id()));
+        let mut bytes = b"VSEM1".to_vec();
+        for value in [2_u32, 2, 1, 3, 9] {
+            bytes.extend(value.to_le_bytes());
+        }
+        bytes.extend([
+            ArchitectureClass::Wall as u8,
+            ArchitectureClass::DoorOrOpening as u8,
+            ArchitectureClass::Floor as u8,
+            ArchitectureClass::CeilingOrRoof as u8,
+        ]);
+        bytes.extend([255, 128, 64, 0]);
+        fs::write(&path, bytes).unwrap();
+        let volume = ArchitectureSemanticVolume::read(&path).unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(volume.dimensions(), (2, 1));
+        assert_eq!(
+            volume.sample(3, 1, 0),
+            Some((ArchitectureClass::DoorOrOpening, 128.0 / 255.0))
+        );
+        assert_eq!(
+            volume.sample(9, 0, 0),
+            Some((ArchitectureClass::Floor, 64.0 / 255.0))
+        );
+        assert_eq!(volume.sample(3, 2, 0), None);
     }
 }

@@ -137,6 +137,18 @@ def main() -> int:
         classes=np.stack(classes, axis=0),
         confidences=np.stack(confidences, axis=0),
     )
+    # Stable, dependency-free interchange for vestra-core.  The companion
+    # manifest carries provenance; this file is only a dense raster payload.
+    # Layout: magic VSEM1, u32 frame_count/width/height, frame-index u32s,
+    # then classes and confidence bytes in frame-major row-major order.
+    with (args.output / "masks.vsem").open("wb") as handle:
+        handle.write(b"VSEM1")
+        handle.write(len(frame_indices).to_bytes(4, "little"))
+        handle.write(width.to_bytes(4, "little"))
+        handle.write(height.to_bytes(4, "little"))
+        handle.write(np.asarray(frame_indices, dtype="<u4").tobytes())
+        handle.write(np.stack(classes, axis=0).tobytes())
+        handle.write(np.stack(confidences, axis=0).tobytes())
     manifest = {
         "schema": SCHEMA,
         "runner": "vestra.tools.run_architecture_semantics/1",
@@ -153,7 +165,7 @@ def main() -> int:
             "window": CLASS_WINDOW,
             "non_architectural": CLASS_NON_ARCHITECTURAL,
         },
-        "arrays": "masks.npz",
+        "arrays": {"npz": "masks.npz", "vestra_binary": "masks.vsem"},
         "confidence_encoding": "uint8 / 255",
         "geometry_policy": "semantic masks select observed geometry; they never create geometry",
     }
