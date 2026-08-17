@@ -1045,7 +1045,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "windows": reports.iter().map(|report| serde_json::json!({
                         "window_index": report.window_index,
                         "registered_cameras": report.registered_cameras,
-                        "scale": report.local_to_global.scale,
+                        "scale": report.local_to_global.map(|pose| pose.scale),
                         "rms_camera_residual": report.rms_camera_residual,
                         "normalized_camera_rms": report.normalized_camera_rms,
                     })).collect::<Vec<_>>(),

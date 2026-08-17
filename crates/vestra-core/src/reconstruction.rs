@@ -64,9 +64,9 @@ pub struct GlobalPoseFusionSettings {
 pub struct GlobalPoseWindowReport {
     pub window_index: usize,
     pub registered_cameras: usize,
-    pub local_to_global: SimilarityTransform,
-    pub rms_camera_residual: f32,
-    pub normalized_camera_rms: f32,
+    pub local_to_global: Option<SimilarityTransform>,
+    pub rms_camera_residual: Option<f32>,
+    pub normalized_camera_rms: Option<f32>,
 }
 
 impl Default for GlobalPoseFusionSettings {
@@ -271,16 +271,23 @@ fn fit_window_to_global_pose(
             minimum: settings.minimum_registered_cameras_per_window,
         });
     }
-    if !report.normalized_camera_rms.is_finite()
-        || report.normalized_camera_rms > settings.maximum_normalized_camera_rms
-    {
+    let normalized_rms = report.normalized_camera_rms.ok_or(
+        ReconstructionError::InsufficientGlobalCameraEvidence {
+            window_index: window.window.index,
+            actual: report.registered_cameras,
+            minimum: 3,
+        },
+    )?;
+    if !normalized_rms.is_finite() || normalized_rms > settings.maximum_normalized_camera_rms {
         return Err(ReconstructionError::GlobalCameraFitQuality {
             window_index: window.window.index,
-            normalized_rms: report.normalized_camera_rms,
+            normalized_rms,
             maximum: settings.maximum_normalized_camera_rms,
         });
     }
-    Ok(report.local_to_global)
+    Ok(report
+        .local_to_global
+        .expect("three camera pairs produce a transform"))
 }
 
 fn global_pose_window_report(
@@ -309,15 +316,21 @@ fn global_pose_window_report(
         })
         .collect::<Vec<_>>();
     if pairs.is_empty() {
-        return Err(ReconstructionError::MissingGlobalCameraEvidence {
+        return Ok(GlobalPoseWindowReport {
             window_index: window.window.index,
+            registered_cameras: 0,
+            local_to_global: None,
+            rms_camera_residual: None,
+            normalized_camera_rms: None,
         });
     }
     if pairs.len() < 3 {
-        return Err(ReconstructionError::InsufficientGlobalCameraEvidence {
+        return Ok(GlobalPoseWindowReport {
             window_index: window.window.index,
-            actual: pairs.len(),
-            minimum: 3,
+            registered_cameras: pairs.len(),
+            local_to_global: None,
+            rms_camera_residual: None,
+            normalized_camera_rms: None,
         });
     }
     let (transform, rms) = crate::stitch::cpp_pr2_similarity_from_pairs(&pairs)?;
@@ -344,9 +357,9 @@ fn global_pose_window_report(
     Ok(GlobalPoseWindowReport {
         window_index: window.window.index,
         registered_cameras: pairs.len(),
-        local_to_global: transform,
-        rms_camera_residual: rms,
-        normalized_camera_rms: normalized_rms,
+        local_to_global: Some(transform),
+        rms_camera_residual: Some(rms),
+        normalized_camera_rms: Some(normalized_rms),
     })
 }
 
@@ -1738,6 +1751,9 @@ mod tests {
                 .unwrap();
         assert!((transform.scale - 2.0).abs() < 1e-5);
         assert_eq!(transform.apply(local_centres[5]), target(local_centres[5]));
+        let report = global_pose_window_report(&window, &solution).unwrap();
+        assert_eq!(report.registered_cameras, 6);
+        assert!(report.normalized_camera_rms.unwrap() < 1e-6);
     }
 
     #[test]
