@@ -449,9 +449,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("ffmpeg produced no frames".into());
             }
             eprintln!(
-                "decoded {} frames from {:.3}s of video",
+                "selected {} geometry frames from {} candidates at {:.3} fps over {:.3}s",
                 decoded.frames.len(),
-                decoded.duration_seconds
+                decoded
+                    .candidate_indices
+                    .last()
+                    .map_or(0, |index| index + 1),
+                decode_settings.candidate_fps,
+                decoded.duration_seconds,
             );
             eprintln!(
                 "capture indicator: {:?} (mean adjacent luma delta {:.5})",
