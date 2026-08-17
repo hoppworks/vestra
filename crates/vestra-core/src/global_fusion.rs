@@ -25,6 +25,10 @@ pub struct FrameGlobalFusionSettings {
     /// fail the held-out scale gate are omitted, never interpolated, but a
     /// product with only isolated good fragments must not be published.
     pub minimum_fused_frame_fraction: f32,
+    /// Robust radius for temporal log-depth-scale smoothing.  Only adjacent
+    /// frames that independently pass the held-out gate participate; gaps in
+    /// global registration or scale evidence are never bridged.
+    pub temporal_scale_smoothing_radius: usize,
     /// Bounded, deterministic evidence set for normal-space TSDF. The raw
     /// surfel mode remains complete; this prevents a redundant dense raster
     /// from turning a browser-oriented surface product into an hours-long PCA
@@ -41,6 +45,7 @@ impl Default for FrameGlobalFusionSettings {
             maximum_held_out_median_log_error: 0.20,
             maximum_track_reprojection_error_px: 2.5,
             minimum_fused_frame_fraction: 0.85,
+            temporal_scale_smoothing_radius: 2,
             maximum_tsdf_observations: Some(6_000_000),
             tsdf: Some(TsdfSettings::default()),
         }
@@ -142,6 +147,8 @@ pub fn fuse_scene_bundle_frame_global(
             report_for_frame(*frame_index, view, &solution, evidence, &raster, settings)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let reports =
+        temporally_smooth_reports(reports, &views, &solution, evidence, &raster, settings)?;
     let accepted = reports
         .iter()
         .map(|report| {
@@ -361,8 +368,7 @@ fn report_for_frame(
     raster: &crate::RasterManifest,
     settings: FrameGlobalFusionSettings,
 ) -> Result<FrameGlobalReport, FrameGlobalFusionError> {
-    let Some((global_pose, camera)) = global_pose_and_camera(frame_index, solution, evidence)
-    else {
+    if global_pose_and_camera(frame_index, solution, evidence).is_none() {
         return Ok(FrameGlobalReport {
             frame_index,
             registered: false,
@@ -370,6 +376,53 @@ fn report_for_frame(
             held_out_samples: 0,
             scale: None,
             held_out_median_log_error: None,
+        });
+    }
+    let evidence =
+        scale_evidence_for_frame(frame_index, view, solution, evidence, raster, settings)?;
+    if evidence.train.len() < settings.minimum_scale_samples || evidence.held_out.is_empty() {
+        return Ok(FrameGlobalReport {
+            frame_index,
+            registered: true,
+            scale_samples: evidence.train.len(),
+            held_out_samples: evidence.held_out.len(),
+            scale: None,
+            held_out_median_log_error: None,
+        });
+    }
+    let mut train = evidence.train;
+    let log_scale = median(&mut train);
+    let scale = log_scale.exp();
+    let held_out_median_log_error = held_out_error(&evidence.held_out, log_scale);
+    Ok(FrameGlobalReport {
+        frame_index,
+        registered: true,
+        scale_samples: train.len(),
+        held_out_samples: evidence.held_out.len(),
+        scale: Some(scale),
+        held_out_median_log_error: Some(held_out_median_log_error),
+    })
+}
+
+#[derive(Debug)]
+struct ScaleEvidence {
+    train: Vec<f32>,
+    held_out: Vec<f32>,
+}
+
+fn scale_evidence_for_frame(
+    frame_index: usize,
+    view: &MeasuredFrameChunk,
+    solution: &PoseSolution,
+    evidence: &crate::GlobalTrajectoryEvidence,
+    raster: &crate::RasterManifest,
+    settings: FrameGlobalFusionSettings,
+) -> Result<ScaleEvidence, FrameGlobalFusionError> {
+    let Some((global_pose, camera)) = global_pose_and_camera(frame_index, solution, evidence)
+    else {
+        return Ok(ScaleEvidence {
+            train: Vec::new(),
+            held_out: Vec::new(),
         });
     };
     let points = view
@@ -413,31 +466,88 @@ fn report_for_frame(
             train.push(ratio.ln() as f32);
         }
     }
-    if train.len() < settings.minimum_scale_samples || held_out.is_empty() {
-        return Ok(FrameGlobalReport {
-            frame_index,
-            registered: true,
-            scale_samples: train.len(),
-            held_out_samples: held_out.len(),
-            scale: None,
-            held_out_median_log_error: None,
-        });
-    }
-    let log_scale = median(&mut train);
-    let scale = log_scale.exp();
+    Ok(ScaleEvidence { train, held_out })
+}
+
+fn held_out_error(held_out: &[f32], log_scale: f32) -> f32 {
     let mut residuals = held_out
-        .into_iter()
-        .map(|value| (value - log_scale).abs())
+        .iter()
+        .map(|value| (*value - log_scale).abs())
         .collect::<Vec<_>>();
-    let held_out_median_log_error = median(&mut residuals);
-    Ok(FrameGlobalReport {
-        frame_index,
-        registered: true,
-        scale_samples: train.len(),
-        held_out_samples: residuals.len(),
-        scale: Some(scale),
-        held_out_median_log_error: Some(held_out_median_log_error),
-    })
+    median(&mut residuals)
+}
+
+fn temporally_smooth_reports(
+    mut reports: Vec<FrameGlobalReport>,
+    views: &BTreeMap<usize, MeasuredFrameChunk>,
+    solution: &PoseSolution,
+    evidence: &crate::GlobalTrajectoryEvidence,
+    raster: &crate::RasterManifest,
+    settings: FrameGlobalFusionSettings,
+) -> Result<Vec<FrameGlobalReport>, FrameGlobalFusionError> {
+    if settings.temporal_scale_smoothing_radius == 0 {
+        return Ok(reports);
+    }
+    let eligible = reports
+        .iter()
+        .map(|report| {
+            report.scale.is_some_and(|_| {
+                report
+                    .held_out_median_log_error
+                    .is_some_and(|error| error <= settings.maximum_held_out_median_log_error)
+            })
+        })
+        .collect::<Vec<_>>();
+    let raw_logs = reports
+        .iter()
+        .map(|report| report.scale.map(f32::ln))
+        .collect::<Vec<_>>();
+    for index in 0..reports.len() {
+        if !eligible[index] {
+            continue;
+        }
+        let start = index.saturating_sub(settings.temporal_scale_smoothing_radius);
+        let end = (index + settings.temporal_scale_smoothing_radius + 1).min(reports.len());
+        let mut logs = Vec::new();
+        for neighbor in start..end {
+            if !eligible[neighbor]
+                || reports[neighbor]
+                    .frame_index
+                    .abs_diff(reports[index].frame_index)
+                    > settings.temporal_scale_smoothing_radius
+            {
+                continue;
+            }
+            // Never bridge a rejected/missing frame within the smoothing span.
+            let lower = neighbor.min(index);
+            let upper = neighbor.max(index);
+            if (lower..=upper).any(|position| !eligible[position]) {
+                continue;
+            }
+            logs.push(raw_logs[neighbor].expect("eligible report has scale"));
+        }
+        if logs.len() <= 1 {
+            continue;
+        }
+        let smoothed_log = median(&mut logs);
+        let view = views
+            .get(&reports[index].frame_index)
+            .expect("report has canonical view");
+        let samples = scale_evidence_for_frame(
+            reports[index].frame_index,
+            view,
+            solution,
+            evidence,
+            raster,
+            settings,
+        )?;
+        let error = held_out_error(&samples.held_out, smoothed_log);
+        if error <= settings.maximum_held_out_median_log_error {
+            reports[index].scale = Some(smoothed_log.exp());
+            reports[index].held_out_median_log_error = Some(error);
+        }
+    }
+    Ok(reports)
 }
 
 fn global_pose_and_camera<'a>(
