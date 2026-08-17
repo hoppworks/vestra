@@ -503,8 +503,14 @@ struct Da3CalibrationContract {
 
 #[derive(Debug, Deserialize)]
 struct Da3MvsHybridEvidence {
-    mvs_ply_sha256: String,
-    mvs_vertices: usize,
+    #[serde(default)]
+    mvs_ply_sha256: Option<String>,
+    #[serde(default)]
+    mvs_vertices: Option<usize>,
+    #[serde(default)]
+    mvs_depth_map_index_sha256: Option<String>,
+    #[serde(default)]
+    mvs_depth_map_count: Option<usize>,
     pixel_policy: String,
     median_mvs_coverage: f64,
 }
@@ -551,12 +557,22 @@ fn validate_mvs_hybrid_evidence(sidecar: &Da3PoseConditionedArtifact) -> Result<
         .hybrid
         .as_ref()
         .ok_or("MVS-DA3 hybrid artifact has no MVS provenance")?;
-    if !is_sha256(&hybrid.mvs_ply_sha256)
-        || hybrid.mvs_vertices == 0
+    let fused_ply = hybrid
+        .mvs_ply_sha256
+        .as_deref()
+        .is_some_and(is_sha256)
+        && hybrid.mvs_vertices.is_some_and(|count| count > 0);
+    let patchmatch_maps = hybrid
+        .mvs_depth_map_index_sha256
+        .as_deref()
+        .is_some_and(is_sha256)
+        && hybrid.mvs_depth_map_count.is_some_and(|count| count > 0);
+    if !(fused_ply || patchmatch_maps)
         || !matches!(
             hybrid.pixel_policy.as_str(),
             "mvs-zbuffer-where-observed-else-da3/v1"
                 | "mvs-zbuffer-plus-coarse-local-ratio/v1"
+                | "colmap-patchmatch-geometric-resample-else-da3/v1"
         )
         || !hybrid.median_mvs_coverage.is_finite()
         || hybrid.median_mvs_coverage <= 0.0
@@ -1524,6 +1540,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .is_some_and(|hybrid| {
                         hybrid.pixel_policy == "mvs-zbuffer-plus-coarse-local-ratio/v1"
                     });
+            let mvs_patchmatch = mvs_hybrid
+                && sidecar
+                    .hybrid
+                    .as_ref()
+                    .is_some_and(|hybrid| {
+                        hybrid.pixel_policy
+                            == "colmap-patchmatch-geometric-resample-else-da3/v1"
+                    });
             let verified_derivative = calibrated || mvs_hybrid;
             if (sidecar.schema != "vestra.da3-pose-conditioned/v1" && !verified_derivative)
                 || sidecar.raster_fingerprint != raster.raster_fingerprint
@@ -1607,7 +1631,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             let cloud = import_colmap_fused_ply(artifact.join(&sidecar.ply.file))?;
-            let id = if mvs_guided {
+            let id = if mvs_patchmatch {
+                "da3-mvs-patchmatch-colmap-surfel"
+            } else if mvs_guided {
                 "da3-mvs-guided-colmap-surfel"
             } else if mvs_hybrid {
                 "da3-mvs-hybrid-colmap-surfel"
@@ -1627,7 +1653,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     depth_target.join(&frame.file),
                 )?;
             }
-            let authority = if mvs_guided {
+            let authority = if mvs_patchmatch {
+                "colmap-patchmatch-geometric-plus-da3"
+            } else if mvs_guided {
                 "colmap-mvs-geometric-plus-da3-local-guidance"
             } else if mvs_hybrid {
                 "colmap-mvs-geometric-plus-da3"
@@ -2396,8 +2424,10 @@ mod tests {
             source: None,
             contract: None,
             hybrid: Some(Da3MvsHybridEvidence {
-                mvs_ply_sha256: "d".repeat(64),
-                mvs_vertices: 1,
+                mvs_ply_sha256: Some("d".repeat(64)),
+                mvs_vertices: Some(1),
+                mvs_depth_map_index_sha256: None,
+                mvs_depth_map_count: None,
                 pixel_policy: "mvs-zbuffer-where-observed-else-da3/v1".into(),
                 median_mvs_coverage: 0.2,
             }),
@@ -2419,7 +2449,15 @@ mod tests {
         guided.hybrid.as_mut().unwrap().pixel_policy =
             "mvs-zbuffer-plus-coarse-local-ratio/v1".into();
         assert!(validate_mvs_hybrid_evidence(&guided).is_ok());
-        let mut incomplete = guided;
+        let mut patchmatch = guided;
+        let evidence = patchmatch.hybrid.as_mut().unwrap();
+        evidence.mvs_ply_sha256 = None;
+        evidence.mvs_vertices = None;
+        evidence.mvs_depth_map_index_sha256 = Some("e".repeat(64));
+        evidence.mvs_depth_map_count = Some(195);
+        evidence.pixel_policy = "colmap-patchmatch-geometric-resample-else-da3/v1".into();
+        assert!(validate_mvs_hybrid_evidence(&patchmatch).is_ok());
+        let mut incomplete = patchmatch;
         incomplete.hybrid.as_mut().unwrap().median_mvs_coverage = 0.0;
         assert!(validate_mvs_hybrid_evidence(&incomplete).is_err());
     }
