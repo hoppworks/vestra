@@ -1481,7 +1481,8 @@ mod tests {
         assert!(INDEX_HTML.contains("bind(batch.a)"));
         assert!(INDEX_HTML.contains("id=\"products\""));
         assert!(INDEX_HTML.contains("function bindProductSelector"));
-        assert!(INDEX_HTML.contains("/manifest.json'+productSuffix"));
+        assert!(INDEX_HTML.contains("fetch('manifest.json'+productSuffix"));
+        assert!(!INDEX_HTML.contains("fetch('/manifest.json"));
     }
 
     #[test]
@@ -1493,7 +1494,8 @@ mod tests {
         );
         assert!(INDEX_HTML.contains("id=\"input-video\""));
         assert!(INDEX_HTML.contains("id=\"replay-points\""));
-        assert!(INDEX_HTML.contains("src=\"/input-video\""));
+        assert!(INDEX_HTML.contains("src=\"input-video\""));
+        assert!(INDEX_HTML.contains("fetch('replay/frames/"));
         assert!(INDEX_HTML.contains("function updateReplay()"));
         assert!(INDEX_HTML.contains("original capture · 3:2 crop"));
         assert!(INDEX_HTML.contains("dense depth map · matched camera"));
