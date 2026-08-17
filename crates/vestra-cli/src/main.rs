@@ -1,5 +1,5 @@
 use std::{
-    fs::File,
+    fs::{self, File},
     io::{BufReader, Read},
     path::{Path, PathBuf},
     time::Instant,
@@ -458,11 +458,28 @@ struct Da3PoseConditionedArtifact {
     align_to_input_ext_scale: bool,
     frames: Vec<usize>,
     ply: Da3PoseConditionedPly,
+    depth_frames: Da3PoseConditionedDepthFrames,
 }
 
 #[derive(Debug, Deserialize)]
 struct Da3PoseConditionedPly {
     schema: String,
+    file: String,
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Da3PoseConditionedDepthFrames {
+    schema: String,
+    directory: String,
+    width: usize,
+    height: usize,
+    frames: Vec<Da3PoseConditionedDepthFrame>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Da3PoseConditionedDepthFrame {
+    frame_index: usize,
     file: String,
     sha256: String,
 }
@@ -1383,6 +1400,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .into(),
                 );
             }
+            if sidecar.depth_frames.schema != "vestra.da3-pose-conditioned-depth-frames/v1"
+                || Path::new(&sidecar.depth_frames.directory)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    != Some(sidecar.depth_frames.directory.as_str())
+                || sidecar.depth_frames.width != 504
+                || sidecar.depth_frames.height != 336
+            {
+                return Err("DA3 artifact has no supported 504x336 depth-preview contract".into());
+            }
             let solution = bundle.read_pose_solution(&pose_solution)?;
             let registered = solution
                 .frames
@@ -1396,8 +1423,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .into(),
                 );
             }
+            let depth_indices = sidecar
+                .depth_frames
+                .frames
+                .iter()
+                .map(|frame| frame.frame_index)
+                .collect::<Vec<_>>();
+            if depth_indices != registered {
+                return Err("DA3 depth-preview frames differ from the registered COLMAP trajectory".into());
+            }
+            for frame in &sidecar.depth_frames.frames {
+                if Path::new(&frame.file).file_name().and_then(|name| name.to_str())
+                    != Some(frame.file.as_str())
+                    || frame.sha256.len() != 64
+                    || sha256_file(&artifact.join(&sidecar.depth_frames.directory).join(&frame.file))? != frame.sha256
+                {
+                    return Err("DA3 depth-preview asset is missing, unsafe, or does not match its recorded SHA-256".into());
+                }
+            }
             let cloud = import_colmap_fused_ply(artifact.join(&sidecar.ply.file))?;
             let id = "da3-pose-conditioned-colmap-surfel";
+            let depth_target = bundle.root().join("depth").join(id);
+            if depth_target.exists() {
+                fs::remove_dir_all(&depth_target)?;
+            }
+            fs::create_dir_all(&depth_target)?;
+            for frame in &sidecar.depth_frames.frames {
+                fs::copy(
+                    artifact.join(&sidecar.depth_frames.directory).join(&frame.file),
+                    depth_target.join(&frame.file),
+                )?;
+            }
             let chunk_hash = bundle.write_fused_scene_as(
                 &cloud,
                 id,
@@ -1406,6 +1462,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some(pose_solution.clone()),
             )?;
             bundle.set_world_product_source_frames(id, &registered)?;
+            bundle.set_world_product_depth_frame_count(id, sidecar.depth_frames.frames.len())?;
             println!(
                 "{}",
                 serde_json::json!({
@@ -1414,6 +1471,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "artifact": artifact,
                     "pose_solution": pose_solution,
                     "source_frames": registered.len(),
+                    "depth_preview_frames": sidecar.depth_frames.frames.len(),
                     "fused_chunk": chunk_hash,
                     "fused_points": cloud.points.len(),
                     "surface": "surfel",

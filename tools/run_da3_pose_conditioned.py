@@ -23,6 +23,7 @@ from typing import Any, Iterable
 
 SCHEMA = "vestra.da3-pose-conditioned/v1"
 PLY_SCHEMA = "vestra.da3-pose-conditioned-ply/v1"
+DEPTH_FRAME_SCHEMA = "vestra.da3-pose-conditioned-depth-frames/v1"
 
 
 def sha256_file(path: Path) -> str:
@@ -275,6 +276,66 @@ def write_ply(path: Path, batch_paths: Iterable[Path], confidence_percentile: fl
     return emitted
 
 
+def colorized_depth(depth: Any, np: Any) -> Any:
+    """Returns a deterministic rainbow-like RGB view of one real depth map.
+
+    This is explicitly a display derivative. The original float32 depth remains
+    in the batch NPZ and is the geometry evidence used for backprojection.
+    """
+    valid = np.isfinite(depth) & (depth > 0)
+    inverse = np.zeros_like(depth, dtype=np.float32)
+    inverse[valid] = 1.0 / depth[valid]
+    if not valid.any():
+        return np.zeros((*depth.shape, 3), dtype=np.uint8)
+    low, high = np.percentile(inverse[valid], [2.0, 98.0])
+    t = np.clip((inverse - low) / max(float(high - low), 1e-8), 0.0, 1.0)
+    # Blue → cyan → green → yellow → red; near geometry is warm.
+    stops = np.asarray(
+        [[0.10, 0.12, 0.55], [0.00, 0.78, 0.95], [0.05, 0.82, 0.26], [0.98, 0.88, 0.08], [0.86, 0.08, 0.04]],
+        dtype=np.float32,
+    )
+    scaled = t * (len(stops) - 1)
+    lower = np.floor(scaled).astype(np.intp)
+    upper = np.minimum(lower + 1, len(stops) - 1)
+    fraction = (scaled - lower)[..., None]
+    rgb = stops[lower] * (1.0 - fraction) + stops[upper] * fraction
+    rgb[~valid] = 0.0
+    return np.rint(rgb * 255.0).astype(np.uint8)
+
+
+def write_ppm(path: Path, rgb: Any) -> None:
+    if rgb.ndim != 3 or rgb.shape[2] != 3 or rgb.dtype != "uint8":
+        fail("depth preview must be an RGB uint8 raster")
+    height, width = rgb.shape[:2]
+    path.write_bytes(f"P6\n{width} {height}\n255\n".encode("ascii") + rgb.tobytes())
+
+
+def write_depth_frames(directory: Path, batch_paths: Iterable[Path], np: Any) -> dict[str, Any]:
+    """Writes first-owner, camera-matched depth previews for Studio replay."""
+    directory.mkdir(parents=True, exist_ok=True)
+    emitted: list[dict[str, Any]] = []
+    owned: set[int] = set()
+    for batch_path in batch_paths:
+        for frame_index, depth, _rgb, _conf, _intrinsics, _extrinsics in batch_records(batch_path, np):
+            if frame_index in owned:
+                continue
+            owned.add(frame_index)
+            file_name = f"frame-{frame_index:06d}.ppm"
+            path = directory / file_name
+            write_ppm(path, colorized_depth(depth, np))
+            emitted.append({"frame_index": frame_index, "file": file_name, "sha256": sha256_file(path)})
+    if not emitted:
+        fail("DA3 produced no depth previews")
+    width, height = ppm_dimensions(directory / emitted[0]["file"])
+    return {
+        "schema": DEPTH_FRAME_SCHEMA,
+        "directory": directory.name,
+        "width": width,
+        "height": height,
+        "frames": emitted,
+    }
+
+
 def run(args: argparse.Namespace) -> None:
     raster_fingerprint, frames = read_inputs(args.scene, args.pose_solution)
     layout = batches(frames, args.batch_size, args.overlap)
@@ -326,10 +387,34 @@ def run(args: argparse.Namespace) -> None:
         batch_paths.append(output)
         manifest["batches"][batch_index].update({"file": output.name, "sha256": sha256_file(output), "depth_shape": list(depth.shape), "confidence_present": prediction.conf is not None, "cameras": [{"frame_index": frame.index, "world_to_camera": list(frame.w2c), "intrinsics": list(frame.intrinsics)} for frame in batch]})
         (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    manifest["depth_frames"] = write_depth_frames(args.output / "depth-frames", batch_paths, np)
     ply = args.output / "world.ply"
     points = write_ply(ply, batch_paths, args.confidence_percentile, args.pixel_stride, np)
     manifest.update({"ply": {"schema": PLY_SCHEMA, "file": ply.name, "sha256": sha256_file(ply), "points": points, "confidence_percentile": args.confidence_percentile}})
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def render_depth_frames_only(args: argparse.Namespace) -> None:
+    """Adds display-only depth assets to an already verified sidecar artifact."""
+    raster_fingerprint, frames = read_inputs(args.scene, args.pose_solution)
+    manifest_path = args.output / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema") != SCHEMA or manifest.get("raster_fingerprint") != raster_fingerprint or manifest.get("pose_solution_hash") != args.pose_solution:
+        fail("existing artifact does not bind the requested raster and pose solution")
+    if manifest.get("frames") != [frame.index for frame in frames]:
+        fail("existing artifact frame ownership differs from the requested pose solution")
+    import numpy as np
+    paths: list[Path] = []
+    for batch in manifest.get("batches", []):
+        file_name, digest = batch.get("file"), batch.get("sha256")
+        if not isinstance(file_name, str) or Path(file_name).name != file_name or not isinstance(digest, str):
+            fail("existing artifact has an invalid batch identity")
+        path = args.output / file_name
+        if not path.is_file() or sha256_file(path) != digest:
+            fail(f"existing artifact batch does not match its hash: {file_name}")
+        paths.append(path)
+    manifest["depth_frames"] = write_depth_frames(args.output / "depth-frames", paths, np)
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def parse_args() -> argparse.Namespace:
@@ -345,12 +430,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--confidence-percentile", type=float, default=40.0)
     parser.add_argument("--pixel-stride", type=int, default=2)
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--render-depth-frames-only", action="store_true")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     try:
-        run(parse_args())
+        args = parse_args()
+        if args.render_depth_frames_only:
+            render_depth_frames_only(args)
+        else:
+            run(args)
     except Exception as error:
         print(f"error: {error}", file=sys.stderr)
         raise SystemExit(1)

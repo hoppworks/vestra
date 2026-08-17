@@ -747,7 +747,8 @@ fn intake_world_path(path: &str) -> Option<&str> {
     .or_else(|| {
         (path.starts_with("/chunks/")
             || path.starts_with("/sources/")
-            || path.starts_with("/replay/frames/"))
+            || path.starts_with("/replay/frames/")
+            || path.starts_with("/depth/frames/"))
         .then_some(path)
     })
 }
@@ -816,6 +817,9 @@ fn handle_scene_path(
         "/evidence.json" => evidence(root, product),
         _ if path.starts_with("/replay/frames/") && path.ends_with(".bin") => {
             replay_frame(root, path)
+        }
+        _ if path.starts_with("/depth/frames/") && path.ends_with(".bmp") => {
+            product_depth_frame(root, product, path)
         }
         _ if path.starts_with("/chunks/") && path.ends_with(".json") && safe_chunk_path(path) => {
             read_file(root.join(&path[1..]), "application/json")
@@ -1323,6 +1327,48 @@ fn replay_frame_index(request_path: &str) -> Option<usize> {
         .ok()
 }
 
+/// Serves a display-only, colourized DA3 depth raster retained with an
+/// independent world product. The browser never synthesizes this image from
+/// surfels, so it remains a truthful per-camera depth result.
+fn product_depth_frame(
+    root: &Path,
+    product_id: Option<&str>,
+    request_path: &str,
+) -> (&'static str, &'static str, Vec<u8>) {
+    let Some(frame_index) = request_path
+        .strip_prefix("/depth/frames/")
+        .and_then(|value| value.strip_suffix(".bmp"))
+        .and_then(|value| value.parse::<usize>().ok())
+    else {
+        return not_found();
+    };
+    let result = (|| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let bundle = SceneBundle::open(root)?;
+        let manifest = bundle.manifest()?;
+        let selected = product_id.or(manifest.selected_world_product.as_deref());
+        let product = manifest
+            .world_products
+            .iter()
+            .find(|candidate| Some(candidate.id.as_str()) == selected)
+            .ok_or("depth request has no selected world product")?;
+        if product.depth_frame_count == 0
+            || !product.source_frame_indices.binary_search(&frame_index).is_ok()
+        {
+            return Err("selected product has no retained depth frame".into());
+        }
+        ppm_to_bmp(
+            &root
+                .join("depth")
+                .join(&product.id)
+                .join(format!("frame-{frame_index:06}.ppm")),
+        )
+    })();
+    match result {
+        Ok(body) => ("200 OK", "image/bmp", body),
+        Err(_) => not_found(),
+    }
+}
+
 /// `VRPL` v2 is a camera-space point-cloud payload, not an image raster.
 /// It contains magic/version/reserved/count, `fx/fy/cx/cy`, then
 /// `[camera_x:f32, camera_y:f32, camera_z:f32, r:u8, g:u8, b:u8]` per real
@@ -1632,7 +1678,8 @@ mod tests {
         assert!(INDEX_HTML.contains("independentWorld"));
         assert!(INDEX_HTML.contains("selectedProduct.pose_authority!=='local-pr2-relative'"));
         assert!(INDEX_HTML.contains("independentWorld&&sourceFrames.length===0"));
-        assert!(INDEX_HTML.contains("if(independentWorld){document.querySelector('#replay-toggle').style.display='none'"));
+        assert!(INDEX_HTML.contains("if(independentWorld&&!productDepthFrames)document.querySelector('#replay-toggle').style.display='none'"));
+        assert!(INDEX_HTML.contains("official DA3 depth map · matched COLMAP camera"));
     }
 
     #[test]
@@ -1797,10 +1844,17 @@ mod tests {
     #[test]
     fn local_host_serves_a_bundle_manifest() {
         let root = std::env::temp_dir().join(format!("vestra-studio-test-{}", std::process::id()));
-        fs::create_dir_all(&root).unwrap();
-        fs::write(
-            root.join("manifest.json"),
-            b"{\"schema\":\"vestra.scene/v1\"}",
+        if root.exists() {
+            fs::remove_dir_all(&root).unwrap();
+        }
+        SceneBundle::create(
+            &root,
+            vestra_core::SceneProvenance {
+                engine_revision: "test".into(),
+                kernel_revision: "test".into(),
+                model_fingerprint: "test".into(),
+                settings_fingerprint: "test".into(),
+            },
         )
         .unwrap();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -1818,7 +1872,7 @@ mod tests {
         client.read_to_string(&mut response).unwrap();
         worker.join().unwrap();
         assert!(response.starts_with("HTTP/1.1 200 OK"));
-        assert!(response.ends_with("{\"schema\":\"vestra.scene/v1\"}"));
+        assert!(response.contains("\"schema\":\"vestra.scene/v1\""));
         fs::remove_dir_all(root).unwrap();
     }
 

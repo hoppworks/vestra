@@ -113,6 +113,23 @@ class PoseConditionedRunnerTest(unittest.TestCase):
         np.testing.assert_array_equal(pose[0, :3, :], matrices[0])
         np.testing.assert_array_equal(pose[0, 3, :], np.array([0, 0, 0, 1], dtype=np.float32))
 
+    def test_depth_preview_is_a_real_colored_first_owner_raster(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            depth = np.array([[[1.0, 2.0], [3.0, 4.0]]], dtype=np.float32)
+            rgb = np.zeros((1, 2, 2, 3), dtype=np.uint8)
+            conf = np.ones_like(depth)
+            intrinsics = np.eye(3, dtype=np.float32)[None, :, :]
+            extrinsics = np.eye(4, dtype=np.float32)[None, :, :]
+            batch = root / "batch.npz"
+            np.savez_compressed(batch, depth=depth, conf=conf, rgb=rgb, intrinsics=intrinsics, extrinsics=extrinsics, frame_indices=np.array([7]))
+            preview = SIDECAR.write_depth_frames(root / "depth-frames", [batch], np)
+            self.assertEqual(preview["frames"][0]["frame_index"], 7)
+            frame = root / "depth-frames" / "frame-000007.ppm"
+            self.assertEqual(SIDECAR.ppm_dimensions(frame), (2, 2))
+            pixels = frame.read_bytes().split(b"255\n", 1)[1]
+            self.assertNotEqual(pixels[:3], pixels[-3:])
+
 
 if __name__ == "__main__":
     unittest.main()

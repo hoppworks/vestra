@@ -114,6 +114,11 @@ pub struct WorldProduct {
     /// measured chunks merely to rediscover product ownership.
     #[serde(default)]
     pub source_frame_indices: Vec<usize>,
+    /// A product may retain one lossless, colour-ready depth raster for every
+    /// admitted source frame. It is independent DA3 evidence, never inferred
+    /// from the fused point cloud used by the 3D viewer.
+    #[serde(default)]
+    pub depth_frame_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -432,6 +437,7 @@ impl SceneBundle {
             summary,
             pose_solution_hash,
             source_frame_indices: Vec::new(),
+            depth_frame_count: 0,
         };
         manifest.world_products.retain(|existing| {
             existing.id != product.id
@@ -471,6 +477,32 @@ impl SceneBundle {
                 SceneBundleError::InvalidArtifact(format!("unknown world product {id:?}"))
             })?;
         product.source_frame_indices = frames;
+        self.write_manifest(&manifest)
+    }
+
+    /// Marks the verified depth-raster assets attached to a derived product.
+    /// The assets themselves live under `depth/<product-id>/` in the same
+    /// local bundle and retain the product's source-frame indexing.
+    pub fn set_world_product_depth_frame_count(
+        &self,
+        id: &str,
+        count: usize,
+    ) -> Result<(), SceneBundleError> {
+        let mut manifest = self.manifest()?;
+        let product = manifest
+            .world_products
+            .iter_mut()
+            .find(|product| product.id == id)
+            .ok_or_else(|| {
+                SceneBundleError::InvalidArtifact(format!("unknown world product {id:?}"))
+            })?;
+        if count > product.source_frame_indices.len() {
+            return Err(SceneBundleError::InvalidArtifact(format!(
+                "depth frame count {count} exceeds source frame count {}",
+                product.source_frame_indices.len()
+            )));
+        }
+        product.depth_frame_count = count;
         self.write_manifest(&manifest)
     }
 
