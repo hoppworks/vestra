@@ -239,6 +239,10 @@ enum Command {
         /// regular stride samples every admitted frame and raster region.
         #[arg(long, default_value_t = 1_000_000)]
         maximum_observations: usize,
+        /// Derive from the held-out verified calibrated DA3 surfel product
+        /// instead of the immutable raw diagnostic product.
+        #[arg(long)]
+        calibrated: bool,
     },
     /// Attach the exact decoded-raster contract to a legacy scene before
     /// importing a global pose provider. This never re-runs DA3 inference.
@@ -1511,18 +1515,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             scene,
             pose_solution,
             maximum_observations,
+            calibrated,
         } => {
             if maximum_observations == 0 {
                 return Err("maximum observations must be positive".into());
             }
             let bundle = SceneBundle::open(scene)?;
             let manifest = bundle.manifest()?;
+            let source_id = if calibrated {
+                "da3-pose-conditioned-colmap-calibrated-surfel"
+            } else {
+                "da3-pose-conditioned-colmap-surfel"
+            };
+            let expected_authority = if calibrated {
+                "da3-base-pose-conditioned-colmap-calibrated"
+            } else {
+                "da3-base-pose-conditioned-colmap"
+            };
             let raw = manifest
                 .world_products
                 .iter()
-                .find(|product| product.id == "da3-pose-conditioned-colmap-surfel")
-                .ok_or("pose-conditioned DA3 surfel product has not been imported")?;
-            if raw.pose_authority != "da3-base-pose-conditioned-colmap"
+                .find(|product| product.id == source_id)
+                .ok_or("requested pose-conditioned DA3 surfel product has not been imported")?;
+            if raw.pose_authority != expected_authority
                 || raw.pose_solution_hash.as_deref() != Some(pose_solution.as_str())
             {
                 return Err("pose-conditioned DA3 surfel product does not bind the requested COLMAP pose solution".into());
@@ -1574,11 +1589,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     })
                     .collect(),
             };
-            let id = "da3-pose-conditioned-colmap-tsdf";
+            let id = if calibrated {
+                "da3-pose-conditioned-colmap-calibrated-tsdf"
+            } else {
+                "da3-pose-conditioned-colmap-tsdf"
+            };
             let chunk_hash = bundle.write_fused_scene_as(
                 &tsdf_cloud,
                 id,
-                "da3-base-pose-conditioned-colmap",
+                expected_authority,
                 "tsdf",
                 Some(pose_solution.clone()),
             )?;
@@ -1589,7 +1608,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "schema": "vestra.da3-pose-conditioned-tsdf/v1",
                     "bundle": bundle.root(),
                     "pose_solution": pose_solution,
-                    "source_product": "da3-pose-conditioned-colmap-surfel",
+                    "source_product": source_id,
                     "fused_chunk": chunk_hash,
                     "source_points": raw_cloud.points.len(),
                     "tsdf_observations": observations.len(),
