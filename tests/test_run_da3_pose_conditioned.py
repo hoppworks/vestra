@@ -163,6 +163,8 @@ class PoseConditionedRunnerTest(unittest.TestCase):
             self.assertEqual(emitted, 12)
             header = output.read_bytes().split(b"end_header\n", 1)[0].decode("ascii")
             self.assertIn("element vertex 12", header)
+            filtered = root / "filtered.ply"
+            self.assertEqual(SIDECAR.write_ply(filtered, [first, second], 0.0, 1, np, {1, 2}), 8)
 
     def test_pose44_preserves_da3_documented_3x4_w2c(self):
         matrices = np.array([[

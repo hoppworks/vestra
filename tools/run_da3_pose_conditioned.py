@@ -347,7 +347,14 @@ def batch_records(path: Path, np: Any) -> Iterable[tuple[int, Any, Any, Any, Any
             yield int(indices[index]), depth[index], rgb[index], conf[index], intrinsics[index], extrinsics[index]
 
 
-def write_ply(path: Path, batch_paths: Iterable[Path], confidence_percentile: float, pixel_stride: int, np: Any) -> int:
+def write_ply(
+    path: Path,
+    batch_paths: Iterable[Path],
+    confidence_percentile: float,
+    pixel_stride: int,
+    np: Any,
+    allowed_frames: set[int] | None = None,
+) -> int:
     paths = list(batch_paths)
     confidence_parts: list[Any] = []
     for batch_path in paths:
@@ -363,7 +370,7 @@ def write_ply(path: Path, batch_paths: Iterable[Path], confidence_percentile: fl
     point_count = 0
     for batch_path in paths:
         for frame_index, depth, rgb, conf, intrinsics, extrinsics in batch_records(batch_path, np):
-            if frame_index in emitted_frame_indices:
+            if frame_index in emitted_frame_indices or (allowed_frames is not None and frame_index not in allowed_frames):
                 continue
             emitted_frame_indices.add(frame_index)
             point_count += len(
@@ -375,7 +382,7 @@ def write_ply(path: Path, batch_paths: Iterable[Path], confidence_percentile: fl
         emitted_frame_indices.clear()
         for batch_path in paths:
             for frame_index, depth, rgb, conf, intrinsics, extrinsics in batch_records(batch_path, np):
-                if frame_index in emitted_frame_indices:
+                if frame_index in emitted_frame_indices or (allowed_frames is not None and frame_index not in allowed_frames):
                     continue
                 emitted_frame_indices.add(frame_index)
                 xyz, normals, colors = normal_and_world_points(depth, rgb, conf, intrinsics, extrinsics, pixel_stride, threshold, np)
@@ -421,14 +428,19 @@ def write_ppm(path: Path, rgb: Any) -> None:
     path.write_bytes(f"P6\n{width} {height}\n255\n".encode("ascii") + rgb.tobytes())
 
 
-def write_depth_frames(directory: Path, batch_paths: Iterable[Path], np: Any) -> dict[str, Any]:
+def write_depth_frames(
+    directory: Path,
+    batch_paths: Iterable[Path],
+    np: Any,
+    allowed_frames: set[int] | None = None,
+) -> dict[str, Any]:
     """Writes first-owner, camera-matched depth previews for Studio replay."""
     directory.mkdir(parents=True, exist_ok=True)
     emitted: list[dict[str, Any]] = []
     owned: set[int] = set()
     for batch_path in batch_paths:
         for frame_index, depth, _rgb, _conf, _intrinsics, _extrinsics in batch_records(batch_path, np):
-            if frame_index in owned:
+            if frame_index in owned or (allowed_frames is not None and frame_index not in allowed_frames):
                 continue
             owned.add(frame_index)
             file_name = f"frame-{frame_index:06d}.ppm"

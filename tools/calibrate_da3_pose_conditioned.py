@@ -143,12 +143,30 @@ def run(args: argparse.Namespace) -> None:
         batch["sha256"] = sha256_file(target)
         paths.append(target)
     rows = manifest["calibration"]["frames"]
-    accepted = [row for row in rows if row["accepted"] and row["held_out_median_log_error"] <= args.maximum_held_out_median_log_error]
-    manifest["calibration"]["accepted_predictions"] = len(accepted)
+    # A frame can occur in an overlap twice. The first owner is the only
+    # prediction eligible for display/PLY emission, matching the sidecar's
+    # ownership rule. Later overlap copies remain only as seam evidence.
+    first_owner = {}
+    for row in rows:
+        first_owner.setdefault(row["frame_index"], row)
+    published = [
+        frame_index
+        for frame_index in source["frames"]
+        if (row := first_owner.get(frame_index)) is not None
+        and row["accepted"]
+        and row["held_out_median_log_error"] <= args.maximum_held_out_median_log_error
+    ]
+    if len(published) / max(len(source["frames"]), 1) < 0.85:
+        raise ValueError("fewer than 85% of registered frames passed held-out depth calibration")
+    published_set = set(published)
+    manifest["published_frames"] = published
+    manifest["calibration"]["accepted_predictions"] = len(accepted := [row for row in rows if row["accepted"] and row["held_out_median_log_error"] <= args.maximum_held_out_median_log_error])
     manifest["calibration"]["total_predictions"] = len(rows)
-    manifest["depth_frames"] = write_depth_frames(args.output / "depth-frames", paths, np)
+    manifest["calibration"]["accepted_first_owner_frames"] = len(published)
+    manifest["calibration"]["total_registered_frames"] = len(source["frames"])
+    manifest["depth_frames"] = write_depth_frames(args.output / "depth-frames", paths, np, published_set)
     ply = args.output / "world.ply"
-    points = write_ply(ply, paths, args.confidence_percentile, args.pixel_stride, np)
+    points = write_ply(ply, paths, args.confidence_percentile, args.pixel_stride, np, published_set)
     manifest["ply"] = {"schema": source["ply"]["schema"], "file": ply.name, "sha256": sha256_file(ply), "points": points, "confidence_percentile": args.confidence_percentile}
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 

@@ -457,6 +457,8 @@ struct Da3PoseConditionedArtifact {
     pose_solution_hash: String,
     align_to_input_ext_scale: bool,
     frames: Vec<usize>,
+    #[serde(default)]
+    published_frames: Option<Vec<usize>>,
     ply: Da3PoseConditionedPly,
     depth_frames: Da3PoseConditionedDepthFrames,
 }
@@ -1423,14 +1425,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .into(),
                 );
             }
+            let published_frames = sidecar.published_frames.as_deref().unwrap_or(&registered);
+            if published_frames.is_empty()
+                || !published_frames
+                    .iter()
+                    .all(|frame| registered.binary_search(frame).is_ok())
+                || published_frames.windows(2).any(|pair| pair[0] >= pair[1])
+                || published_frames.len() * 100 < registered.len() * 85
+            {
+                return Err(
+                    "DA3 artifact published frames are not an ordered, sufficiently covered subset of the registered COLMAP trajectory".into(),
+                );
+            }
             let depth_indices = sidecar
                 .depth_frames
                 .frames
                 .iter()
                 .map(|frame| frame.frame_index)
                 .collect::<Vec<_>>();
-            if depth_indices != registered {
-                return Err("DA3 depth-preview frames differ from the registered COLMAP trajectory".into());
+            if depth_indices != published_frames {
+                return Err("DA3 depth-preview frames differ from the published COLMAP frame subset".into());
             }
             for frame in &sidecar.depth_frames.frames {
                 if Path::new(&frame.file).file_name().and_then(|name| name.to_str())
@@ -1461,7 +1475,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "surfel",
                 Some(pose_solution.clone()),
             )?;
-            bundle.set_world_product_source_frames(id, &registered)?;
+            bundle.set_world_product_source_frames(id, published_frames)?;
             bundle.set_world_product_depth_frame_count(id, sidecar.depth_frames.frames.len())?;
             println!(
                 "{}",
@@ -1470,7 +1484,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "bundle": bundle.root(),
                     "artifact": artifact,
                     "pose_solution": pose_solution,
-                    "source_frames": registered.len(),
+                    "source_frames": published_frames.len(),
                     "depth_preview_frames": sidecar.depth_frames.frames.len(),
                     "fused_chunk": chunk_hash,
                     "fused_points": cloud.points.len(),
