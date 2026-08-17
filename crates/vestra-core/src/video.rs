@@ -492,18 +492,37 @@ pub fn select_geometry_keyframes(
         .ceil()
         .max(1.0) as usize;
     let mut selected = vec![0];
-    for candidate_index in 1..candidates.len() - 1 {
+    while *selected.last().expect("first candidate is retained") < candidates.len() - 1 {
         let previous = *selected.last().expect("first candidate is retained");
-        let signature = &signatures[candidate_index];
-        let novelty = mean_absolute_difference(&signatures[previous].luma, &signature.luma);
-        let forced = candidate_index - previous >= maximum_gap;
-        if forced
-            || (signature.sharpness >= settings.minimum_sharpness
-                && candidate_index - previous >= minimum_gap
-                && novelty >= settings.minimum_novelty)
-        {
-            selected.push(candidate_index);
+        let start = (previous + minimum_gap).min(candidates.len() - 1);
+        let end = (previous + maximum_gap).min(candidates.len() - 1);
+        if start >= candidates.len() - 1 {
+            break;
         }
+        // Choose the strongest sharp-and-new observation from the permitted
+        // temporal band instead of accepting the first candidate at its lower
+        // bound. It is still deterministic, and the gap guard makes the
+        // output rate duration-dependent rather than a global frame target.
+        let chosen = (start..=end)
+            .filter_map(|candidate_index| {
+                let signature = &signatures[candidate_index];
+                let novelty = mean_absolute_difference(&signatures[previous].luma, &signature.luma);
+                (signature.sharpness >= settings.minimum_sharpness
+                    && novelty >= settings.minimum_novelty)
+                    .then_some((candidate_index, signature.sharpness * novelty))
+            })
+            .max_by(|left, right| {
+                left.1
+                    .partial_cmp(&right.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| left.0.cmp(&right.0).reverse())
+            })
+            .map(|(candidate_index, _)| candidate_index)
+            // Preserve a bounded trajectory even if every raster in this
+            // interval is blurry or near-static. A future SLAM provider can
+            // reject it based on actual pose evidence.
+            .unwrap_or(end);
+        selected.push(chosen);
     }
     if selected.last().copied() != Some(candidates.len() - 1) {
         selected.push(candidates.len() - 1);
@@ -891,7 +910,7 @@ mod tests {
     }
 
     #[test]
-    fn geometry_keyframe_selection_keeps_sharp_novel_views_without_waiting_for_gap() {
+    fn geometry_keyframe_selection_prefers_the_strongest_novel_view_in_a_time_band() {
         let candidates = vec![checkerboard(0), checkerboard(40), checkerboard(80)];
         assert_eq!(
             select_geometry_keyframes(
@@ -903,7 +922,7 @@ mod tests {
                     ..GeometryKeyframeSettings::default()
                 },
             ),
-            vec![0, 1, 2]
+            vec![0, 2]
         );
     }
 

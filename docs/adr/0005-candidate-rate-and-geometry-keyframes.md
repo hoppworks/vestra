@@ -17,7 +17,9 @@ minimum temporal baseline, thumbnail luma novelty, a local sharpness floor,
 and a maximum 0.6-second temporal gap. The lower bound prevents a smooth pan
 from treating every candidate as a new geometry view; the upper bound keeps a
 slow walk-through from developing large temporal holes. The first and final
-candidate frames are always retained.
+candidate frames are always retained. Within each permitted temporal band,
+Vestra retains the strongest sharp-and-novel candidate, rather than blindly
+selecting the first candidate at the lower bound.
 
 The selected canonical rasters are renumbered for the engine, while
 `decoded/selection.json` records the original candidate indices. Raster
