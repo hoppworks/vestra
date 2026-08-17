@@ -226,6 +226,9 @@ def main() -> int:
     ]), log)
     model = largest_model(sparse)
     ba = output / "global-ba"
+    # COLMAP 4's bundle_adjuster refuses a non-existent output directory,
+    # unlike mapper which creates its numbered model directories itself.
+    ba.mkdir()
     run(colmap_command(args, [
         "bundle_adjuster", "--input_path", str(model), "--output_path", str(ba),
         "--BundleAdjustment.refine_focal_length", "1", "--BundleAdjustment.refine_extra_params", "1",
