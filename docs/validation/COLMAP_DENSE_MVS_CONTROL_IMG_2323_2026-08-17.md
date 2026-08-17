@@ -73,6 +73,27 @@ the installed COLMAP build reports `geom_consistency: 0` before neighbour maps
 exist. A later geometric fusion may only be labelled geometric when the log
 explicitly reports `geom_consistency: 1` and a geometric fused PLY exists.
 
+### Workhorse container contract
+
+The RTX Workhorse's SELinux policy requires the copied `/tmp` MVS workspace to
+be mounted with `:Z`; ordinary UNIX write permissions alone are insufficient.
+The model and images remain copied inputs, never bind-mounted from the mutable
+Vestra bundle. The two PatchMatch passes are intentional and must be distinct:
+
+```sh
+# Initial photometric maps: required before geometric consistency is possible.
+colmap patch_match_stereo --workspace_path /work/dense --workspace_format COLMAP
+
+# Geometric re-estimation over the completed photometric neighbourhood maps.
+colmap patch_match_stereo --workspace_path /work/dense --workspace_format COLMAP \
+  --PatchMatchStereo.geom_consistency 1
+```
+
+Use the literal numeric option for the second command and verify the emitted
+configuration line reads `geom_consistency: 1`. Passing `true` to the pinned
+build was observed to leave the option at `0`; that output is photometric
+initialisation and must not be fused or labelled geometric.
+
 ## Current geometric control run
 
 The initial photometric-only control remains preserved as
