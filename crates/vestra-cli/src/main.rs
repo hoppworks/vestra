@@ -112,6 +112,22 @@ enum Command {
         #[arg(long)]
         settings_fingerprint: String,
     },
+    /// Attach the exact decoded-raster contract to a legacy scene before
+    /// importing a global pose provider. This never re-runs DA3 inference.
+    RasterRecord {
+        #[arg(long)]
+        scene: PathBuf,
+        #[arg(long)]
+        video: PathBuf,
+        #[arg(long)]
+        candidate_fps: f64,
+        #[arg(long)]
+        hard_max_frames: usize,
+        #[arg(long, default_value_t = 504)]
+        width: usize,
+        #[arg(long, default_value_t = 336)]
+        height: usize,
+    },
     /// Export the fused relative-scale world as an open ASCII PLY file.
     Export {
         #[arg(long)]
@@ -964,6 +980,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "pose_solution": hash,
                     "registered_frames": solution.diagnostics.registered_frames,
                     "input_frames": solution.diagnostics.input_frames,
+                })
+            );
+        }
+        Command::RasterRecord {
+            scene,
+            video,
+            candidate_fps,
+            hard_max_frames,
+            width,
+            height,
+        } => {
+            let bundle = SceneBundle::open(&scene)?;
+            let settings = VideoExtractionSettings {
+                width,
+                height,
+                candidate_fps,
+                max_frames: hard_max_frames,
+            };
+            let decoded = load_decoded_frame_cache(&video, scene.join("decoded"), settings)?;
+            let raster = raster_manifest_for_decoded(&video, &decoded, settings)?;
+            let hash = bundle.write_raster_manifest(&raster)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.raster-record/v1",
+                    "raster_manifest": hash,
+                    "frames": raster.frames.len(),
+                    "raster_fingerprint": raster.raster_fingerprint,
                 })
             );
         }
