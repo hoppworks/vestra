@@ -109,6 +109,11 @@ pub struct WorldProduct {
     pub summary: FusedSceneSummary,
     #[serde(default)]
     pub pose_solution_hash: Option<String>,
+    /// Source frames actually admitted to this derived product.  This keeps
+    /// browser camera/replay evidence compact and avoids re-reading immutable
+    /// measured chunks merely to rediscover product ownership.
+    #[serde(default)]
+    pub source_frame_indices: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -426,6 +431,7 @@ impl SceneBundle {
                 .clone(),
             summary,
             pose_solution_hash,
+            source_frame_indices: Vec::new(),
         };
         manifest
             .world_products
@@ -437,6 +443,29 @@ impl SceneBundle {
         manifest.selected_world_product = Some(id.to_owned());
         self.write_manifest(&manifest)?;
         Ok(hash)
+    }
+
+    /// Attaches compact, product-specific source-frame evidence after a
+    /// derived world has been atomically published.  It never modifies raw
+    /// measurements or point chunks.
+    pub fn set_world_product_source_frames(
+        &self,
+        id: &str,
+        source_frame_indices: &[usize],
+    ) -> Result<(), SceneBundleError> {
+        let mut frames = source_frame_indices.to_vec();
+        frames.sort_unstable();
+        frames.dedup();
+        let mut manifest = self.manifest()?;
+        let product = manifest
+            .world_products
+            .iter_mut()
+            .find(|product| product.id == id)
+            .ok_or_else(|| {
+                SceneBundleError::InvalidArtifact(format!("unknown world product {id:?}"))
+            })?;
+        product.source_frame_indices = frames;
+        self.write_manifest(&manifest)
     }
 
     /// Selects one already-published product for legacy Studio/export fields.

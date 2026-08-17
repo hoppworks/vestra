@@ -170,6 +170,7 @@ pub fn fuse_scene_bundle_frame_global(
     let mut raw_points = Vec::new();
     let mut cameras = Vec::new();
     let mut fused_frames = 0;
+    let mut accepted_frame_indices = Vec::new();
     let mut omitted_frames = 0;
     for ((frame_index, view), (report, accepted)) in
         views.into_iter().zip(reports.into_iter().zip(accepted))
@@ -198,6 +199,7 @@ pub fn fuse_scene_bundle_frame_global(
             continue;
         };
         fused_frames += 1;
+        accepted_frame_indices.push(frame_index);
         cameras.push(camera_centre(pose));
         for point in &view.points {
             let Some((position, normal, radius)) =
@@ -270,9 +272,14 @@ pub fn fuse_scene_bundle_frame_global(
         voxel_size,
         points,
     };
+    let product_id = if settings.tsdf.is_some() {
+        "colmap-ba-frame-global-tsdf"
+    } else {
+        "colmap-ba-frame-global-surfel"
+    };
     let chunk_hash = bundle.write_fused_scene_as(
         &fused,
-        "colmap-ba-frame-global-active",
+        product_id,
         "colmap-ba-frame-global",
         if settings.tsdf.is_some() {
             "tsdf"
@@ -281,6 +288,7 @@ pub fn fuse_scene_bundle_frame_global(
         },
         Some(pose_solution_hash.to_owned()),
     )?;
+    bundle.set_world_product_source_frames(product_id, &accepted_frame_indices)?;
     Ok(FrameGlobalFusionProgress {
         chunk_hash,
         fused_frames,

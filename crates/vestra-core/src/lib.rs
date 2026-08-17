@@ -64,7 +64,7 @@ pub use revisit::{
 };
 pub use scene::{
     FusedPointChunk, FusedSceneSummary, MeasuredFrameChunk, SceneBundle, SceneBundleError,
-    SceneManifest, SceneProvenance, WindowMeasuredChunk,
+    SceneManifest, SceneProvenance, WindowMeasuredChunk, WorldProduct,
 };
 pub use stitch::{
     AlignmentReport, FusedPoint, FusedSceneChunk, FusedTopology, FusedWindowPose,

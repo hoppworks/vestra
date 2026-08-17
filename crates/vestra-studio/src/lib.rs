@@ -906,6 +906,20 @@ fn evidence(root: &Path, product_id: Option<&str>) -> (&'static str, &'static st
     let payload = (|| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let bundle = SceneBundle::open(root)?;
         let manifest = manifest_for_product(bundle.manifest()?, product_id)?;
+        let selected_product = manifest.selected_world_product.as_deref().and_then(|id| {
+            manifest
+                .world_products
+                .iter()
+                .find(|product| product.id == id)
+        });
+        // Frame-global COLMAP products have no local window Sim(3) poses by
+        // design.  Resolve their compact camera proof from the immutable pose
+        // solution instead of scanning every measured chunk only to skip it.
+        if let Some(product) =
+            selected_product.filter(|product| product.pose_authority == "colmap-ba-frame-global")
+        {
+            return frame_global_evidence(root, &bundle, product);
+        }
         let Some(hash) = manifest.fused_chunk_hash else {
             return Ok(serde_json::to_vec(&serde_json::json!({"camera_rays": []}))?);
         };
@@ -974,6 +988,120 @@ fn evidence(root: &Path, product_id: Option<&str>) -> (&'static str, &'static st
             b"scene evidence unavailable".to_vec(),
         ),
     }
+}
+
+fn frame_global_evidence(
+    root: &Path,
+    bundle: &SceneBundle,
+    product: &vestra_core::WorldProduct,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let pose_hash = product
+        .pose_solution_hash
+        .as_deref()
+        .ok_or("frame-global product has no pose solution")?;
+    let solution = bundle.read_pose_solution(pose_hash)?;
+    let trajectory = solution
+        .global_trajectory
+        .as_ref()
+        .ok_or("frame-global pose solution has no calibrated trajectory")?;
+    let accepted = product
+        .source_frame_indices
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut camera_rays = Vec::new();
+    let mut source_frames = Vec::new();
+    for frame in solution
+        .frames
+        .iter()
+        .filter(|frame| frame.registered && accepted.contains(&frame.frame_index))
+    {
+        let Some(camera_id) = trajectory.frame_camera_ids.get(&frame.frame_index) else {
+            continue;
+        };
+        let Some(camera) = trajectory
+            .camera_models
+            .iter()
+            .find(|camera| camera.camera_id == *camera_id)
+        else {
+            continue;
+        };
+        let Some((origin, forward, corners)) = colmap_camera_ray(frame.world_to_camera, camera)
+        else {
+            continue;
+        };
+        if source_frame_path(root, frame.frame_index).is_file() {
+            source_frames.push(frame.frame_index);
+        }
+        camera_rays.push(serde_json::json!({
+            "window_index": null,
+            "frame_index": frame.frame_index,
+            "origin": origin,
+            "forward": forward,
+            "corners": corners,
+        }));
+    }
+    Ok(serde_json::to_vec(&serde_json::json!({
+        "scale": "relative",
+        "camera_rays": camera_rays,
+        "source_frames": source_frames,
+        "diagnostic_links": [],
+    }))?)
+}
+
+fn colmap_camera_ray(
+    pose: [f64; 12],
+    camera: &vestra_core::ColmapCameraModel,
+) -> Option<([f32; 3], [f32; 3], [[f32; 3]; 4])> {
+    let [focal, cx, cy, radial] = *<&[f64; 4]>::try_from(camera.parameters.as_slice()).ok()?;
+    if !(focal.is_finite() && focal > 0.0 && cx.is_finite() && cy.is_finite() && radial.is_finite())
+    {
+        return None;
+    }
+    let centre = |camera_point: [f64; 3]| {
+        let shifted = [
+            camera_point[0] - pose[3],
+            camera_point[1] - pose[7],
+            camera_point[2] - pose[11],
+        ];
+        let world = [
+            pose[0] * shifted[0] + pose[4] * shifted[1] + pose[8] * shifted[2],
+            pose[1] * shifted[0] + pose[5] * shifted[1] + pose[9] * shifted[2],
+            pose[2] * shifted[0] + pose[6] * shifted[1] + pose[10] * shifted[2],
+        ];
+        world
+            .iter()
+            .all(|value| value.is_finite())
+            .then_some(world.map(|value| value as f32))
+    };
+    let direction = |image: [f64; 2]| {
+        let (xd, yd) = ((image[0] - cx) / focal, (image[1] - cy) / focal);
+        let (mut x, mut y) = (xd, yd);
+        for _ in 0..8 {
+            let scale = 1.0 + radial * (x * x + y * y);
+            if !scale.is_finite() || scale.abs() < 1e-8 {
+                return None;
+            }
+            x = xd / scale;
+            y = yd / scale;
+        }
+        let world = [
+            pose[0] * x + pose[4] * y + pose[8],
+            pose[1] * x + pose[5] * y + pose[9],
+            pose[2] * x + pose[6] * y + pose[10],
+        ];
+        let length = world.iter().map(|value| value * value).sum::<f64>().sqrt();
+        (length.is_finite() && length > 1e-9).then_some(world.map(|value| (value / length) as f32))
+    };
+    let origin = centre([0.0, 0.0, 0.0])?;
+    let forward = direction([cx, cy])?;
+    let corners = [
+        direction([0.0, 0.0])?,
+        direction([camera.width as f64 - 1.0, 0.0])?,
+        direction([camera.width as f64 - 1.0, camera.height as f64 - 1.0])?,
+        direction([0.0, camera.height as f64 - 1.0])?,
+    ];
+    Some((origin, forward, corners))
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -1697,6 +1825,25 @@ mod tests {
         assert!((corners[2][0] - expected).abs() < 1e-6);
         assert!((corners[2][1] - expected).abs() < 1e-6);
         assert!((corners[2][2] - 2.0 * expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn colmap_global_camera_evidence_has_a_finite_origin_and_frustum() {
+        let camera = vestra_core::ColmapCameraModel {
+            camera_id: 7,
+            model: "SIMPLE_RADIAL".to_owned(),
+            width: 1620,
+            height: 1080,
+            parameters: vec![810.0, 810.0, 540.0, 0.0],
+        };
+        let (origin, forward, corners) = colmap_camera_ray(
+            [1.0, 0.0, 0.0, -2.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, -3.0],
+            &camera,
+        )
+        .expect("valid calibrated COLMAP camera");
+        assert_eq!(origin, [2.0, -1.0, 3.0]);
+        assert!(forward.iter().all(|value| value.is_finite()));
+        assert!(corners.iter().flatten().all(|value| value.is_finite()));
     }
 
     #[test]
