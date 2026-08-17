@@ -186,6 +186,8 @@ def main() -> int:
     sparse = output / "sparse"
     text = output / "sparse-text"
     sparse.mkdir()
+    # COLMAP 4 model_converter also requires its destination to exist.
+    text.mkdir()
     log = output / "colmap.log"
     settings = Settings(
         colmap=args.colmap,
