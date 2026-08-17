@@ -243,6 +243,11 @@ enum Command {
         /// instead of the immutable raw diagnostic product.
         #[arg(long)]
         calibrated: bool,
+        /// Derive from the separately verified MVS-guided DA3 surfel product.
+        /// This remains an explicitly labelled experimental surface; it never
+        /// replaces the calibrated DA3 or MVS-only products.
+        #[arg(long)]
+        mvs_guided: bool,
     },
     /// Attach the exact decoded-raster contract to a legacy scene before
     /// importing a global pose provider. This never re-runs DA3 inference.
@@ -560,6 +565,34 @@ fn validate_mvs_hybrid_evidence(sidecar: &Da3PoseConditionedArtifact) -> Result<
         return Err("MVS-DA3 hybrid artifact violates its dense-depth provenance contract");
     }
     Ok(())
+}
+
+fn da3_tsdf_product_identity(
+    calibrated: bool,
+    mvs_guided: bool,
+) -> Result<(&'static str, &'static str, &'static str), &'static str> {
+    if calibrated && mvs_guided {
+        return Err("choose either --calibrated or --mvs-guided, not both");
+    }
+    Ok(if mvs_guided {
+        (
+            "da3-mvs-guided-colmap-surfel",
+            "colmap-mvs-geometric-plus-da3-local-guidance",
+            "da3-mvs-guided-colmap-tsdf",
+        )
+    } else if calibrated {
+        (
+            "da3-pose-conditioned-colmap-calibrated-surfel",
+            "da3-base-pose-conditioned-colmap-calibrated",
+            "da3-pose-conditioned-colmap-calibrated-tsdf",
+        )
+    } else {
+        (
+            "da3-pose-conditioned-colmap-surfel",
+            "da3-base-pose-conditioned-colmap",
+            "da3-pose-conditioned-colmap-tsdf",
+        )
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1633,22 +1666,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             pose_solution,
             maximum_observations,
             calibrated,
+            mvs_guided,
         } => {
             if maximum_observations == 0 {
                 return Err("maximum observations must be positive".into());
             }
             let bundle = SceneBundle::open(scene)?;
             let manifest = bundle.manifest()?;
-            let source_id = if calibrated {
-                "da3-pose-conditioned-colmap-calibrated-surfel"
-            } else {
-                "da3-pose-conditioned-colmap-surfel"
-            };
-            let expected_authority = if calibrated {
-                "da3-base-pose-conditioned-colmap-calibrated"
-            } else {
-                "da3-base-pose-conditioned-colmap"
-            };
+            let (source_id, expected_authority, id) =
+                da3_tsdf_product_identity(calibrated, mvs_guided)?;
             let raw = manifest
                 .world_products
                 .iter()
@@ -1705,11 +1731,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         contributors: surfel.contributors,
                     })
                     .collect(),
-            };
-            let id = if calibrated {
-                "da3-pose-conditioned-colmap-calibrated-tsdf"
-            } else {
-                "da3-pose-conditioned-colmap-tsdf"
             };
             let chunk_hash = bundle.write_fused_scene_as(
                 &tsdf_cloud,
@@ -2401,6 +2422,19 @@ mod tests {
         let mut incomplete = guided;
         incomplete.hybrid.as_mut().unwrap().median_mvs_coverage = 0.0;
         assert!(validate_mvs_hybrid_evidence(&incomplete).is_err());
+    }
+
+    #[test]
+    fn guided_tsdf_identity_is_separate_and_cannot_be_combined_with_calibration() {
+        assert_eq!(
+            da3_tsdf_product_identity(false, true),
+            Ok((
+                "da3-mvs-guided-colmap-surfel",
+                "colmap-mvs-geometric-plus-da3-local-guidance",
+                "da3-mvs-guided-colmap-tsdf",
+            ))
+        );
+        assert!(da3_tsdf_product_identity(true, true).is_err());
     }
 
     #[test]

@@ -64,6 +64,21 @@ source-camera replay comparison against the calibrated DA3 and MVS-only
 controls. Only a winning result can become the default product or receive a
 TSDF derivative.
 
+## Separate TSDF derivative
+
+The guided raw product now has a separate Studio product,
+`da3-mvs-guided-colmap-tsdf`. It was generated from 992,484 uniformly strided
+observations from the 4,962,416-point guided raw surfel product and contains
+22,417 normal-space TSDF surfels. Its `pose_authority` remains
+`colmap-mvs-geometric-plus-da3-local-guidance`; raw and TSDF products coexist
+and remain selectable in the Studio ledger.
+
+Browser validation at `/world/?product=da3-mvs-guided-colmap-tsdf` loaded the
+22,417-point product, 195 source frames, and camera evidence with no console
+or WebGL warnings. TSDF is explicitly a surface-fusion view: it reduces
+double sheets but cannot be used as evidence that the global room geometry is
+correct.
+
 ## Dominant-plane diagnostic
 
 `tools/inspect_world_planes.py` is a deterministic diagnostic that samples a
