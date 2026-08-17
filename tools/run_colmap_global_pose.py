@@ -37,6 +37,8 @@ class Settings:
     sequential_overlap: int
     retrieval_images: int
     vocabulary_tree_sha256: str
+    pose_image_width: int | None
+    source_video_sha256: str | None
 
 
 def sha256_file(path: Path) -> str:
@@ -136,6 +138,88 @@ def stage_colmap_images(decoded: Path, names: list[str], output: Path) -> Path:
     return image_root
 
 
+def selected_frame_rate(frames: list[dict]) -> float:
+    """Returns an exact uniform selected-frame rate or refuses approximation.
+
+    High-resolution pose evidence must describe the same source instants as the
+    immutable DA3 rasters. A generic `fps` filter is exact only when the
+    manifest timestamps are uniformly spaced, so reject irregular selections
+    instead of silently sampling neighbouring video frames.
+    """
+    if len(frames) < 2:
+        raise ValueError("high-resolution pose extraction requires two or more raster frames")
+    timestamps = [frame.get("timestamp_millis") for frame in frames]
+    if any(not isinstance(value, int) or value < 0 for value in timestamps):
+        raise ValueError("raster timestamps must be non-negative integer milliseconds")
+    interval = timestamps[1] - timestamps[0]
+    if interval <= 0 or any(
+        later - earlier != interval for earlier, later in zip(timestamps, timestamps[1:])
+    ):
+        raise ValueError(
+            "high-resolution pose extraction requires uniformly spaced raster timestamps"
+        )
+    return 1000.0 / interval
+
+
+def stage_source_resolution_images(
+    args: argparse.Namespace,
+    raster: dict,
+    names: list[str],
+    output: Path,
+) -> Path:
+    """Decodes the source video at its locked crop, retaining pose detail.
+
+    This is deliberately only a pose-evidence upgrade. `verify_rasters` has
+    already established which timestamps/names belong to the Vestra scene, and
+    this function verifies the original source digest before extracting those
+    same uniform instants into a private COLMAP image root.
+    """
+    assert args.source_video is not None and args.pose_image_width is not None
+    video = args.source_video.resolve()
+    expected_sha = raster.get("source_sha256")
+    if not video.is_file() or not isinstance(expected_sha, str) or len(expected_sha) != 64:
+        raise FileNotFoundError("source video or its immutable raster digest is unavailable")
+    actual_sha = sha256_file(video)
+    if actual_sha != expected_sha:
+        raise ValueError("source video SHA-256 does not match the raster manifest")
+    crop = raster.get("crop")
+    if not isinstance(crop, dict) or any(
+        not isinstance(crop.get(field), int) or crop[field] < 0
+        for field in ("x", "y", "width", "height")
+    ):
+        raise ValueError("raster manifest has invalid crop geometry")
+    if crop["width"] <= 0 or crop["height"] <= 0:
+        raise ValueError("raster crop dimensions must be positive")
+    if args.pose_image_width <= 0 or args.pose_image_width > crop["width"]:
+        raise ValueError("pose-image-width must be positive and no wider than the locked source crop")
+    rate = selected_frame_rate(raster["frames"])
+    image_root = output / "images"
+    image_root.mkdir()
+    temporary_pattern = image_root / "selected-%06d.ppm"
+    filter_parts = [
+        f"fps={rate:.12f}",
+        f"crop={crop['width']}:{crop['height']}:{crop['x']}:{crop['y']}",
+    ]
+    if args.pose_image_width != crop["width"]:
+        filter_parts.append(f"scale={args.pose_image_width}:-2:flags=lanczos")
+    log = output / "colmap.log"
+    run(
+        [
+            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(video),
+            "-vf", ",".join(filter_parts), "-frames:v", str(len(names)), str(temporary_pattern),
+        ],
+        log,
+    )
+    decoded = sorted(image_root.glob("selected-*.ppm"))
+    if len(decoded) != len(names):
+        raise RuntimeError(
+            f"source extraction emitted {len(decoded)} frames; expected exactly {len(names)}"
+        )
+    for source, name in zip(decoded, names, strict=True):
+        source.rename(image_root / name)
+    return image_root
+
+
 def largest_model(models_root: Path) -> Path:
     models = [candidate for candidate in models_root.iterdir() if candidate.is_dir()]
     if not models:
@@ -164,6 +248,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threads", type=int, default=16)
     parser.add_argument("--sequential-overlap", type=int, default=20)
     parser.add_argument("--retrieval-images", type=int, default=30)
+    parser.add_argument(
+        "--source-video", type=Path,
+        help="optional original video; enables source-resolution camera evidence",
+    )
+    parser.add_argument(
+        "--pose-image-width", type=int,
+        help="locked-crop width for --source-video evidence; must not upscale",
+    )
     return parser.parse_args()
 
 
@@ -171,6 +263,8 @@ def main() -> int:
     args = parse_args()
     if args.threads <= 0 or args.sequential_overlap <= 0 or args.retrieval_images <= 0:
         raise ValueError("threads, sequential overlap, and retrieval images must be positive")
+    if (args.source_video is None) != (args.pose_image_width is None):
+        raise ValueError("--source-video and --pose-image-width must be supplied together")
     scene = args.scene.resolve()
     output = args.output.resolve()
     tree = args.vocabulary_tree.resolve()
@@ -181,7 +275,11 @@ def main() -> int:
     raster, raster_path = read_raster_manifest(scene)
     frame_names = verify_rasters(scene, raster)
     output.mkdir(parents=True)
-    images = stage_colmap_images(scene / "decoded", frame_names, output)
+    images = (
+        stage_source_resolution_images(args, raster, frame_names, output)
+        if args.source_video is not None
+        else stage_colmap_images(scene / "decoded", frame_names, output)
+    )
     database = output / "database.db"
     sparse = output / "sparse"
     text = output / "sparse-text"
@@ -197,6 +295,8 @@ def main() -> int:
         sequential_overlap=args.sequential_overlap,
         retrieval_images=args.retrieval_images,
         vocabulary_tree_sha256=sha256_file(tree),
+        pose_image_width=args.pose_image_width,
+        source_video_sha256=sha256_file(args.source_video) if args.source_video else None,
     )
     common_feature = colmap_command(args, [
         "feature_extractor", "--database_path", str(database), "--image_path", str(images),
