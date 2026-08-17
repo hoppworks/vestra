@@ -10,7 +10,7 @@ use crate::cpp_pr2_geometry_d::{backproject_frame_cpp_pr2_f32, camera_centre_dir
 use crate::{
     AlignmentReport, BackprojectionError, BackprojectionSettings, CameraCalibration, CppPr2Fixture,
     CppPr2Frame, CppPr2StreamBranches, FrameWindow, FusedPoint, FusedSceneChunk, FusedWindowPose,
-    MeasuredFrameChunk, MeasuredView, OwnedFrame, PoseGraphEdge, PoseGraphReport,
+    MeasuredFrameChunk, MeasuredView, OwnedFrame, PoseGraphEdge, PoseGraphReport, PoseSolution,
     RelativePoseGraph, SceneBundle, SceneBundleError, SimilarityTransform, TsdfSettings,
     WindowMeasuredChunk, WindowSettings, align_overlapping_windows_cpp_pr2,
     backproject_measured_view, camera_centre_direction, fuse_normal_space_tsdf,
@@ -43,6 +43,29 @@ pub struct FusionProgress {
     pub chunk_hash: String,
     pub aligned_windows: usize,
     pub points: usize,
+}
+
+/// Acceptance gates for a global pose-provider derivative. These settings
+/// deliberately validate camera evidence before any raw DA3 point is moved.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlobalPoseFusionSettings {
+    /// A window needs several independently registered cameras; three-point
+    /// Sim(3) is algebraically possible but unsafe for a product world.
+    pub minimum_registered_cameras_per_window: usize,
+    /// RMS camera-centre fit divided by the local camera-path RMS extent.
+    pub maximum_normalized_camera_rms: f32,
+    /// Surface product to derive after the global transforms are accepted.
+    pub tsdf: Option<TsdfSettings>,
+}
+
+impl Default for GlobalPoseFusionSettings {
+    fn default() -> Self {
+        Self {
+            minimum_registered_cameras_per_window: 6,
+            maximum_normalized_camera_rms: 0.15,
+            tsdf: Some(TsdfSettings::default()),
+        }
+    }
 }
 
 /// Reference-only pre-voxel emission produced from a `VPS1` fixture using the
@@ -95,6 +118,24 @@ pub enum ReconstructionError {
     OracleOutputShape,
     #[error("PR #2-relative fusion requires a scene captured with the PR #2 evidence profile")]
     MissingCppPr2CaptureProfile,
+    #[error("global pose solution has no registered cameras for window {window_index}")]
+    MissingGlobalCameraEvidence { window_index: usize },
+    #[error(
+        "global pose solution has only {actual} registered cameras for window {window_index}; need at least {minimum}"
+    )]
+    InsufficientGlobalCameraEvidence {
+        window_index: usize,
+        actual: usize,
+        minimum: usize,
+    },
+    #[error(
+        "global pose fit for window {window_index} is too inaccurate: normalized RMS {normalized_rms:.4} exceeds {maximum:.4}"
+    )]
+    GlobalCameraFitQuality {
+        window_index: usize,
+        normalized_rms: f32,
+        maximum: f32,
+    },
     #[error(
         "persisted checkpoint for window {window_index} is incompatible with this reconstruction schedule"
     )]
@@ -127,6 +168,228 @@ pub fn fuse_scene_bundle_with_settings(
         aligned_windows: windows.len(),
         points: fused.points.len(),
     })
+}
+
+/// Derives a separate world in a global pose-provider coordinate system.
+///
+/// The solution must be published by this exact bundle (and consequently use
+/// the same decoded raster contract). Each local DA3 window is fitted to the
+/// registered COLMAP camera centres, then all raw points are transformed once
+/// and fused. It never changes the relative local product or raw evidence.
+pub fn fuse_scene_bundle_with_pose_solution(
+    bundle: &SceneBundle,
+    pose_solution_hash: &str,
+    settings: GlobalPoseFusionSettings,
+) -> Result<FusionProgress, ReconstructionError> {
+    let solution = bundle.read_pose_solution(pose_solution_hash)?;
+    if solution.provider.kind != "colmap" {
+        return Err(ReconstructionError::Scene(
+            SceneBundleError::InvalidArtifact(
+                "only the validated COLMAP global-pose provider is supported".to_owned(),
+            ),
+        ));
+    }
+    let manifest = bundle.manifest()?;
+    let mut windows = manifest
+        .measured_chunk_hashes
+        .iter()
+        .map(|hash| bundle.read_measured_window(hash))
+        .collect::<Result<Vec<_>, _>>()?;
+    windows.sort_by_key(|window| window.window.index);
+    let poses = windows
+        .iter()
+        .map(|window| fit_window_to_global_pose(window, &solution, settings))
+        .collect::<Result<Vec<_>, _>>()?;
+    let fused = emit_windows_at_poses(&windows, &poses, settings.tsdf);
+    let points = fused.points.len();
+    let chunk_hash = bundle.write_fused_scene_as(
+        &fused,
+        "colmap-global-active",
+        "colmap-global-ba",
+        if settings.tsdf.is_some() {
+            "tsdf"
+        } else {
+            "surfel"
+        },
+        Some(pose_solution_hash.to_owned()),
+    )?;
+    Ok(FusionProgress {
+        chunk_hash,
+        aligned_windows: windows.len(),
+        points,
+    })
+}
+
+fn fit_window_to_global_pose(
+    window: &WindowMeasuredChunk,
+    solution: &PoseSolution,
+    settings: GlobalPoseFusionSettings,
+) -> Result<SimilarityTransform, ReconstructionError> {
+    let global = solution
+        .frames
+        .iter()
+        .map(|frame| {
+            (
+                frame.frame_index,
+                colmap_camera_centre(frame.world_to_camera),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let pairs = window
+        .views
+        .iter()
+        .filter_map(|view| {
+            let local = camera_centre_direction(view.frame_index, view.camera)?;
+            global
+                .get(&view.frame_index)
+                .copied()
+                .map(|target| (local.centre_local, target))
+        })
+        .collect::<Vec<_>>();
+    if pairs.is_empty() {
+        return Err(ReconstructionError::MissingGlobalCameraEvidence {
+            window_index: window.window.index,
+        });
+    }
+    if pairs.len() < settings.minimum_registered_cameras_per_window {
+        return Err(ReconstructionError::InsufficientGlobalCameraEvidence {
+            window_index: window.window.index,
+            actual: pairs.len(),
+            minimum: settings.minimum_registered_cameras_per_window,
+        });
+    }
+    let (transform, rms) = crate::stitch::cpp_pr2_similarity_from_pairs(&pairs)?;
+    let local_mean = pairs
+        .iter()
+        .fold([0.0_f32; 3], |mut sum, (local, _)| {
+            for axis in 0..3 {
+                sum[axis] += local[axis];
+            }
+            sum
+        })
+        .map(|value| value / pairs.len() as f32);
+    let local_extent = (pairs
+        .iter()
+        .map(|(local, _)| squared_distance(*local, local_mean))
+        .sum::<f32>()
+        / pairs.len() as f32)
+        .sqrt();
+    let normalized_rms = rms / local_extent.max(1e-6);
+    if !normalized_rms.is_finite() || normalized_rms > settings.maximum_normalized_camera_rms {
+        return Err(ReconstructionError::GlobalCameraFitQuality {
+            window_index: window.window.index,
+            normalized_rms,
+            maximum: settings.maximum_normalized_camera_rms,
+        });
+    }
+    Ok(transform)
+}
+
+fn emit_windows_at_poses(
+    windows: &[WindowMeasuredChunk],
+    poses: &[SimilarityTransform],
+    tsdf: Option<TsdfSettings>,
+) -> FusedSceneChunk {
+    let mut emitted_frames = std::collections::HashSet::new();
+    let mut raw_points = Vec::new();
+    let mut observations = Vec::new();
+    let mut cameras = Vec::new();
+    for (window, pose) in windows.iter().zip(poses.iter().copied()) {
+        for frame in &window.views {
+            if !emitted_frames.insert(frame.frame_index) {
+                continue;
+            }
+            if let Some(camera) = camera_centre_direction(frame.frame_index, frame.camera) {
+                cameras.push(pose.apply(camera.centre_local));
+            }
+            for point in &frame.points {
+                if !point.position.iter().all(|value| value.is_finite())
+                    || !point.normal.iter().all(|value| value.is_finite())
+                    || !point.confidence.is_finite()
+                    || point.confidence <= 0.0
+                    || !point.radius.is_finite()
+                    || point.radius <= 0.0
+                {
+                    continue;
+                }
+                let position = pose.apply(point.position);
+                if let Some(_) = tsdf {
+                    observations.push(crate::TsdfObservation {
+                        position,
+                        color_srgb: point.color_srgb,
+                        confidence: point.confidence,
+                        radius: point.radius * pose.scale,
+                        frame_index: frame.frame_index as i32,
+                    });
+                } else {
+                    raw_points.push(FusedPoint {
+                        position,
+                        normal: pose.rotate(point.normal),
+                        color_srgb: point.color_srgb,
+                        confidence: point.confidence,
+                        radius: point.radius * pose.scale,
+                        first_observing_frame: frame.frame_index as i32,
+                        contributors: 1,
+                    });
+                }
+            }
+        }
+    }
+    let (points, voxel_size) = if let Some(settings) = tsdf {
+        let points = fuse_normal_space_tsdf(&observations, &cameras, settings)
+            .into_iter()
+            .map(|surfel| FusedPoint {
+                position: surfel.position,
+                normal: surfel.normal,
+                color_srgb: surfel.color_srgb,
+                confidence: 1.0,
+                radius: surfel.radius,
+                first_observing_frame: surfel.first_observing_frame,
+                contributors: surfel.contributors,
+            })
+            .collect::<Vec<_>>();
+        let voxel_size = points
+            .first()
+            .map(|point| point.radius / 0.6)
+            .unwrap_or(0.0);
+        (points, voxel_size)
+    } else {
+        (raw_points, 0.0)
+    };
+    FusedSceneChunk {
+        alignments: Vec::new(),
+        pose_graph_edges: Vec::new(),
+        pose_graph: None,
+        window_poses: windows
+            .iter()
+            .zip(poses.iter().copied())
+            .map(|(window, local_to_world)| FusedWindowPose {
+                window_index: window.window.index,
+                local_to_world,
+            })
+            .collect(),
+        voxel_size,
+        points,
+    }
+}
+
+fn colmap_camera_centre(world_to_camera: [f64; 12]) -> [f32; 3] {
+    let translation = [world_to_camera[3], world_to_camera[7], world_to_camera[11]];
+    [
+        -(world_to_camera[0] * translation[0]
+            + world_to_camera[4] * translation[1]
+            + world_to_camera[8] * translation[2]) as f32,
+        -(world_to_camera[1] * translation[0]
+            + world_to_camera[5] * translation[1]
+            + world_to_camera[9] * translation[2]) as f32,
+        -(world_to_camera[2] * translation[0]
+            + world_to_camera[6] * translation[1]
+            + world_to_camera[10] * translation[2]) as f32,
+    ]
+}
+
+fn squared_distance(left: [f32; 3], right: [f32; 3]) -> f32 {
+    (left[0] - right[0]).powi(2) + (left[1] - right[1]).powi(2) + (left[2] - right[2]).powi(2)
 }
 
 /// Rebuilds a scene with the PR #2 relative geometry profile. It uses
@@ -1316,6 +1579,101 @@ fn rgb_at_inference_resolution(frame: &OwnedFrame, width: usize, height: usize) 
 mod tests {
     use super::*;
     use crate::{MeasuredPoint, SceneProvenance};
+
+    #[test]
+    fn colmap_w2c_translation_recovers_the_global_camera_centre() {
+        let centre =
+            colmap_camera_centre([1.0, 0.0, 0.0, -4.0, 0.0, 1.0, 0.0, 2.5, 0.0, 0.0, 1.0, -7.0]);
+        assert_eq!(centre, [4.0, -2.5, 7.0]);
+    }
+
+    #[test]
+    fn global_pose_fit_maps_each_window_camera_path_without_mutating_points() {
+        let local_centres = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 0.0, 1.0],
+        ];
+        let target = |point: [f32; 3]| {
+            [
+                point[0] * 2.0 + 10.0,
+                point[1] * 2.0 - 5.0,
+                point[2] * 2.0 + 3.0,
+            ]
+        };
+        let window = WindowMeasuredChunk {
+            window: FrameWindow {
+                index: 4,
+                start: 0,
+                end: local_centres.len(),
+            },
+            views: local_centres
+                .iter()
+                .enumerate()
+                .map(|(frame_index, centre)| MeasuredFrameChunk {
+                    frame_index,
+                    camera: CameraCalibration {
+                        world_to_camera: [
+                            1.0, 0.0, 0.0, -centre[0], 0.0, 1.0, 0.0, -centre[1], 0.0, 0.0, 1.0,
+                            -centre[2],
+                        ],
+                        intrinsics: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                    },
+                    points: Vec::new(),
+                })
+                .collect(),
+            cpp_pr2_emission_confidence_threshold: None,
+        };
+        let solution = PoseSolution {
+            schema: "vestra.pose-solution/v1".to_owned(),
+            provider: crate::PoseProvider {
+                kind: "colmap".to_owned(),
+                version: "test".to_owned(),
+                settings_fingerprint: "test".to_owned(),
+            },
+            raster_fingerprint: "test".to_owned(),
+            coordinate_convention: "test".to_owned(),
+            frames: local_centres
+                .iter()
+                .enumerate()
+                .map(|(frame_index, local)| {
+                    let global = target(*local);
+                    crate::PoseFrame {
+                        frame_index,
+                        image_name: format!("frame-{frame_index:06}.ppm"),
+                        registered: true,
+                        world_to_camera: [
+                            1.0,
+                            0.0,
+                            0.0,
+                            -f64::from(global[0]),
+                            0.0,
+                            1.0,
+                            0.0,
+                            -f64::from(global[1]),
+                            0.0,
+                            0.0,
+                            1.0,
+                            -f64::from(global[2]),
+                        ],
+                    }
+                })
+                .collect(),
+            diagnostics: crate::PoseDiagnostics {
+                input_frames: local_centres.len(),
+                registered_frames: local_centres.len(),
+                duplicate_images: 0,
+            },
+        };
+        let transform =
+            fit_window_to_global_pose(&window, &solution, GlobalPoseFusionSettings::default())
+                .unwrap();
+        assert!((transform.scale - 2.0).abs() < 1e-5);
+        assert_eq!(transform.apply(local_centres[5]), target(local_centres[5]));
+    }
 
     #[test]
     fn cpp_pr2_percentile_uses_linear_interpolation() {

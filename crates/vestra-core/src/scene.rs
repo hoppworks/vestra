@@ -351,6 +351,27 @@ impl SceneBundle {
     /// atomically points the manifest at it. Repeating the same fusion is
     /// idempotent; a later fusion replaces only this derived reference.
     pub fn write_fused_scene(&self, chunk: &FusedSceneChunk) -> Result<String, SceneBundleError> {
+        self.write_fused_scene_as(chunk, "local-active", "local-pr2-relative", "surfel", None)
+    }
+
+    /// Publishes one named derived world and makes it the selected product.
+    ///
+    /// The raw measured chunks are deliberately not part of this operation.
+    /// This lets a pose-provider reconstruction coexist with the original
+    /// local DA3 reconstruction and makes switching in Studio reversible.
+    pub fn write_fused_scene_as(
+        &self,
+        chunk: &FusedSceneChunk,
+        id: &str,
+        pose_authority: &str,
+        surface_mode: &str,
+        pose_solution_hash: Option<String>,
+    ) -> Result<String, SceneBundleError> {
+        if id.is_empty() || pose_authority.is_empty() || surface_mode.is_empty() {
+            return Err(SceneBundleError::InvalidArtifact(
+                "world product identity fields must be non-empty".to_owned(),
+            ));
+        }
         let point_chunk_hashes = chunk
             .points
             .chunks(FUSED_POINT_CHUNK_SIZE)
@@ -395,16 +416,16 @@ impl SceneBundle {
         let summary = FusedSceneSummary::from(chunk);
         manifest.fused_summary = Some(summary.clone());
         let product = WorldProduct {
-            id: "local-active".to_owned(),
-            pose_authority: "local-pr2-relative".to_owned(),
-            surface_mode: "surfel".to_owned(),
+            id: id.to_owned(),
+            pose_authority: pose_authority.to_owned(),
+            surface_mode: surface_mode.to_owned(),
             fused_chunk_hash: hash.clone(),
             point_binary_chunk_hashes: manifest.fused_point_binary_chunk_hashes.clone(),
             preview_point_binary_chunk_hashes: manifest
                 .fused_preview_point_binary_chunk_hashes
                 .clone(),
             summary,
-            pose_solution_hash: None,
+            pose_solution_hash,
         };
         manifest
             .world_products
@@ -413,7 +434,7 @@ impl SceneBundle {
         manifest
             .world_products
             .sort_by(|left, right| left.id.cmp(&right.id));
-        manifest.selected_world_product = Some("local-active".to_owned());
+        manifest.selected_world_product = Some(id.to_owned());
         self.write_manifest(&manifest)?;
         Ok(hash)
     }
@@ -602,8 +623,14 @@ fn spatial_preview_points(points: &[FusedPoint], budget: usize) -> Vec<FusedPoin
             std::collections::btree_map::Entry::Occupied(_) => {}
         }
     }
-    let anchor_indices = anchors
-        .into_values()
+    let mut selected_anchors = anchors.into_values().collect::<Vec<_>>();
+    // A small caller-supplied budget can be lower than the number of occupied
+    // cells. Keep the stable lowest hashes in that case: previews are a hard
+    // resource contract, not merely an expected-size sample.
+    selected_anchors.sort_unstable_by_key(|(hash, _)| *hash);
+    selected_anchors.truncate(budget);
+    let anchor_indices = selected_anchors
+        .into_iter()
         .map(|(_, index)| index)
         .collect::<std::collections::BTreeSet<_>>();
     let random_budget = budget.saturating_sub(anchor_indices.len());
@@ -890,6 +917,22 @@ mod tests {
         assert_eq!(preview.len(), 2);
         assert!(preview.iter().any(|point| point.position[0] < 1.0));
         assert!(preview.iter().any(|point| point.position[0] > 99.0));
+    }
+
+    #[test]
+    fn spatial_preview_never_exceeds_the_requested_budget() {
+        let points = (0..32)
+            .map(|index| crate::FusedPoint {
+                position: [index as f32, index as f32 * 2.0, index as f32 * 3.0],
+                normal: [0.0, 0.0, 1.0],
+                color_srgb: [4, 5, 6],
+                confidence: 1.0,
+                radius: 0.1,
+                first_observing_frame: index,
+                contributors: 1,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(spatial_preview_points(&points, 5).len(), 5);
     }
 
     #[test]

@@ -10,15 +10,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vestra_core::{
     BackprojectionSettings, CppPr2CapiStreamOutput, CppPr2Fixture, CppPr2MultiViewOutput,
-    CppPr2StreamOutput, RasterFrame, RasterManifest, ReconstructionSettings, SceneBundle,
-    SceneProvenance, StitchSettings, SurfaceFusion, TsdfSettings, VideoExtractionSettings,
-    WindowSettings, capture_cpp_pr2_fixture, cpp_pr2_fixture_alignment_reports,
-    cpp_pr2_fixture_trajectory, emit_cpp_pr2_loop_closed_reference_cloud,
-    emit_cpp_pr2_reference_cloud, emit_cpp_pr2_tsdf_reference_cloud, export_camera_json,
-    export_fused_glb, export_fused_ply, export_fused_splat, extract_video_frames,
-    finalized_raster_manifest, fuse_scene_bundle_cpp_pr2_relative, fuse_scene_bundle_with_settings,
-    fused_topology, load_decoded_frame_cache, load_decoded_rgb24_cache, plan_windows,
-    reconstruct_frames, video_raster_metadata,
+    CppPr2StreamOutput, GlobalPoseFusionSettings, RasterFrame, RasterManifest,
+    ReconstructionSettings, SceneBundle, SceneProvenance, StitchSettings, SurfaceFusion,
+    TsdfSettings, VideoExtractionSettings, WindowSettings, capture_cpp_pr2_fixture,
+    cpp_pr2_fixture_alignment_reports, cpp_pr2_fixture_trajectory,
+    emit_cpp_pr2_loop_closed_reference_cloud, emit_cpp_pr2_reference_cloud,
+    emit_cpp_pr2_tsdf_reference_cloud, export_camera_json, export_fused_glb, export_fused_ply,
+    export_fused_splat, extract_video_frames, finalized_raster_manifest,
+    fuse_scene_bundle_cpp_pr2_relative, fuse_scene_bundle_with_pose_solution,
+    fuse_scene_bundle_with_settings, fused_topology, load_decoded_frame_cache,
+    load_decoded_rgb24_cache, plan_windows, reconstruct_frames, video_raster_metadata,
 };
 use vestra_engine::{Engine, QuantPref, ViewInput};
 use vestra_studio::{IntakeConfig, serve, serve_intake};
@@ -111,6 +112,17 @@ enum Command {
         /// Hash of the versioned COLMAP command/settings contract.
         #[arg(long)]
         settings_fingerprint: String,
+    },
+    /// Build a separate, globally posed world from an already-published
+    /// COLMAP solution. Raw DA3 evidence and the local world remain intact.
+    FuseColmapGlobal {
+        #[arg(long)]
+        scene: PathBuf,
+        #[arg(long)]
+        pose_solution: String,
+        /// Emit raw surfels for diagnostics instead of the default TSDF layer.
+        #[arg(long)]
+        raw_surfels: bool,
     },
     /// Attach the exact decoded-raster contract to a legacy scene before
     /// importing a global pose provider. This never re-runs DA3 inference.
@@ -980,6 +992,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "pose_solution": hash,
                     "registered_frames": solution.diagnostics.registered_frames,
                     "input_frames": solution.diagnostics.input_frames,
+                })
+            );
+        }
+        Command::FuseColmapGlobal {
+            scene,
+            pose_solution,
+            raw_surfels,
+        } => {
+            let bundle = SceneBundle::open(scene)?;
+            let fusion = fuse_scene_bundle_with_pose_solution(
+                &bundle,
+                &pose_solution,
+                GlobalPoseFusionSettings {
+                    tsdf: (!raw_surfels).then(TsdfSettings::default),
+                    ..GlobalPoseFusionSettings::default()
+                },
+            )?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.colmap-global-fuse/v1",
+                    "bundle": bundle.root(),
+                    "pose_solution": pose_solution,
+                    "fused_chunk": fusion.chunk_hash,
+                    "windows": fusion.aligned_windows,
+                    "fused_points": fusion.points,
+                    "surface": if raw_surfels { "surfel" } else { "tsdf" },
                 })
             );
         }
