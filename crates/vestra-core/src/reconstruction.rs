@@ -274,7 +274,11 @@ fn fit_window_to_global_pose(
         .sum::<f32>()
         / pairs.len() as f32)
         .sqrt();
-    let normalized_rms = rms / local_extent.max(1e-6);
+    // `rms` is measured after mapping into the provider's world units. The
+    // reference extent must therefore be mapped by the fitted scale too;
+    // otherwise the quality gate would change merely because COLMAP chose a
+    // different arbitrary global scale.
+    let normalized_rms = rms / (local_extent * transform.scale.abs()).max(1e-6);
     if !normalized_rms.is_finite() || normalized_rms > settings.maximum_normalized_camera_rms {
         return Err(ReconstructionError::GlobalCameraFitQuality {
             window_index: window.window.index,
