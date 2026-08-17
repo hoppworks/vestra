@@ -12,6 +12,7 @@ pub mod cpp_pr2_oracle;
 pub mod export;
 pub mod geometry;
 mod icp;
+pub mod pose;
 pub mod pose_graph;
 pub mod reconstruction;
 pub mod revisit;
@@ -30,6 +31,10 @@ pub use export::{
 pub use geometry::{
     BackprojectionError, BackprojectionSettings, CameraCalibration, MeasuredPoint, MeasuredView,
     backproject_measured_view,
+};
+pub use pose::{
+    PoseDiagnostics, PoseError, PoseFrame, PoseProvider, PoseSolution, RasterCrop, RasterFrame,
+    RasterManifest, finalized_raster_manifest, parse_colmap_images_txt,
 };
 pub use pose_graph::{
     PoseGraphEdge, PoseGraphError, PoseGraphReport, PoseGraphSettings, RelativePoseGraph,
