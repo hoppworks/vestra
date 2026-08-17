@@ -138,6 +138,18 @@ def w2c44(frame: Frame, np: Any) -> Any:
     return matrix
 
 
+def pose44(matrices: Any, count: int, np: Any) -> Any:
+    """Normalizes DA3's documented `[N, 3, 4]` output to homogeneous W2C."""
+    matrices = np.asarray(matrices, dtype=np.float32)
+    if matrices.shape == (count, 3, 4):
+        output = np.repeat(np.eye(4, dtype=np.float32)[None, :, :], count, axis=0)
+        output[:, :3, :] = matrices
+        return output
+    if matrices.shape == (count, 4, 4):
+        return matrices
+    fail(f"DA3 did not return one 3x4 or 4x4 calibrated camera per input frame: {matrices.shape}")
+
+
 def normal_and_world_points(depth: Any, rgb: Any, conf: Any, intrinsics: Any, extrinsics: Any, stride: int, confidence_threshold: float, np: Any) -> tuple[Any, Any, Any]:
     """Returns valid XYZ, normals, and RGB in the supplied W2C world."""
     height, width = depth.shape
@@ -266,9 +278,9 @@ def run(args: argparse.Namespace) -> None:
         if conf.shape != depth.shape or processed.shape != (*depth.shape, 3):
             fail(f"DA3 returned inconsistent confidence/image shapes: {conf.shape}, {processed.shape}")
         output_intrinsics = np.asarray(prediction.intrinsics, dtype=np.float32)
-        output_extrinsics = np.asarray(prediction.extrinsics, dtype=np.float32)
-        if output_intrinsics.shape != (len(batch), 3, 3) or output_extrinsics.shape != (len(batch), 4, 4):
-            fail("DA3 did not return one calibrated camera per input frame")
+        output_extrinsics = pose44(prediction.extrinsics, len(batch), np)
+        if output_intrinsics.shape != (len(batch), 3, 3):
+            fail("DA3 did not return one 3x3 intrinsic matrix per input frame")
         output = args.output / f"batch-{batch_index:04d}.npz"
         np.savez_compressed(output, depth=depth, conf=conf, rgb=processed, intrinsics=output_intrinsics, extrinsics=output_extrinsics, frame_indices=np.asarray([frame.index for frame in batch], dtype=np.int64))
         batch_paths.append(output)

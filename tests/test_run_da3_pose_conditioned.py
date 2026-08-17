@@ -102,6 +102,14 @@ class PoseConditionedRunnerTest(unittest.TestCase):
             header = output.read_bytes().split(b"end_header\n", 1)[0].decode("ascii")
             self.assertIn("element vertex 12", header)
 
+    def test_pose44_preserves_da3_documented_3x4_w2c(self):
+        matrices = np.array([[
+            [1, 0, 0, 2], [0, 1, 0, 3], [0, 0, 1, 4],
+        ]], dtype=np.float32)
+        pose = SIDECAR.pose44(matrices, 1, np)
+        np.testing.assert_array_equal(pose[0, :3, :], matrices[0])
+        np.testing.assert_array_equal(pose[0, 3, :], np.array([0, 0, 0, 1], dtype=np.float32))
+
 
 if __name__ == "__main__":
     unittest.main()
