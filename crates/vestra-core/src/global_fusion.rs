@@ -116,13 +116,8 @@ pub fn frame_global_reports(
         .as_ref()
         .ok_or(FrameGlobalFusionError::MissingTrajectoryEvidence)?;
     let raster = bundle.read_raster_manifest()?;
-    let views = canonical_views(bundle)?;
-    views
-        .into_iter()
-        .map(|(frame_index, view)| {
-            report_for_frame(frame_index, &view, &solution, evidence, &raster, settings)
-        })
-        .collect()
+    let (_, reports) = select_canonical_views(bundle, &solution, evidence, &raster, settings)?;
+    Ok(reports)
 }
 
 /// Emits a separate global-BA world. Every accepted point is reprojected from
@@ -140,13 +135,7 @@ pub fn fuse_scene_bundle_frame_global(
         .as_ref()
         .ok_or(FrameGlobalFusionError::MissingTrajectoryEvidence)?;
     let raster = bundle.read_raster_manifest()?;
-    let views = canonical_views(bundle)?;
-    let reports = views
-        .iter()
-        .map(|(frame_index, view)| {
-            report_for_frame(*frame_index, view, &solution, evidence, &raster, settings)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let (views, reports) = select_canonical_views(bundle, &solution, evidence, &raster, settings)?;
     let reports =
         temporally_smooth_reports(reports, &views, &solution, evidence, &raster, settings)?;
     let accepted = reports
@@ -341,9 +330,18 @@ fn has_required_coverage(fused_frames: usize, total_frames: usize, minimum_fract
     fused_frames as f32 / total_frames.max(1) as f32 >= minimum_fraction
 }
 
-fn canonical_views(
+/// Chooses one measured DA3 view per source frame using sparse global evidence.
+/// A frame occurs in overlapping DA3 windows; first-owner selection is stable
+/// but can select a locally inconsistent depth map.  This selector ranks every
+/// available candidate by the same held-out COLMAP-track contract used for
+/// publication, then moves only the winning point array into the global pass.
+fn select_canonical_views(
     bundle: &SceneBundle,
-) -> Result<BTreeMap<usize, MeasuredFrameChunk>, SceneBundleError> {
+    solution: &PoseSolution,
+    evidence: &crate::GlobalTrajectoryEvidence,
+    raster: &crate::RasterManifest,
+    settings: FrameGlobalFusionSettings,
+) -> Result<(BTreeMap<usize, MeasuredFrameChunk>, Vec<FrameGlobalReport>), FrameGlobalFusionError> {
     let mut windows = bundle
         .manifest()?
         .measured_chunk_hashes
@@ -351,13 +349,59 @@ fn canonical_views(
         .map(|hash| bundle.read_measured_window(hash))
         .collect::<Result<Vec<WindowMeasuredChunk>, _>>()?;
     windows.sort_by_key(|window| window.window.index);
-    let mut result = BTreeMap::new();
-    for window in windows {
-        for view in window.views {
-            result.entry(view.frame_index).or_insert(view);
+    let mut selected = BTreeMap::<usize, (usize, usize, FrameGlobalReport)>::new();
+    for window in &windows {
+        for (view_index, view) in window.views.iter().enumerate() {
+            let report =
+                report_for_frame(view.frame_index, view, solution, evidence, raster, settings)?;
+            let replace = selected
+                .get(&view.frame_index)
+                .is_none_or(|(_, _, current)| {
+                    candidate_report_is_better(&report, current, settings)
+                });
+            if replace {
+                selected.insert(view.frame_index, (window.window.index, view_index, report));
+            }
         }
     }
-    Ok(result)
+    let mut views = BTreeMap::new();
+    for window in windows {
+        for (view_index, view) in window.views.into_iter().enumerate() {
+            let Some((winner_window, winner_view, _)) = selected.get(&view.frame_index) else {
+                continue;
+            };
+            if *winner_window == window.window.index && *winner_view == view_index {
+                views.insert(view.frame_index, view);
+            }
+        }
+    }
+    let reports = selected
+        .into_iter()
+        .map(|(_, (_, _, report))| report)
+        .collect();
+    Ok((views, reports))
+}
+
+fn candidate_report_is_better(
+    candidate: &FrameGlobalReport,
+    current: &FrameGlobalReport,
+    settings: FrameGlobalFusionSettings,
+) -> bool {
+    let accepted = |report: &FrameGlobalReport| {
+        report.scale.is_some()
+            && report
+                .held_out_median_log_error
+                .is_some_and(|error| error <= settings.maximum_held_out_median_log_error)
+    };
+    match (accepted(candidate), accepted(current)) {
+        (true, false) => return true,
+        (false, true) => return false,
+        _ => {}
+    }
+    let candidate_error = candidate.held_out_median_log_error.unwrap_or(f32::INFINITY);
+    let current_error = current.held_out_median_log_error.unwrap_or(f32::INFINITY);
+    candidate_error.total_cmp(&current_error).is_lt()
+        || (candidate_error == current_error && candidate.scale_samples > current.scale_samples)
 }
 
 fn report_for_frame(
@@ -840,5 +884,28 @@ mod tests {
             keep_tsdf_observation(17, [42, 99], threshold)
         );
         assert_eq!(observation_sample_threshold(12, 12), u64::MAX);
+    }
+
+    #[test]
+    fn canonical_view_selection_prefers_held_out_verified_depth() {
+        let settings = FrameGlobalFusionSettings::default();
+        let weak = FrameGlobalReport {
+            frame_index: 7,
+            registered: true,
+            scale_samples: 80,
+            held_out_samples: 10,
+            scale: Some(2.0),
+            held_out_median_log_error: Some(0.31),
+        };
+        let verified = FrameGlobalReport {
+            frame_index: 7,
+            registered: true,
+            scale_samples: 12,
+            held_out_samples: 3,
+            scale: Some(2.2),
+            held_out_median_log_error: Some(0.04),
+        };
+        assert!(candidate_report_is_better(&verified, &weak, settings));
+        assert!(!candidate_report_is_better(&weak, &verified, settings));
     }
 }
