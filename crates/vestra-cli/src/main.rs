@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vestra_core::{
+    ArchitectureSettings,
     capture_cpp_pr2_fixture, cpp_pr2_fixture_alignment_reports, cpp_pr2_fixture_trajectory,
     emit_cpp_pr2_loop_closed_reference_cloud, emit_cpp_pr2_reference_cloud,
     emit_cpp_pr2_tsdf_reference_cloud, export_camera_json, export_fused_glb, export_fused_ply,
@@ -248,6 +249,23 @@ enum Command {
         /// replaces the calibrated DA3 or MVS-only products.
         #[arg(long)]
         mvs_guided: bool,
+    },
+    /// Publish a separate, conservative architecture layer from one existing
+    /// global surfel/TSDF product. Only directly supported plane cells are
+    /// emitted; unsupported wall regions remain visible holes/openings.
+    ExtractArchitecture {
+        #[arg(long)]
+        scene: PathBuf,
+        /// Existing world product that supplies global geometry. It is never
+        /// overwritten by this command.
+        #[arg(long)]
+        source_product: String,
+        /// Bound the evidence sampled during plane extraction.
+        #[arg(long, default_value_t = 250_000)]
+        maximum_source_points: usize,
+        /// Limit the number of distinct architectural planes displayed.
+        #[arg(long, default_value_t = 12)]
+        maximum_planes: usize,
     },
     /// Attach the exact decoded-raster contract to a legacy scene before
     /// importing a global pose provider. This never re-runs DA3 inference.
@@ -1807,6 +1825,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "tsdf_observations": observations.len(),
                     "fused_points": tsdf_cloud.points.len(),
                     "surface": "tsdf",
+                })
+            );
+        }
+        Command::ExtractArchitecture {
+            scene,
+            source_product,
+            maximum_source_points,
+            maximum_planes,
+        } => {
+            if maximum_source_points == 0 || maximum_planes == 0 {
+                return Err("architecture extraction limits must be positive".into());
+            }
+            let bundle = SceneBundle::open(scene)?;
+            let manifest = bundle.manifest()?;
+            let source = manifest
+                .world_products
+                .iter()
+                .find(|product| product.id == source_product)
+                .cloned()
+                .ok_or("requested source world product has not been published")?;
+            let source_cloud = bundle.read_fused_scene(&source.fused_chunk_hash)?;
+            let extraction = vestra_core::extract_architectural_planes(
+                &source_cloud.points,
+                ArchitectureSettings {
+                    maximum_source_points,
+                    maximum_planes,
+                    ..ArchitectureSettings::default()
+                },
+            );
+            if extraction.planes.is_empty() || extraction.points.is_empty() {
+                return Err("no sufficiently supported architectural planes were found; retain the source surfel world".into());
+            }
+            let product_id = format!("{}-architecture", source.id);
+            let architecture_cloud = FusedSceneChunk {
+                alignments: Vec::new(),
+                pose_graph_edges: Vec::new(),
+                pose_graph: None,
+                window_poses: Vec::new(),
+                voxel_size: 0.0,
+                points: extraction.points,
+            };
+            let chunk_hash = bundle.write_fused_scene_as(
+                &architecture_cloud,
+                &product_id,
+                &format!("{}+supported-planes", source.pose_authority),
+                "architectural-plane-support",
+                source.pose_solution_hash.clone(),
+            )?;
+            bundle.set_world_product_source_frames(&product_id, &source.source_frame_indices)?;
+            bundle.set_world_product_depth_frame_count(&product_id, source.depth_frame_count)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.architecture-plane-support/v1",
+                    "bundle": bundle.root(),
+                    "source_product": source.id,
+                    "product": product_id,
+                    "fused_chunk": chunk_hash,
+                    "planes": extraction.planes,
+                    "surface_points": architecture_cloud.points.len(),
+                    "policy": "supported-planar-cells-only; openings-remain-unsupported",
                 })
             );
         }

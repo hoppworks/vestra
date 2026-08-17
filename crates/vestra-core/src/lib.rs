@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use vestra_engine::{Engine, EngineError, MultiViewInferOut, ViewInput};
 
+pub mod architecture;
 mod cpp_pr2_f64;
 mod cpp_pr2_geometry_d;
 pub mod cpp_pr2_oracle;
@@ -23,6 +24,11 @@ pub mod stitch;
 pub mod tsdf;
 pub mod video;
 
+pub use architecture::{
+    ArchitecturalPlane, ArchitectureClass, ArchitectureEvidenceError, ArchitectureExtraction,
+    ArchitectureSemanticEvidence, ArchitectureSemanticFrame, ArchitectureSettings,
+    extract_architectural_planes,
+};
 pub use cpp_pr2_oracle::{
     CppPr2CapiStreamOutput, CppPr2Fixture, CppPr2Frame, CppPr2MultiViewOutput, CppPr2MultiViewView,
     CppPr2OracleError, CppPr2StreamBranches, CppPr2StreamOutput,
