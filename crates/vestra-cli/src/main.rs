@@ -174,6 +174,25 @@ enum Command {
         #[arg(long)]
         pose_solution: String,
     },
+    /// Report per-frame sparse-track depth calibration for frame-global
+    /// COLMAP rebasing without publishing a world product.
+    InspectColmapFrameGlobal {
+        #[arg(long)]
+        scene: PathBuf,
+        #[arg(long)]
+        pose_solution: String,
+    },
+    /// Publish a separate world that uses globally bundle-adjusted COLMAP
+    /// cameras per source frame, never a window-level Sim(3) transform.
+    FuseColmapFrameGlobal {
+        #[arg(long)]
+        scene: PathBuf,
+        #[arg(long)]
+        pose_solution: String,
+        /// Emit raw surfels instead of the default frame-global TSDF product.
+        #[arg(long)]
+        raw_surfels: bool,
+    },
     /// Attach the exact decoded-raster contract to a legacy scene before
     /// importing a global pose provider. This never re-runs DA3 inference.
     RasterRecord {
@@ -1159,6 +1178,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "rms_camera_residual": report.rms_camera_residual,
                         "normalized_camera_rms": report.normalized_camera_rms,
                     })).collect::<Vec<_>>(),
+                })
+            );
+        }
+        Command::InspectColmapFrameGlobal {
+            scene,
+            pose_solution,
+        } => {
+            let bundle = SceneBundle::open(scene)?;
+            let reports = vestra_core::frame_global_reports(
+                &bundle,
+                &pose_solution,
+                vestra_core::FrameGlobalFusionSettings::default(),
+            )?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.colmap-frame-global-inspect/v1",
+                    "pose_solution": pose_solution,
+                    "frames": reports.iter().map(|report| serde_json::json!({
+                        "frame_index": report.frame_index,
+                        "registered": report.registered,
+                        "scale_samples": report.scale_samples,
+                        "held_out_samples": report.held_out_samples,
+                        "scale": report.scale,
+                        "held_out_median_log_error": report.held_out_median_log_error,
+                    })).collect::<Vec<_>>(),
+                })
+            );
+        }
+        Command::FuseColmapFrameGlobal {
+            scene,
+            pose_solution,
+            raw_surfels,
+        } => {
+            let bundle = SceneBundle::open(scene)?;
+            let fusion = vestra_core::fuse_scene_bundle_frame_global(
+                &bundle,
+                &pose_solution,
+                vestra_core::FrameGlobalFusionSettings {
+                    tsdf: (!raw_surfels).then(TsdfSettings::default),
+                    ..vestra_core::FrameGlobalFusionSettings::default()
+                },
+            )?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.colmap-frame-global-fusion/v1",
+                    "bundle": bundle.root(),
+                    "pose_solution": pose_solution,
+                    "fused_chunk": fusion.chunk_hash,
+                    "fused_frames": fusion.fused_frames,
+                    "omitted_frames": fusion.omitted_frames,
+                    "fused_points": fusion.points,
+                    "surface": if raw_surfels { "surfel" } else { "tsdf" },
                 })
             );
         }

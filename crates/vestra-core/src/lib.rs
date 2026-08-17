@@ -11,6 +11,7 @@ mod cpp_pr2_geometry_d;
 pub mod cpp_pr2_oracle;
 pub mod export;
 pub mod geometry;
+pub mod global_fusion;
 mod icp;
 pub mod pose;
 pub mod pose_graph;
@@ -31,6 +32,10 @@ pub use export::{
 pub use geometry::{
     BackprojectionError, BackprojectionSettings, CameraCalibration, MeasuredPoint, MeasuredView,
     backproject_measured_view,
+};
+pub use global_fusion::{
+    FrameGlobalFusionError, FrameGlobalFusionProgress, FrameGlobalFusionSettings,
+    FrameGlobalReport, frame_global_reports, fuse_scene_bundle_frame_global,
 };
 pub use pose::{
     ColmapCameraModel, GlobalTrajectoryEvidence, PoseDiagnostics, PoseError, PoseFrame,
