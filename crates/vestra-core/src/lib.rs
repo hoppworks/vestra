@@ -34,7 +34,7 @@ pub use geometry::{
 };
 pub use pose::{
     PoseDiagnostics, PoseError, PoseFrame, PoseProvider, PoseSolution, RasterCrop, RasterFrame,
-    RasterManifest, finalized_raster_manifest, parse_colmap_images_txt,
+    RasterManifest, finalized_raster_manifest, parse_colmap_images_txt, validate_pose_solution,
 };
 pub use pose_graph::{
     PoseGraphEdge, PoseGraphError, PoseGraphReport, PoseGraphSettings, RelativePoseGraph,

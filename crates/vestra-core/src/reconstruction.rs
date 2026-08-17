@@ -185,7 +185,7 @@ pub fn fuse_scene_bundle_with_settings(
 ///
 /// The solution must be published by this exact bundle (and consequently use
 /// the same decoded raster contract). Each local DA3 window is fitted to the
-/// registered COLMAP camera centres, then all raw points are transformed once
+/// registered global camera centres, then all raw points are transformed once
 /// and fused. It never changes the relative local product or raw evidence.
 pub fn fuse_scene_bundle_with_pose_solution(
     bundle: &SceneBundle,
@@ -193,11 +193,12 @@ pub fn fuse_scene_bundle_with_pose_solution(
     settings: GlobalPoseFusionSettings,
 ) -> Result<FusionProgress, ReconstructionError> {
     let solution = bundle.read_pose_solution(pose_solution_hash)?;
-    if solution.provider.kind != "colmap" {
+    if !matches!(
+        solution.provider.kind.as_str(),
+        "colmap" | "droid-slam" | "vggt"
+    ) {
         return Err(ReconstructionError::Scene(
-            SceneBundleError::InvalidArtifact(
-                "only the validated COLMAP global-pose provider is supported".to_owned(),
-            ),
+            SceneBundleError::InvalidArtifact("unsupported global-pose provider".to_owned()),
         ));
     }
     let manifest = bundle.manifest()?;
@@ -215,8 +216,8 @@ pub fn fuse_scene_bundle_with_pose_solution(
     let points = fused.points.len();
     let chunk_hash = bundle.write_fused_scene_as(
         &fused,
-        "colmap-global-active",
-        "colmap-global-ba",
+        &format!("{}-global-active", solution.provider.kind),
+        &format!("{}-global", solution.provider.kind),
         if settings.tsdf.is_some() {
             "tsdf"
         } else {
@@ -231,18 +232,19 @@ pub fn fuse_scene_bundle_with_pose_solution(
     })
 }
 
-/// Evaluates every local window against a published COLMAP solution without
+/// Evaluates every local window against a published global pose solution without
 /// emitting a point cloud. This makes pose-provider rejection explainable.
 pub fn global_pose_window_reports(
     bundle: &SceneBundle,
     pose_solution_hash: &str,
 ) -> Result<Vec<GlobalPoseWindowReport>, ReconstructionError> {
     let solution = bundle.read_pose_solution(pose_solution_hash)?;
-    if solution.provider.kind != "colmap" {
+    if !matches!(
+        solution.provider.kind.as_str(),
+        "colmap" | "droid-slam" | "vggt"
+    ) {
         return Err(ReconstructionError::Scene(
-            SceneBundleError::InvalidArtifact(
-                "only the validated COLMAP global-pose provider is supported".to_owned(),
-            ),
+            SceneBundleError::InvalidArtifact("unsupported global-pose provider".to_owned()),
         ));
     }
     let manifest = bundle.manifest()?;
@@ -297,6 +299,7 @@ fn global_pose_window_report(
     let global = solution
         .frames
         .iter()
+        .filter(|frame| frame.registered)
         .map(|frame| {
             (
                 frame.frame_index,

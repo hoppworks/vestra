@@ -84,6 +84,8 @@ pub enum PoseError {
     DuplicateRaster { image_name: String },
     #[error("raster manifest is invalid: {0}")]
     Raster(String),
+    #[error("pose solution is invalid: {0}")]
+    Solution(String),
 }
 
 impl RasterManifest {
@@ -125,6 +127,132 @@ pub fn finalized_raster_manifest(mut manifest: RasterManifest) -> RasterManifest
     manifest.schema = "vestra.raster/v1".to_owned();
     manifest.raster_fingerprint = raster_fingerprint(&manifest);
     manifest
+}
+
+/// Validates an externally produced global trajectory against the immutable
+/// decoded-raster contract.  Providers are deliberately allow-listed: a
+/// syntactically valid JSON file must not become a geometry authority merely
+/// because it contains twelve numbers per image.
+pub fn validate_pose_solution(
+    solution: &PoseSolution,
+    raster: &RasterManifest,
+) -> Result<(), PoseError> {
+    raster.validate()?;
+    if solution.schema != "vestra.pose-solution/v1" {
+        return Err(PoseError::Solution("unsupported schema".to_owned()));
+    }
+    if solution.raster_fingerprint != raster.fingerprint() {
+        return Err(PoseError::Solution(
+            "raster fingerprint mismatch".to_owned(),
+        ));
+    }
+    let expected_convention = match solution.provider.kind.as_str() {
+        "colmap" => "COLMAP world; W2C row-major 3x4 f64",
+        "droid-slam" | "vggt" => "OpenCV world; W2C row-major 3x4 f64",
+        other => {
+            return Err(PoseError::Solution(format!(
+                "unsupported pose provider {other:?}"
+            )));
+        }
+    };
+    if solution.coordinate_convention != expected_convention {
+        return Err(PoseError::Solution(format!(
+            "expected coordinate convention {expected_convention:?}"
+        )));
+    }
+    if solution.provider.version.trim().is_empty()
+        || solution.provider.settings_fingerprint.trim().is_empty()
+    {
+        return Err(PoseError::Solution(
+            "provider version and settings fingerprint are required".to_owned(),
+        ));
+    }
+    if solution.diagnostics.input_frames != raster.frames.len() {
+        return Err(PoseError::Solution(
+            "diagnostic input-frame count does not match raster manifest".to_owned(),
+        ));
+    }
+    let raster_by_index = raster
+        .frames
+        .iter()
+        .map(|frame| (frame.frame_index, frame.file_name.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = BTreeSet::new();
+    let mut registered = 0_usize;
+    for frame in &solution.frames {
+        let Some(&expected_name) = raster_by_index.get(&frame.frame_index) else {
+            return Err(PoseError::Solution(format!(
+                "unknown raster frame index {}",
+                frame.frame_index
+            )));
+        };
+        if frame.image_name != expected_name {
+            return Err(PoseError::Solution(format!(
+                "frame {} does not name its exact decoded raster",
+                frame.frame_index
+            )));
+        }
+        if !seen.insert(frame.frame_index) {
+            return Err(PoseError::Solution(format!(
+                "duplicate frame index {}",
+                frame.frame_index
+            )));
+        }
+        if frame.registered {
+            registered += 1;
+            validate_rigid_w2c(frame.world_to_camera)?;
+        }
+    }
+    if solution.diagnostics.registered_frames != registered {
+        return Err(PoseError::Solution(
+            "diagnostic registered-frame count does not match frames".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_rigid_w2c(matrix: [f64; 12]) -> Result<(), PoseError> {
+    if !matrix.iter().all(|value| value.is_finite()) {
+        return Err(PoseError::Solution(
+            "W2C contains non-finite values".to_owned(),
+        ));
+    }
+    let rows = [
+        [matrix[0], matrix[1], matrix[2]],
+        [matrix[4], matrix[5], matrix[6]],
+        [matrix[8], matrix[9], matrix[10]],
+    ];
+    for row in rows {
+        let norm = row.iter().map(|value| value * value).sum::<f64>().sqrt();
+        if (norm - 1.0).abs() > 1e-3 {
+            return Err(PoseError::Solution(
+                "W2C rotation is not normalized".to_owned(),
+            ));
+        }
+    }
+    for left in 0..3 {
+        for right in (left + 1)..3 {
+            let dot = rows[left]
+                .iter()
+                .zip(rows[right])
+                .map(|(a, b)| a * b)
+                .sum::<f64>();
+            if dot.abs() > 1e-3 {
+                return Err(PoseError::Solution(
+                    "W2C rotation is not orthogonal".to_owned(),
+                ));
+            }
+        }
+    }
+    let determinant = rows[0][0] * (rows[1][1] * rows[2][2] - rows[1][2] * rows[2][1])
+        - rows[0][1] * (rows[1][0] * rows[2][2] - rows[1][2] * rows[2][0])
+        + rows[0][2] * (rows[1][0] * rows[2][1] - rows[1][1] * rows[2][0]);
+    if (determinant - 1.0).abs() > 1e-3 {
+        return Err(PoseError::Solution(
+            "W2C rotation is not right-handed".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// Parses COLMAP `images.txt` (not `images.bin`).  Each non-comment pose line
@@ -205,7 +333,7 @@ pub fn parse_colmap_images_txt(
     }
     frames.sort_by_key(|frame| frame.frame_index);
     let registered_frames = frames.len();
-    Ok(PoseSolution {
+    let solution = PoseSolution {
         schema: "vestra.pose-solution/v1".to_owned(),
         provider,
         raster_fingerprint: raster.fingerprint(),
@@ -216,7 +344,9 @@ pub fn parse_colmap_images_txt(
             registered_frames,
             duplicate_images: 0,
         },
-    })
+    };
+    validate_pose_solution(&solution, raster)?;
+    Ok(solution)
 }
 
 fn quaternion_w2c_matrix(
@@ -349,6 +479,47 @@ mod tests {
                 provider
             ),
             Err(PoseError::DuplicateRaster { .. })
+        ));
+    }
+
+    #[test]
+    fn accepts_only_a_raster_bound_supported_sidecar_solution() {
+        let raster = raster();
+        let solution = PoseSolution {
+            schema: "vestra.pose-solution/v1".to_owned(),
+            provider: PoseProvider {
+                kind: "droid-slam".to_owned(),
+                version: "official-2026-08".to_owned(),
+                settings_fingerprint: "pinned-settings".to_owned(),
+            },
+            raster_fingerprint: raster.fingerprint(),
+            coordinate_convention: "OpenCV world; W2C row-major 3x4 f64".to_owned(),
+            frames: vec![PoseFrame {
+                frame_index: 0,
+                image_name: "frame-000001.ppm".to_owned(),
+                registered: true,
+                world_to_camera: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            }],
+            diagnostics: PoseDiagnostics {
+                input_frames: 2,
+                registered_frames: 1,
+                duplicate_images: 0,
+            },
+        };
+        validate_pose_solution(&solution, &raster).unwrap();
+
+        let mut mismatched = solution.clone();
+        mismatched.frames[0].image_name = "wrong.ppm".to_owned();
+        assert!(matches!(
+            validate_pose_solution(&mismatched, &raster),
+            Err(PoseError::Solution(_))
+        ));
+
+        let mut unsupported = solution;
+        unsupported.provider.kind = "untrusted-sidecar".to_owned();
+        assert!(matches!(
+            validate_pose_solution(&unsupported, &raster),
+            Err(PoseError::Solution(_))
         ));
     }
 }

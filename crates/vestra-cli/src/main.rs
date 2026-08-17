@@ -114,6 +114,15 @@ enum Command {
         #[arg(long)]
         settings_fingerprint: String,
     },
+    /// Validate and publish a provider-neutral W2C pose solution.  DROID-SLAM
+    /// and VGGT sidecars must emit this exact schema against the immutable
+    /// decoded-raster manifest; this command never fills missing poses.
+    PoseImportJson {
+        #[arg(long)]
+        scene: PathBuf,
+        #[arg(long)]
+        solution: PathBuf,
+    },
     /// Build a separate, globally posed world from an already-published
     /// COLMAP solution. Raw DA3 evidence and the local world remain intact.
     FuseColmapGlobal {
@@ -998,6 +1007,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "{}",
                 serde_json::json!({
                     "schema": "vestra.pose-import/v1",
+                    "pose_solution": hash,
+                    "registered_frames": solution.diagnostics.registered_frames,
+                    "input_frames": solution.diagnostics.input_frames,
+                })
+            );
+        }
+        Command::PoseImportJson { scene, solution } => {
+            let bundle = SceneBundle::open(scene)?;
+            let raster = bundle.read_raster_manifest()?;
+            let file = File::open(solution)?;
+            let solution: vestra_core::PoseSolution =
+                serde_json::from_reader(BufReader::new(file))?;
+            vestra_core::validate_pose_solution(&solution, &raster)?;
+            let hash = bundle.write_pose_solution(&solution)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.pose-import/v1",
+                    "provider": solution.provider.kind,
                     "pose_solution": hash,
                     "registered_frames": solution.diagnostics.registered_frames,
                     "input_frames": solution.diagnostics.input_frames,

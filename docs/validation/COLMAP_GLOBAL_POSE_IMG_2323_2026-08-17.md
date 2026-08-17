@@ -47,3 +47,26 @@ fusion. Candidate paths are a COLMAP run with stronger loop/retrieval and
 keyframe selection, followed by a GPU SLAM provider if that still fragments the
 trajectory. Any provider must import through the same raster/pose contract and
 pass the existing per-window global-fit gate before a new product is published.
+
+## Retrieval / loop-closure follow-up
+
+A second isolated COLMAP run kept the exact same 720 raster images and added
+official vocabulary-tree loop detection to sequential matching:
+
+- Vocabulary tree SHA-256:
+  `921e894b7d81f5cf223df824a02b9932660cddf00a815c93fc7c0bd690fc639e`.
+- Loop settings: period 5, 30 retrieved images, 5 nearest neighbours, 128
+  checks; 20 sequential neighbours and guided CPU matching remained enabled.
+- Largest component: 657 / 720 registered frames.
+
+Registration coverage improved, but the geometrically relevant result was
+worse: only 74 / 80 windows had at least three registered cameras; normalized
+camera-fit RMS was 0.0654 median, 0.3816 p95, and 0.7925 maximum. Six windows
+(46–51) had fewer than three registered cameras, and 16 accepted-fit windows
+exceeded the 0.15 gate.
+
+This variant is also rejected. More visual retrieval pairs did not create a
+reliable common metric trajectory for this capture, so it must not be published
+as a global world. The next provider spike is GPU SLAM with an explicit
+calibrated crop/intrinsics contract; it will use the same `RasterManifest` and
+`PoseSolution` boundary.
