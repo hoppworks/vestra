@@ -58,6 +58,17 @@ pub struct GlobalPoseFusionSettings {
     pub tsdf: Option<TsdfSettings>,
 }
 
+/// One local DA3 window measured against the immutable global pose provider.
+/// This is diagnostic evidence, not a promise that the window was fused.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlobalPoseWindowReport {
+    pub window_index: usize,
+    pub registered_cameras: usize,
+    pub local_to_global: SimilarityTransform,
+    pub rms_camera_residual: f32,
+    pub normalized_camera_rms: f32,
+}
+
 impl Default for GlobalPoseFusionSettings {
     fn default() -> Self {
         Self {
@@ -220,11 +231,62 @@ pub fn fuse_scene_bundle_with_pose_solution(
     })
 }
 
+/// Evaluates every local window against a published COLMAP solution without
+/// emitting a point cloud. This makes pose-provider rejection explainable.
+pub fn global_pose_window_reports(
+    bundle: &SceneBundle,
+    pose_solution_hash: &str,
+) -> Result<Vec<GlobalPoseWindowReport>, ReconstructionError> {
+    let solution = bundle.read_pose_solution(pose_solution_hash)?;
+    if solution.provider.kind != "colmap" {
+        return Err(ReconstructionError::Scene(
+            SceneBundleError::InvalidArtifact(
+                "only the validated COLMAP global-pose provider is supported".to_owned(),
+            ),
+        ));
+    }
+    let manifest = bundle.manifest()?;
+    let mut windows = manifest
+        .measured_chunk_hashes
+        .iter()
+        .map(|hash| bundle.read_measured_window(hash))
+        .collect::<Result<Vec<_>, _>>()?;
+    windows.sort_by_key(|window| window.window.index);
+    windows
+        .iter()
+        .map(|window| global_pose_window_report(window, &solution))
+        .collect()
+}
+
 fn fit_window_to_global_pose(
     window: &WindowMeasuredChunk,
     solution: &PoseSolution,
     settings: GlobalPoseFusionSettings,
 ) -> Result<SimilarityTransform, ReconstructionError> {
+    let report = global_pose_window_report(window, solution)?;
+    if report.registered_cameras < settings.minimum_registered_cameras_per_window {
+        return Err(ReconstructionError::InsufficientGlobalCameraEvidence {
+            window_index: window.window.index,
+            actual: report.registered_cameras,
+            minimum: settings.minimum_registered_cameras_per_window,
+        });
+    }
+    if !report.normalized_camera_rms.is_finite()
+        || report.normalized_camera_rms > settings.maximum_normalized_camera_rms
+    {
+        return Err(ReconstructionError::GlobalCameraFitQuality {
+            window_index: window.window.index,
+            normalized_rms: report.normalized_camera_rms,
+            maximum: settings.maximum_normalized_camera_rms,
+        });
+    }
+    Ok(report.local_to_global)
+}
+
+fn global_pose_window_report(
+    window: &WindowMeasuredChunk,
+    solution: &PoseSolution,
+) -> Result<GlobalPoseWindowReport, ReconstructionError> {
     let global = solution
         .frames
         .iter()
@@ -251,11 +313,11 @@ fn fit_window_to_global_pose(
             window_index: window.window.index,
         });
     }
-    if pairs.len() < settings.minimum_registered_cameras_per_window {
+    if pairs.len() < 3 {
         return Err(ReconstructionError::InsufficientGlobalCameraEvidence {
             window_index: window.window.index,
             actual: pairs.len(),
-            minimum: settings.minimum_registered_cameras_per_window,
+            minimum: 3,
         });
     }
     let (transform, rms) = crate::stitch::cpp_pr2_similarity_from_pairs(&pairs)?;
@@ -279,14 +341,13 @@ fn fit_window_to_global_pose(
     // otherwise the quality gate would change merely because COLMAP chose a
     // different arbitrary global scale.
     let normalized_rms = rms / (local_extent * transform.scale.abs()).max(1e-6);
-    if !normalized_rms.is_finite() || normalized_rms > settings.maximum_normalized_camera_rms {
-        return Err(ReconstructionError::GlobalCameraFitQuality {
-            window_index: window.window.index,
-            normalized_rms,
-            maximum: settings.maximum_normalized_camera_rms,
-        });
-    }
-    Ok(transform)
+    Ok(GlobalPoseWindowReport {
+        window_index: window.window.index,
+        registered_cameras: pairs.len(),
+        local_to_global: transform,
+        rms_camera_residual: rms,
+        normalized_camera_rms: normalized_rms,
+    })
 }
 
 fn emit_windows_at_poses(

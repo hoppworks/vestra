@@ -18,8 +18,9 @@ use vestra_core::{
     emit_cpp_pr2_tsdf_reference_cloud, export_camera_json, export_fused_glb, export_fused_ply,
     export_fused_splat, extract_video_frames, finalized_raster_manifest,
     fuse_scene_bundle_cpp_pr2_relative, fuse_scene_bundle_with_pose_solution,
-    fuse_scene_bundle_with_settings, fused_topology, load_decoded_frame_cache,
-    load_decoded_rgb24_cache, plan_windows, reconstruct_frames, video_raster_metadata,
+    fuse_scene_bundle_with_settings, fused_topology, global_pose_window_reports,
+    load_decoded_frame_cache, load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
+    video_raster_metadata,
 };
 use vestra_engine::{Engine, QuantPref, ViewInput};
 use vestra_studio::{IntakeConfig, serve, serve_intake};
@@ -123,6 +124,14 @@ enum Command {
         /// Emit raw surfels for diagnostics instead of the default TSDF layer.
         #[arg(long)]
         raw_surfels: bool,
+    },
+    /// Report the per-window camera fit to a published COLMAP solution without
+    /// changing the selected world product.
+    InspectColmapGlobal {
+        #[arg(long)]
+        scene: PathBuf,
+        #[arg(long)]
+        pose_solution: String,
     },
     /// Attach the exact decoded-raster contract to a legacy scene before
     /// importing a global pose provider. This never re-runs DA3 inference.
@@ -1019,6 +1028,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "windows": fusion.aligned_windows,
                     "fused_points": fusion.points,
                     "surface": if raw_surfels { "surfel" } else { "tsdf" },
+                })
+            );
+        }
+        Command::InspectColmapGlobal {
+            scene,
+            pose_solution,
+        } => {
+            let bundle = SceneBundle::open(scene)?;
+            let reports = global_pose_window_reports(&bundle, &pose_solution)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.colmap-global-inspect/v1",
+                    "pose_solution": pose_solution,
+                    "windows": reports.iter().map(|report| serde_json::json!({
+                        "window_index": report.window_index,
+                        "registered_cameras": report.registered_cameras,
+                        "scale": report.local_to_global.scale,
+                        "rms_camera_residual": report.rms_camera_residual,
+                        "normalized_camera_rms": report.normalized_camera_rms,
+                    })).collect::<Vec<_>>(),
                 })
             );
         }
