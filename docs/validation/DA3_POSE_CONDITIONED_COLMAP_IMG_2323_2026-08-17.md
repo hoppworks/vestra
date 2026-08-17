@@ -82,3 +82,26 @@ and contains 56,367 surfels. It cannot count as evidence that the trajectory
 or depth is geometrically correct.
 
 Metric scale remains out of scope: the world is explicitly relative-scale.
+
+## Rejected larger temporal-context control
+
+A second, non-published sidecar used the identical raster, model, external
+COLMAP cameras, confidence threshold, and first-owner policy, but increased
+the temporal batch to 32 views with 8 repeated views. It completed nine
+batches and emitted 5,585,928 valid surfels. The comparison is deliberately
+kept out of Studio because it does not meet the continuity gate:
+
+| Metric | Accepted 16 / 4 run | 32 / 8 control | Direction |
+| --- | ---: | ---: | --- |
+| Sparse-track samples | 288,969 | 303,973 | coverage only |
+| Median absolute log-depth error after one global scale | 0.09479 | 0.08004 | better |
+| p95 absolute log-depth error after one global scale | 0.72233 | 0.69433 | slightly better |
+| Median repeated-frame relative error | 6.689% | 6.538% | slightly better |
+| p95 repeated-frame relative error | 21.638% | 26.898% | **worse** |
+
+The 32 / 8 run is rejected as a production candidate. More consecutive video
+frames are not inherently better context: after a turn, they can show a
+different room sector even while remaining temporally close. The next
+quality-focused experiment must construct DA3 multi-view groups from the
+global COLMAP covisibility graph (shared sparse tracks and compatible camera
+directions), not from a fixed temporal window length.
