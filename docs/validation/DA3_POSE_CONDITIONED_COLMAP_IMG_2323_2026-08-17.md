@@ -105,3 +105,28 @@ different room sector even while remaining temporally close. The next
 quality-focused experiment must construct DA3 multi-view groups from the
 global COLMAP covisibility graph (shared sparse tracks and compatible camera
 directions), not from a fixed temporal window length.
+
+## Covisibility-context control — mixed, not published
+
+A third sidecar replaced temporal grouping with deterministic, bounded groups
+selected from shared accepted COLMAP-track observations. It retained the same
+220 frames, official model, supplied global cameras, 16-view maximum, four
+context views, first-owner policy, confidence threshold, and pixel stride. It
+formed 19 groups and emitted a separate artifact at
+`/var/roothome/vestra-runs/img-2323-da3-pose-conditioned-covisibility-b16-o4`.
+
+| Metric | Accepted temporal 16 / 4 | Covisibility 16 / 4 | Direction |
+| --- | ---: | ---: | --- |
+| Sparse-track samples | 288,969 | 329,098 | coverage only |
+| Median absolute log-depth error after one global scale | 0.09479 | 0.07791 | better |
+| p95 absolute log-depth error after one global scale | 0.72233 | 0.74071 | **worse** |
+| Median repeated-frame relative error | 6.689% | 4.311% | better |
+| p95 repeated-frame relative error | 21.638% | 14.971% | better |
+
+The new grouping materially improves agreement for repeated views, which is
+the desired causal effect, but it does **not** dominate the established
+temporal run on both robust global-depth statistics. It is therefore retained
+as an immutable diagnostic artifact and is **not imported or published to
+Studio**. The next acceptance pass must add held-out depth-track scoring by
+context/room sector and reject bad contexts before dense fusion; selecting a
+better batch layout alone cannot repair the model's worst local depth failures.
