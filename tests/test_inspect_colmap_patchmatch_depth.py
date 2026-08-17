@@ -30,6 +30,23 @@ class PatchMatchDepthTest(unittest.TestCase):
         self.assertAlmostEqual(report["coverage"], 0.5)
         self.assertAlmostEqual(report["depth_median"], 2.5)
 
+    def test_sparse_tracks_use_pixel_centre_mapping_and_global_camera_depth(self):
+        import numpy as np
+
+        depth = np.full((2, 2, 1), 4.0, dtype=np.float32)
+        pose = {
+            "frames": [{"frame_index": 3, "registered": True,
+                        "world_to_camera": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]}],
+            "global_trajectory": {"tracks": [{"position": [0, 0, 4], "observations": [
+                {"frame_index": 3, "image_xy": [4.5, 4.5]},
+                {"frame_index": 2, "image_xy": [4.5, 4.5]},
+            ]}]},
+        }
+        report = PATCHMATCH.track_depth_report(pose, 3, depth, 10, 10, np)
+        self.assertEqual(report["observations"], 1)
+        self.assertEqual(report["covered_observations"], 1)
+        self.assertAlmostEqual(report["median_abs_log_depth_error"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
