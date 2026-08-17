@@ -1632,6 +1632,7 @@ mod tests {
         assert!(INDEX_HTML.contains("independentWorld"));
         assert!(INDEX_HTML.contains("selectedProduct.pose_authority!=='local-pr2-relative'"));
         assert!(INDEX_HTML.contains("independentWorld&&sourceFrames.length===0"));
+        assert!(INDEX_HTML.contains("if(independentWorld){document.querySelector('#replay-toggle').style.display='none'"));
     }
 
     #[test]
