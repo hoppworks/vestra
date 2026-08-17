@@ -63,3 +63,27 @@ default.** The next quality gate is a global floor/wall residual and
 source-camera replay comparison against the calibrated DA3 and MVS-only
 controls. Only a winning result can become the default product or receive a
 TSDF derivative.
+
+## Dominant-plane diagnostic
+
+`tools/inspect_world_planes.py` is a deterministic diagnostic that samples a
+published PLY uniformly, extracts disjoint RANSAC planes, and reports support
+plus p95 orthogonal residual as a fraction of that cloud's diagonal. It does
+not infer which plane is a floor and it supplies no universal pass threshold;
+those would be misleading without a metric scale or semantic annotation.
+
+On 250,000 uniformly sampled IMG_2323 points, with three planes, 512 trials,
+and a 0.2%-of-diagonal inlier threshold:
+
+| Product | Largest planar support | Largest-plane p95 / cloud diagonal |
+| --- | ---: | ---: |
+| Calibrated DA3 V2 | 5.02% | 0.1893% |
+| Exact MVS/DA3 hybrid | 10.34% | 0.1934% |
+| Guided MVS/DA3 hybrid | 14.92% | 0.1669% |
+
+This supports the same limited conclusion as the sparse-track depth check:
+the guided derivative has stronger, flatter dominant planar evidence than the
+two DA3 controls. It remains a diagnostic result, not proof that every room
+surface or the camera trajectory is correct. The next gate must compare
+source-camera replay and manually or semantically identified floor/wall
+regions before setting a default.
