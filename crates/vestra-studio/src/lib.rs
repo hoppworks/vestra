@@ -250,7 +250,10 @@ fn handle_intake(mut stream: TcpStream, state: &Arc<Mutex<IntakeState>>) -> std:
                 ),
             };
         }
-        let scene_path = intake_world_path(path);
+        // Route using only the path component, but forward the complete
+        // request into Studio so `?product=…` selects the same derivative
+        // product in the primary intake `/world/` flow.
+        let scene_path = intake_scene_request_path(path);
         let scene = state.lock().ok().and_then(|guard| {
             guard.active.as_ref().and_then(|job| {
                 (job.outcome == IntakeOutcome::Complete
@@ -260,7 +263,7 @@ fn handle_intake(mut stream: TcpStream, state: &Arc<Mutex<IntakeState>>) -> std:
         });
         if let Some(scene_path) = scene_path {
             return match scene {
-                Some(scene) => handle_scene_path(&mut stream, &scene, scene_path),
+                Some(scene) => handle_scene_path(&mut stream, &scene, &scene_path),
                 None => write_response(
                     &mut stream,
                     "404 Not Found",
@@ -749,6 +752,24 @@ fn intake_world_path(path: &str) -> Option<&str> {
     })
 }
 
+/// Normalizes an intake `/world/` asset path while retaining its query for
+/// Studio-level product selection. The routing allowlist deliberately sees
+/// only the path component.
+fn intake_scene_request_path(request_path: &str) -> Option<String> {
+    let (route_path, query) = request_path
+        .split_once('?')
+        .map_or((request_path, ""), |(route_path, query)| {
+            (route_path, query)
+        });
+    intake_world_path(route_path).map(|scene_path| {
+        if query.is_empty() {
+            scene_path.to_owned()
+        } else {
+            format!("{scene_path}?{query}")
+        }
+    })
+}
+
 fn write_response(
     stream: &mut TcpStream,
     status: &str,
@@ -867,6 +888,10 @@ fn manifest_for_product(
         .cloned()
         .ok_or_else(|| format!("unknown world product {id:?}"))?;
     manifest.fused_chunk_hash = Some(product.fused_chunk_hash);
+    // World products are served through their compact binary surfel assets.
+    // Never leak legacy JSON chunk aliases from the previously selected
+    // product into the returned manifest.
+    manifest.fused_point_chunk_hashes.clear();
     manifest.fused_point_binary_chunk_hashes = product.point_binary_chunk_hashes;
     manifest.fused_preview_point_binary_chunk_hashes = product.preview_point_binary_chunk_hashes;
     manifest.fused_summary = Some(product.summary);
@@ -1367,6 +1392,10 @@ mod tests {
         assert_eq!(
             intake_world_path("/world/manifest.json"),
             Some("/manifest.json")
+        );
+        assert_eq!(
+            intake_scene_request_path("/world/manifest.json?product=tsdf-active"),
+            Some("/manifest.json?product=tsdf-active".to_owned())
         );
         assert_eq!(intake_world_path("/manifest.json"), Some("/manifest.json"));
         assert_eq!(
