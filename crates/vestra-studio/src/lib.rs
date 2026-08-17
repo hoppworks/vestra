@@ -1617,6 +1617,13 @@ mod tests {
     }
 
     #[test]
+    fn studio_does_not_offer_legacy_measurements_for_an_independent_world() {
+        assert!(INDEX_HTML.contains("independentWorld"));
+        assert!(INDEX_HTML.contains("selectedProduct.pose_authority!=='local-pr2-relative'"));
+        assert!(INDEX_HTML.contains("independentWorld&&sourceFrames.length===0"));
+    }
+
+    #[test]
     fn studio_replay_uses_the_completed_local_input_video() {
         assert_eq!(intake_world_path("/input-video"), Some("/input-video"));
         assert_eq!(
