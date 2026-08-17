@@ -920,6 +920,17 @@ fn evidence(root: &Path, product_id: Option<&str>) -> (&'static str, &'static st
         {
             return frame_global_evidence(root, &bundle, product);
         }
+        // A dense MVS control cloud is deliberately independent from Vestra's
+        // measured windows. Reading the latter is both incorrect evidence and
+        // can traverse many gigabytes only to produce no camera rays.
+        if selected_product.is_some_and(|product| product.pose_authority != "local-pr2-relative") {
+            return Ok(serde_json::to_vec(&serde_json::json!({
+                "scale": "provider-defined",
+                "camera_rays": [],
+                "source_frames": [],
+                "diagnostic_links": [],
+            }))?);
+        }
         let Some(hash) = manifest.fused_chunk_hash else {
             return Ok(serde_json::to_vec(&serde_json::json!({"camera_rays": []}))?);
         };
