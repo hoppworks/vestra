@@ -12,11 +12,20 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "tools" / "run_da3_pose_conditioned.py"
+if str(RUNNER.parent) not in sys.path:
+    sys.path.insert(0, str(RUNNER.parent))
 SPEC = importlib.util.spec_from_file_location("run_da3_pose_conditioned", RUNNER)
 assert SPEC and SPEC.loader
 SIDECAR = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = SIDECAR
 SPEC.loader.exec_module(SIDECAR)
+CALIBRATION_SPEC = importlib.util.spec_from_file_location(
+    "calibrate_da3_pose_conditioned", ROOT / "tools" / "calibrate_da3_pose_conditioned.py",
+)
+assert CALIBRATION_SPEC and CALIBRATION_SPEC.loader
+CALIBRATION = importlib.util.module_from_spec(CALIBRATION_SPEC)
+sys.modules[CALIBRATION_SPEC.name] = CALIBRATION
+CALIBRATION_SPEC.loader.exec_module(CALIBRATION)
 
 
 def digest(payload: bytes) -> str:
@@ -179,6 +188,21 @@ class PoseConditionedRunnerTest(unittest.TestCase):
             self.assertEqual(SIDECAR.ppm_dimensions(frame), (2, 2))
             pixels = frame.read_bytes().split(b"255\n", 1)[1]
             self.assertNotEqual(pixels[:3], pixels[-3:])
+
+    def test_depth_calibration_uses_train_scale_and_held_out_error(self):
+        depth = np.full((4, 4), 2.0, dtype=np.float32)
+        # Train landmarks (ids not divisible by five) and one held-out
+        # landmark all lie at COLMAP camera depth four. The correction is 2.
+        samples = [
+            (1, [0.0, 0.0, 4.0], 0.25, 0.25),
+            (2, [0.0, 0.0, 4.0], 0.50, 0.50),
+            (3, [0.0, 0.0, 4.0], 0.75, 0.75),
+            (5, [0.0, 0.0, 4.0], 0.25, 0.75),
+        ]
+        report = CALIBRATION.calibrate_depth(depth, samples, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0], 3, np)
+        self.assertTrue(report["accepted"])
+        self.assertAlmostEqual(report["scale"], 2.0)
+        self.assertAlmostEqual(report["held_out_median_log_error"], 0.0)
 
 
 if __name__ == "__main__":
