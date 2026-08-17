@@ -138,27 +138,36 @@ def stage_colmap_images(decoded: Path, names: list[str], output: Path) -> Path:
     return image_root
 
 
-def selected_frame_rate(frames: list[dict]) -> float:
-    """Returns an exact uniform selected-frame rate or refuses approximation.
+def source_extraction_schedule(frames: list[dict]) -> tuple[float, int]:
+    """Returns `(uniform_rate, prefix_count)` without approximating timestamps.
 
     High-resolution pose evidence must describe the same source instants as the
     immutable DA3 rasters. A generic `fps` filter is exact only when the
-    manifest timestamps are uniformly spaced, so reject irregular selections
-    instead of silently sampling neighbouring video frames.
+    manifest timestamps are uniformly spaced. Vestra's quality selector may
+    retain one final partial cadence interval at end-of-video; that final frame
+    is decoded by its explicit timestamp after the regular prefix. Any other
+    irregular schedule is rejected instead of silently sampling neighbours.
     """
     if len(frames) < 2:
         raise ValueError("high-resolution pose extraction requires two or more raster frames")
     timestamps = [frame.get("timestamp_millis") for frame in frames]
     if any(not isinstance(value, int) or value < 0 for value in timestamps):
         raise ValueError("raster timestamps must be non-negative integer milliseconds")
+    if timestamps[0] != 0:
+        raise ValueError("high-resolution pose extraction requires a zero timestamp first frame")
     interval = timestamps[1] - timestamps[0]
-    if interval <= 0 or any(
-        later - earlier != interval for earlier, later in zip(timestamps, timestamps[1:])
+    if interval <= 0:
+        raise ValueError("raster timestamps must be strictly increasing")
+    prefix_count = 2
+    while prefix_count < len(timestamps) and timestamps[prefix_count] - timestamps[prefix_count - 1] == interval:
+        prefix_count += 1
+    if prefix_count < len(timestamps) - 1 or (
+        prefix_count < len(timestamps) and timestamps[prefix_count] <= timestamps[prefix_count - 1]
     ):
         raise ValueError(
-            "high-resolution pose extraction requires uniformly spaced raster timestamps"
+            "high-resolution pose extraction accepts only a uniform raster prefix and one final tail frame"
         )
-    return 1000.0 / interval
+    return 1000.0 / interval, prefix_count
 
 
 def stage_source_resolution_images(
@@ -192,7 +201,7 @@ def stage_source_resolution_images(
         raise ValueError("raster crop dimensions must be positive")
     if args.pose_image_width <= 0 or args.pose_image_width > crop["width"]:
         raise ValueError("pose-image-width must be positive and no wider than the locked source crop")
-    rate = selected_frame_rate(raster["frames"])
+    rate, regular_count = source_extraction_schedule(raster["frames"])
     image_root = output / "images"
     image_root.mkdir()
     temporary_pattern = image_root / "selected-%06d.ppm"
@@ -206,10 +215,20 @@ def stage_source_resolution_images(
     run(
         [
             "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(video),
-            "-vf", ",".join(filter_parts), "-frames:v", str(len(names)), str(temporary_pattern),
+            "-vf", ",".join(filter_parts), "-frames:v", str(regular_count), str(temporary_pattern),
         ],
         log,
     )
+    if regular_count < len(names):
+        final_timestamp = raster["frames"][-1]["timestamp_millis"] / 1000.0
+        run(
+            [
+                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(video),
+                "-ss", f"{final_timestamp:.3f}", "-vf", ",".join(filter_parts[1:]),
+                "-frames:v", "1", str(image_root / f"selected-{len(names):06d}.ppm"),
+            ],
+            log,
+        )
     decoded = sorted(image_root.glob("selected-*.ppm"))
     if len(decoded) != len(names):
         raise RuntimeError(
