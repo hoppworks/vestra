@@ -177,14 +177,15 @@ def main() -> int:
     common_feature = colmap_command(args, [
         "feature_extractor", "--database_path", str(database), "--image_path", str(decoded),
         "--ImageReader.single_camera", "1", "--ImageReader.camera_model", settings.camera_model,
-        "--SiftExtraction.use_gpu", "0", "--SiftExtraction.num_threads", str(settings.threads),
+        "--FeatureExtraction.use_gpu", "0",
+        "--FeatureExtraction.num_threads", str(settings.threads),
     ])
     run(common_feature, log)
     run(colmap_command(args, [
         "sequential_matcher", "--database_path", str(database),
-        "--SiftMatching.use_gpu", "0", "--SiftMatching.num_threads", str(settings.threads),
+        "--FeatureMatching.use_gpu", "0", "--FeatureMatching.num_threads", str(settings.threads),
         "--SequentialMatching.overlap", str(settings.sequential_overlap),
-        "--SequentialMatching.quadratic_overlap", "1", "--SiftMatching.guided_matching", "1",
+        "--SequentialMatching.quadratic_overlap", "1", "--FeatureMatching.guided_matching", "1",
     ]), log)
     # Retrieval adds only visually similar candidates; geometric verification
     # remains COLMAP's matcher/mapper responsibility. This is intentionally
@@ -193,8 +194,8 @@ def main() -> int:
         "vocab_tree_matcher", "--database_path", str(database),
         "--VocabTreeMatching.vocab_tree_path", str(tree),
         "--VocabTreeMatching.num_images", str(settings.retrieval_images),
-        "--SiftMatching.use_gpu", "0", "--SiftMatching.num_threads", str(settings.threads),
-        "--SiftMatching.guided_matching", "1",
+        "--FeatureMatching.use_gpu", "0", "--FeatureMatching.num_threads", str(settings.threads),
+        "--FeatureMatching.guided_matching", "1",
     ]), log)
     run(colmap_command(args, [
         "mapper", "--database_path", str(database), "--image_path", str(decoded),
