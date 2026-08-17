@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    CameraCalibration, FrameWindow, FusedPoint, FusedSceneChunk, MeasuredPoint, ScaleStatus,
+    CameraCalibration, FrameWindow, FusedPoint, FusedSceneChunk, MeasuredPoint, PoseSolution,
+    RasterManifest, ScaleStatus,
 };
 
 const MANIFEST_FILE: &str = "manifest.json";
@@ -46,6 +47,12 @@ pub struct SceneManifest {
     pub coordinate_convention: String,
     pub provenance: SceneProvenance,
     pub measured_chunk_hashes: Vec<String>,
+    /// Immutable contract for the exact decoded images accepted by global pose providers.
+    #[serde(default)]
+    pub raster_manifest_hash: Option<String>,
+    /// Content-addressed pose-provider outputs. They never overwrite raw evidence.
+    #[serde(default)]
+    pub pose_solution_hashes: Vec<String>,
     /// The derived, relative-scale world built from immutable measured chunks.
     /// It is optional so v1 bundles created before fusion remain readable.
     #[serde(default)]
@@ -115,6 +122,8 @@ pub enum SceneBundleError {
     MissingManifest(PathBuf),
     #[error("failed to serialize scene data: {0}")]
     Serialize(#[from] serde_json::Error),
+    #[error("invalid scene artifact: {0}")]
+    InvalidArtifact(String),
     #[error("scene I/O failed: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -146,6 +155,8 @@ impl SceneBundle {
                 .to_owned(),
             provenance,
             measured_chunk_hashes: Vec::new(),
+            raster_manifest_hash: None,
+            pose_solution_hashes: Vec::new(),
             fused_chunk_hash: None,
             fused_point_chunk_hashes: Vec::new(),
             fused_point_binary_chunk_hashes: Vec::new(),
@@ -214,6 +225,103 @@ impl SceneBundle {
                 .join(format!("{hash}.json")),
         )?;
         Ok(serde_json::from_slice(&payload)?)
+    }
+
+    /// Persists the exact decoded-raster contract before any external pose
+    /// provider is invoked. A later, different raster cannot replace it.
+    pub fn write_raster_manifest(
+        &self,
+        raster: &RasterManifest,
+    ) -> Result<String, SceneBundleError> {
+        raster
+            .validate()
+            .map_err(|error| SceneBundleError::InvalidArtifact(error.to_string()))?;
+        let payload = serde_json::to_vec(raster)?;
+        let hash = sha256_hex(&payload);
+        let path = self
+            .root
+            .join(CHUNKS_DIRECTORY)
+            .join(format!("raster-{hash}.json"));
+        if !path.exists() {
+            atomic_write(&path, &payload)?;
+        }
+        let mut manifest = self.manifest()?;
+        match manifest.raster_manifest_hash.as_deref() {
+            Some(existing) if existing != hash => {
+                return Err(SceneBundleError::InvalidArtifact(
+                    "bundle already has a different immutable raster manifest".to_owned(),
+                ));
+            }
+            Some(_) => {}
+            None => {
+                manifest.raster_manifest_hash = Some(hash.clone());
+                self.write_manifest(&manifest)?;
+            }
+        }
+        Ok(hash)
+    }
+
+    pub fn read_raster_manifest(&self) -> Result<RasterManifest, SceneBundleError> {
+        let manifest = self.manifest()?;
+        let hash = manifest.raster_manifest_hash.ok_or_else(|| {
+            SceneBundleError::InvalidArtifact("bundle has no raster manifest".to_owned())
+        })?;
+        Ok(serde_json::from_slice(&fs::read(
+            self.root
+                .join(CHUNKS_DIRECTORY)
+                .join(format!("raster-{hash}.json")),
+        )?)?)
+    }
+
+    /// Publishes a provider result only when it was produced for this exact
+    /// raster. Raw measurements and the active local derivative stay intact.
+    pub fn write_pose_solution(&self, solution: &PoseSolution) -> Result<String, SceneBundleError> {
+        let raster = self.read_raster_manifest()?;
+        if solution.schema != "vestra.pose-solution/v1"
+            || solution.raster_fingerprint != raster.raster_fingerprint
+        {
+            return Err(SceneBundleError::InvalidArtifact(
+                "pose solution does not match this bundle's raster manifest".to_owned(),
+            ));
+        }
+        let payload = serde_json::to_vec(solution)?;
+        let hash = sha256_hex(&payload);
+        let path = self
+            .root
+            .join(CHUNKS_DIRECTORY)
+            .join(format!("pose-{hash}.json"));
+        if !path.exists() {
+            atomic_write(&path, &payload)?;
+        }
+        let mut manifest = self.manifest()?;
+        if !manifest
+            .pose_solution_hashes
+            .iter()
+            .any(|existing| existing == &hash)
+        {
+            manifest.pose_solution_hashes.push(hash.clone());
+            manifest.pose_solution_hashes.sort_unstable();
+            self.write_manifest(&manifest)?;
+        }
+        Ok(hash)
+    }
+
+    pub fn read_pose_solution(&self, hash: &str) -> Result<PoseSolution, SceneBundleError> {
+        if !self
+            .manifest()?
+            .pose_solution_hashes
+            .iter()
+            .any(|existing| existing == hash)
+        {
+            return Err(SceneBundleError::InvalidArtifact(
+                "pose solution is not published by this bundle".to_owned(),
+            ));
+        }
+        Ok(serde_json::from_slice(&fs::read(
+            self.root
+                .join(CHUNKS_DIRECTORY)
+                .join(format!("pose-{hash}.json")),
+        )?)?)
     }
 
     /// Stores a derived fused world separately from the raw measurements and
