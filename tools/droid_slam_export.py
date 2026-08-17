@@ -131,6 +131,10 @@ def main() -> None:
         backend_thresh=args.backend_thresh,
         backend_radius=args.backend_radius,
         backend_nms=3,
+        # The tracked DROID revision dereferences this unconditionally in its
+        # frontend.  Native demo defaults make it opt-in; dense pose/depth
+        # tracking is the appropriate setting for this reconstruction sidecar.
+        upsample=True,
         stereo=False,
     )
     torch.multiprocessing.set_start_method("spawn", force=True)
