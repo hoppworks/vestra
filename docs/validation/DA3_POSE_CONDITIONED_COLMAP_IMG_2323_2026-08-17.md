@@ -44,6 +44,12 @@ Studio exposes the original-camera evidence for this independent world. It
 does not show legacy DA3 replay geometry as if that were an equivalent global
 raw layer.
 
+The product additionally retains **220 colourized 504×336 depth rasters** as
+display derivatives of the real DA3 float32 depth outputs. Studio serves them
+through the selected product only and synchronizes them to the original video;
+they are not reconstructed from the point cloud. The raw surfel and TSDF
+products remain independently selectable.
+
 ## Verification performed
 
 1. A three-frame GPU smoke completed model inference under supplied cameras
@@ -61,6 +67,8 @@ raw layer.
 4. The Rust import command revalidated artifact identity before publication.
 5. The live Studio endpoints report the selected product, 5,543,193 points,
    80 spatial-preview chunks, 220 camera rays, and 220 source frames.
+6. The live product endpoint verifies all 220 retained depth frames and serves
+   frame zero as a 504×336 RGB BMP (`508,086` bytes) for browser replay.
 
 ## Remaining acceptance gates
 
