@@ -130,3 +130,25 @@ as an immutable diagnostic artifact and is **not imported or published to
 Studio**. The next acceptance pass must add held-out depth-track scoring by
 context/room sector and reject bad contexts before dense fusion; selecting a
 better batch layout alone cannot repair the model's worst local depth failures.
+
+## Direction-gated covisibility control — rejected
+
+The covisibility selector was then constrained so every pair in a DA3 context
+had an optical-axis dot product of at least `0.25` (at most 75 degrees apart).
+The preflight covered all 220 registered views in 20 groups and verified a
+minimum observed pairwise dot product of `0.25033`; this was a valid input
+policy, not an execution failure. The resulting artifact is
+`/var/roothome/vestra-runs/img-2323-da3-pose-conditioned-covisibility-dir075-b16-o4`.
+
+| Metric | Temporal 16 / 4 | Covisibility | Direction-gated covisibility | Decision |
+| --- | ---: | ---: | ---: | --- |
+| Median global log-depth error | 0.09479 | **0.07791** | 0.08352 | worse than covisibility |
+| p95 global log-depth error | **0.72233** | 0.74071 | 0.74441 | worse |
+| Median repeated-frame relative error | 6.689% | **4.311%** | 5.126% | worse than covisibility |
+| p95 repeated-frame relative error | 21.638% | **14.971%** | 21.130% | loses the main gain |
+
+This rejects the direction gate as the next production policy. Shared sparse
+observations are more predictive than an arbitrary view-angle threshold for
+this capture; enforcing a uniform angle splits useful context without fixing
+the hard depth outliers. The runner keeps the option for controlled future
+experiments, but it is not used by any published product.
