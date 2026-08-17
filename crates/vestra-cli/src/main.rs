@@ -469,6 +469,8 @@ struct Da3PoseConditionedArtifact {
     source: Option<Da3CalibrationSource>,
     #[serde(default)]
     contract: Option<Da3CalibrationContract>,
+    #[serde(default)]
+    hybrid: Option<Da3MvsHybridEvidence>,
     ply: Da3PoseConditionedPly,
     depth_frames: Da3PoseConditionedDepthFrames,
 }
@@ -492,6 +494,14 @@ struct Da3CalibrationContract {
     minimum_accepted_frame_fraction: f64,
     pixel_mapping: String,
     track_split: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Da3MvsHybridEvidence {
+    mvs_ply_sha256: String,
+    mvs_vertices: usize,
+    pixel_policy: String,
+    median_mvs_coverage: f64,
 }
 
 fn is_sha256(value: &str) -> bool {
@@ -527,6 +537,23 @@ fn validate_calibrated_da3_contract(
         || contract.minimum_accepted_frame_fraction > 1.0
     {
         return Err("calibrated DA3 artifact violates the V2 provenance contract");
+    }
+    Ok(())
+}
+
+fn validate_mvs_hybrid_evidence(sidecar: &Da3PoseConditionedArtifact) -> Result<(), &'static str> {
+    let hybrid = sidecar
+        .hybrid
+        .as_ref()
+        .ok_or("MVS-DA3 hybrid artifact has no MVS provenance")?;
+    if !is_sha256(&hybrid.mvs_ply_sha256)
+        || hybrid.mvs_vertices == 0
+        || hybrid.pixel_policy != "mvs-zbuffer-where-observed-else-da3/v1"
+        || !hybrid.median_mvs_coverage.is_finite()
+        || hybrid.median_mvs_coverage <= 0.0
+        || hybrid.median_mvs_coverage > 1.0
+    {
+        return Err("MVS-DA3 hybrid artifact violates its dense-depth provenance contract");
     }
     Ok(())
 }
@@ -1452,18 +1479,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 File::open(artifact.join("manifest.json"))?,
             ))?;
             let calibrated = sidecar.schema == "vestra.da3-pose-conditioned-calibration/v2";
-            if (sidecar.schema != "vestra.da3-pose-conditioned/v1" && !calibrated)
+            let mvs_hybrid = sidecar.schema == "vestra.da3-mvs-hybrid/v1";
+            let verified_derivative = calibrated || mvs_hybrid;
+            if (sidecar.schema != "vestra.da3-pose-conditioned/v1" && !verified_derivative)
                 || sidecar.raster_fingerprint != raster.raster_fingerprint
                 || sidecar.pose_solution_hash != pose_solution
                 || !sidecar.align_to_input_ext_scale
             {
                 return Err("DA3 artifact does not bind this raster, COLMAP pose solution, and external pose scale".into());
             }
-            if calibrated && sidecar.decision.as_deref() != Some("accepted") {
-                return Err("calibrated DA3 artifact was not accepted by its held-out evidence contract".into());
+            if verified_derivative && sidecar.decision.as_deref() != Some("accepted") {
+                return Err("verified DA3 derivative was not accepted by its evidence contract".into());
             }
-            if calibrated {
+            if verified_derivative {
                 validate_calibrated_da3_contract(&sidecar)?;
+            }
+            if mvs_hybrid {
+                validate_mvs_hybrid_evidence(&sidecar)?;
             }
             if sidecar.ply.schema != "vestra.da3-pose-conditioned-ply/v1"
                 || Path::new(&sidecar.ply.file)
@@ -1531,7 +1563,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             let cloud = import_colmap_fused_ply(artifact.join(&sidecar.ply.file))?;
-            let id = if calibrated {
+            let id = if mvs_hybrid {
+                "da3-mvs-hybrid-colmap-surfel"
+            } else if calibrated {
                 "da3-pose-conditioned-colmap-calibrated-surfel"
             } else {
                 "da3-pose-conditioned-colmap-surfel"
@@ -1547,14 +1581,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     depth_target.join(&frame.file),
                 )?;
             }
+            let authority = if mvs_hybrid {
+                "colmap-mvs-geometric-plus-da3"
+            } else if calibrated {
+                "da3-base-pose-conditioned-colmap-calibrated"
+            } else {
+                "da3-base-pose-conditioned-colmap"
+            };
             let chunk_hash = bundle.write_fused_scene_as(
                 &cloud,
                 id,
-                if calibrated {
-                    "da3-base-pose-conditioned-colmap-calibrated"
-                } else {
-                    "da3-base-pose-conditioned-colmap"
-                },
+                authority,
                 "surfel",
                 Some(pose_solution.clone()),
             )?;
@@ -1563,7 +1600,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "{}",
                 serde_json::json!({
-                    "schema": if calibrated { "vestra.da3-pose-conditioned-calibrated-import/v2" } else { "vestra.da3-pose-conditioned-import/v1" },
+                    "schema": if mvs_hybrid { "vestra.da3-mvs-hybrid-import/v1" } else if calibrated { "vestra.da3-pose-conditioned-calibrated-import/v2" } else { "vestra.da3-pose-conditioned-import/v1" },
                     "bundle": bundle.root(),
                     "artifact": artifact,
                     "pose_solution": pose_solution,
@@ -1572,7 +1609,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "fused_chunk": chunk_hash,
                     "fused_points": cloud.points.len(),
                     "surface": "surfel",
-                    "authority": "official-da3-pose-conditioned-colmap",
+                    "authority": authority,
                 })
             );
         }
@@ -2290,6 +2327,7 @@ mod tests {
                 pixel_mapping: "pixel-center-resize/v1".into(),
                 track_split: "sha256-track-id-fold/v1".into(),
             }),
+            hybrid: None,
             ply: Da3PoseConditionedPly {
                 schema: "vestra.da3-pose-conditioned-ply/v1".into(),
                 file: "world.ply".into(),
@@ -2307,6 +2345,43 @@ mod tests {
         let mut unsafe_sidecar = sidecar;
         unsafe_sidecar.contract.as_mut().unwrap().track_split = "random".into();
         assert!(validate_calibrated_da3_contract(&unsafe_sidecar).is_err());
+    }
+
+    #[test]
+    fn mvs_hybrid_contract_requires_real_dense_evidence() {
+        let sidecar = Da3PoseConditionedArtifact {
+            schema: "vestra.da3-mvs-hybrid/v1".into(),
+            raster_fingerprint: "raster".into(),
+            pose_solution_hash: "pose".into(),
+            align_to_input_ext_scale: true,
+            frames: vec![1],
+            published_frames: Some(vec![1]),
+            decision: Some("accepted".into()),
+            source: None,
+            contract: None,
+            hybrid: Some(Da3MvsHybridEvidence {
+                mvs_ply_sha256: "d".repeat(64),
+                mvs_vertices: 1,
+                pixel_policy: "mvs-zbuffer-where-observed-else-da3/v1".into(),
+                median_mvs_coverage: 0.2,
+            }),
+            ply: Da3PoseConditionedPly {
+                schema: "vestra.da3-pose-conditioned-ply/v1".into(),
+                file: "world.ply".into(),
+                sha256: "c".repeat(64),
+            },
+            depth_frames: Da3PoseConditionedDepthFrames {
+                schema: "vestra.da3-pose-conditioned-depth-frames/v1".into(),
+                directory: "depth-frames".into(),
+                width: 504,
+                height: 336,
+                frames: Vec::new(),
+            },
+        };
+        assert!(validate_mvs_hybrid_evidence(&sidecar).is_ok());
+        let mut incomplete = sidecar;
+        incomplete.hybrid.as_mut().unwrap().median_mvs_coverage = 0.0;
+        assert!(validate_mvs_hybrid_evidence(&incomplete).is_err());
     }
 
     #[test]
