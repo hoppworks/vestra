@@ -912,12 +912,12 @@ fn evidence(root: &Path, product_id: Option<&str>) -> (&'static str, &'static st
                 .iter()
                 .find(|product| product.id == id)
         });
-        // Frame-global COLMAP products have no local window Sim(3) poses by
-        // design.  Resolve their compact camera proof from the immutable pose
-        // solution instead of scanning every measured chunk only to skip it.
-        if let Some(product) =
-            selected_product.filter(|product| product.pose_authority == "colmap-ba-frame-global")
-        {
+        // Independent products can carry a calibrated pose solution. Resolve
+        // their compact source-camera proof without scanning local DA3
+        // windows, which are neither necessary nor valid evidence for them.
+        if let Some(product) = selected_product.filter(|product| {
+            product.pose_authority != "local-pr2-relative" && product.pose_solution_hash.is_some()
+        }) {
             return frame_global_evidence(root, &bundle, product);
         }
         // A dense MVS control cloud is deliberately independent from Vestra's

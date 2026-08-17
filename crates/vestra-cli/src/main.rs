@@ -206,6 +206,11 @@ enum Command {
         /// maps; it must never be presented as a verified geometric world.
         #[arg(long)]
         photometric: bool,
+        /// Hash of the calibrated COLMAP pose solution that produced this
+        /// dense reconstruction.  It supplies source-camera evidence in
+        /// Studio; it does not alter any MVS vertices.
+        #[arg(long)]
+        pose_solution: String,
     },
     /// Attach the exact decoded-raster contract to a legacy scene before
     /// importing a global pose provider. This never re-runs DA3 inference.
@@ -1253,8 +1258,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             scene,
             ply,
             photometric,
+            pose_solution,
         } => {
             let bundle = SceneBundle::open(scene)?;
+            let solution = bundle.read_pose_solution(&pose_solution)?;
+            let source_frames = solution
+                .frames
+                .iter()
+                .filter(|frame| frame.registered)
+                .map(|frame| frame.frame_index)
+                .collect::<Vec<_>>();
+            if source_frames.is_empty() || solution.global_trajectory.is_none() {
+                return Err(
+                    "COLMAP MVS import requires a calibrated pose solution with registered frames"
+                        .into(),
+                );
+            }
             let cloud = import_colmap_fused_ply(&ply)?;
             let (id, pose_authority) = if photometric {
                 (
@@ -1264,14 +1283,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 ("colmap-mvs-geometric", "colmap-dense-mvs-geometric")
             };
-            let chunk_hash =
-                bundle.write_fused_scene_as(&cloud, id, pose_authority, "surfel", None)?;
+            let chunk_hash = bundle.write_fused_scene_as(
+                &cloud,
+                id,
+                pose_authority,
+                "surfel",
+                Some(pose_solution.clone()),
+            )?;
+            bundle.set_world_product_source_frames(id, &source_frames)?;
             println!(
                 "{}",
                 serde_json::json!({
                     "schema": "vestra.colmap-mvs-import/v1",
                     "bundle": bundle.root(),
                     "input": ply,
+                    "pose_solution": pose_solution,
+                    "source_frames": source_frames.len(),
                     "fused_chunk": chunk_hash,
                     "fused_points": cloud.points.len(),
                     "surface": "surfel",
