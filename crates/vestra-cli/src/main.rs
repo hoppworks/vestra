@@ -9,21 +9,21 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vestra_core::{
-    BackprojectionSettings, CppPr2CapiStreamOutput, CppPr2Fixture, CppPr2MultiViewOutput,
-    CppPr2StreamOutput, GlobalPoseFusionSettings, RasterFrame, RasterManifest,
-    ReconstructionSettings, SceneBundle, SceneProvenance, StitchSettings, SurfaceFusion,
-    TsdfSettings, VideoExtractionSettings, WindowSettings, capture_cpp_pr2_fixture,
-    cpp_pr2_fixture_alignment_reports, cpp_pr2_fixture_trajectory,
+    capture_cpp_pr2_fixture, cpp_pr2_fixture_alignment_reports, cpp_pr2_fixture_trajectory,
     emit_cpp_pr2_loop_closed_reference_cloud, emit_cpp_pr2_reference_cloud,
     emit_cpp_pr2_tsdf_reference_cloud, export_camera_json, export_fused_glb, export_fused_ply,
-    export_fused_splat, extract_video_frames, finalized_raster_manifest,
+    export_fused_splat, extract_video_frames, finalized_raster_manifest, fuse_normal_space_tsdf,
     fuse_scene_bundle_cpp_pr2_relative, fuse_scene_bundle_with_pose_solution,
     fuse_scene_bundle_with_settings, fused_topology, global_pose_window_reports,
     import_colmap_fused_ply, load_decoded_frame_cache, load_decoded_rgb24_cache, plan_windows,
-    reconstruct_frames, video_raster_metadata,
+    reconstruct_frames, video_raster_metadata, BackprojectionSettings, CppPr2CapiStreamOutput,
+    CppPr2Fixture, CppPr2MultiViewOutput, CppPr2StreamOutput, FusedPoint, FusedSceneChunk,
+    GlobalPoseFusionSettings, RasterFrame, RasterManifest, ReconstructionSettings, SceneBundle,
+    SceneProvenance, StitchSettings, SurfaceFusion, TsdfObservation, TsdfSettings,
+    VideoExtractionSettings, WindowSettings,
 };
 use vestra_engine::{Engine, QuantPref, ViewInput};
-use vestra_studio::{IntakeConfig, serve, serve_intake};
+use vestra_studio::{serve, serve_intake, IntakeConfig};
 
 const VESTRA_LOCK: &str = include_str!("../../../vestra.lock.toml");
 
@@ -225,6 +225,20 @@ enum Command {
         /// to official DA3 as extrinsics and intrinsics.
         #[arg(long)]
         pose_solution: String,
+    },
+    /// Create a TSDF surfel derivative from the immutable DA3
+    /// pose-conditioned COLMAP surfel world. It retains the raw product and
+    /// selects the derivative as a separate Studio product.
+    FuseDa3PoseConditionedTsdf {
+        #[arg(long)]
+        scene: PathBuf,
+        #[arg(long)]
+        pose_solution: String,
+        /// Bound memory without preferentially retaining an early video
+        /// prefix. The input order is already first-owner frame-major, so a
+        /// regular stride samples every admitted frame and raster region.
+        #[arg(long, default_value_t = 1_000_000)]
+        maximum_observations: usize,
     },
     /// Attach the exact decoded-raster contract to a legacy scene before
     /// importing a global pose provider. This never re-runs DA3 inference.
@@ -1407,6 +1421,97 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             );
         }
+        Command::FuseDa3PoseConditionedTsdf {
+            scene,
+            pose_solution,
+            maximum_observations,
+        } => {
+            if maximum_observations == 0 {
+                return Err("maximum observations must be positive".into());
+            }
+            let bundle = SceneBundle::open(scene)?;
+            let manifest = bundle.manifest()?;
+            let raw = manifest
+                .world_products
+                .iter()
+                .find(|product| product.id == "da3-pose-conditioned-colmap-surfel")
+                .ok_or("pose-conditioned DA3 surfel product has not been imported")?;
+            if raw.pose_authority != "da3-base-pose-conditioned-colmap"
+                || raw.pose_solution_hash.as_deref() != Some(pose_solution.as_str())
+            {
+                return Err("pose-conditioned DA3 surfel product does not bind the requested COLMAP pose solution".into());
+            }
+            let source_frames = raw.source_frame_indices.clone();
+            let raw_cloud = bundle.read_fused_scene(&raw.fused_chunk_hash)?;
+            let solution = bundle.read_pose_solution(&pose_solution)?;
+            let cameras = solution
+                .frames
+                .iter()
+                .filter(|frame| frame.registered)
+                .filter_map(|frame| colmap_camera_centre(frame.world_to_camera))
+                .collect::<Vec<_>>();
+            if cameras.len() < 3 {
+                return Err(
+                    "TSDF derivative requires at least three valid global camera centres".into(),
+                );
+            }
+            let stride = raw_cloud.points.len().div_ceil(maximum_observations).max(1);
+            let observations = raw_cloud
+                .points
+                .iter()
+                .step_by(stride)
+                .map(|point| TsdfObservation {
+                    position: point.position,
+                    color_srgb: point.color_srgb,
+                    confidence: point.confidence,
+                    radius: point.radius,
+                    frame_index: point.first_observing_frame,
+                })
+                .collect::<Vec<_>>();
+            let surfels = fuse_normal_space_tsdf(&observations, &cameras, TsdfSettings::default());
+            let tsdf_cloud = FusedSceneChunk {
+                alignments: Vec::new(),
+                pose_graph_edges: Vec::new(),
+                pose_graph: None,
+                window_poses: Vec::new(),
+                voxel_size: 0.0,
+                points: surfels
+                    .into_iter()
+                    .map(|surfel| FusedPoint {
+                        position: surfel.position,
+                        normal: surfel.normal,
+                        color_srgb: surfel.color_srgb,
+                        confidence: 1.0,
+                        radius: surfel.radius,
+                        first_observing_frame: surfel.first_observing_frame,
+                        contributors: surfel.contributors,
+                    })
+                    .collect(),
+            };
+            let id = "da3-pose-conditioned-colmap-tsdf";
+            let chunk_hash = bundle.write_fused_scene_as(
+                &tsdf_cloud,
+                id,
+                "da3-base-pose-conditioned-colmap",
+                "tsdf",
+                Some(pose_solution.clone()),
+            )?;
+            bundle.set_world_product_source_frames(id, &source_frames)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.da3-pose-conditioned-tsdf/v1",
+                    "bundle": bundle.root(),
+                    "pose_solution": pose_solution,
+                    "source_product": "da3-pose-conditioned-colmap-surfel",
+                    "fused_chunk": chunk_hash,
+                    "source_points": raw_cloud.points.len(),
+                    "tsdf_observations": observations.len(),
+                    "fused_points": tsdf_cloud.points.len(),
+                    "surface": "tsdf",
+                })
+            );
+        }
         Command::RasterRecord {
             scene,
             video,
@@ -1838,6 +1943,32 @@ fn sha256_file(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
         .collect())
 }
 
+/// Recovers a global camera centre from a row-major COLMAP W2C matrix.
+/// Keeping it here avoids treating any local window transform as a camera
+/// authority for the pose-conditioned TSDF derivative.
+fn colmap_camera_centre(world_to_camera: [f64; 12]) -> Option<[f32; 3]> {
+    if !world_to_camera.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    let translation = [world_to_camera[3], world_to_camera[7], world_to_camera[11]];
+    let centre = [
+        -(world_to_camera[0] * translation[0]
+            + world_to_camera[4] * translation[1]
+            + world_to_camera[8] * translation[2]),
+        -(world_to_camera[1] * translation[0]
+            + world_to_camera[5] * translation[1]
+            + world_to_camera[9] * translation[2]),
+        -(world_to_camera[2] * translation[0]
+            + world_to_camera[6] * translation[1]
+            + world_to_camera[10] * translation[2]),
+    ];
+    centre.iter().all(|value| value.is_finite()).then_some([
+        centre[0] as f32,
+        centre[1] as f32,
+        centre[2] as f32,
+    ])
+}
+
 fn raster_manifest_for_decoded(
     video: &Path,
     decoded: &vestra_core::VideoFrames,
@@ -1963,6 +2094,15 @@ mod tests {
     fn lock_parser_extracts_pinned_component_revisions() {
         assert_eq!(locked_revision("engine").unwrap().len(), 40);
         assert_eq!(locked_revision("kernels").unwrap().len(), 40);
+    }
+
+    #[test]
+    fn colmap_w2c_camera_centre_preserves_global_translation() {
+        assert_eq!(
+            colmap_camera_centre([1.0, 0.0, 0.0, -4.0, 0.0, 1.0, 0.0, 2.5, 0.0, 0.0, 1.0, -7.0,]),
+            Some([4.0, -2.5, 7.0])
+        );
+        assert_eq!(colmap_camera_centre([f64::NAN; 12]), None);
     }
 
     #[test]
