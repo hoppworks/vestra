@@ -53,6 +53,12 @@ pub struct SceneManifest {
     /// Content-addressed pose-provider outputs. They never overwrite raw evidence.
     #[serde(default)]
     pub pose_solution_hashes: Vec<String>,
+    /// Independent derived worlds. Legacy `fused_*` fields remain aliases for
+    /// the selected product while older Studio clients are supported.
+    #[serde(default)]
+    pub world_products: Vec<WorldProduct>,
+    #[serde(default)]
+    pub selected_world_product: Option<String>,
     /// The derived, relative-scale world built from immutable measured chunks.
     /// It is optional so v1 bundles created before fusion remain readable.
     #[serde(default)]
@@ -88,6 +94,21 @@ pub struct FusedSceneSummary {
     pub maximum_sequential_rms_residual: Option<f32>,
     pub loop_closure_count: usize,
     pub pose_graph_final_cost: Option<f64>,
+}
+
+/// A named, immutable derived world. Different pose authorities or surface
+/// modes can coexist without mutating raw DA3 observations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorldProduct {
+    pub id: String,
+    pub pose_authority: String,
+    pub surface_mode: String,
+    pub fused_chunk_hash: String,
+    pub point_binary_chunk_hashes: Vec<String>,
+    pub preview_point_binary_chunk_hashes: Vec<String>,
+    pub summary: FusedSceneSummary,
+    #[serde(default)]
+    pub pose_solution_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -157,6 +178,8 @@ impl SceneBundle {
             measured_chunk_hashes: Vec::new(),
             raster_manifest_hash: None,
             pose_solution_hashes: Vec::new(),
+            world_products: Vec::new(),
+            selected_world_product: None,
             fused_chunk_hash: None,
             fused_point_chunk_hashes: Vec::new(),
             fused_point_binary_chunk_hashes: Vec::new(),
@@ -369,9 +392,52 @@ impl SceneBundle {
         if manifest.fused_preview_point_binary_chunk_hashes != preview_binary_point_chunk_hashes {
             manifest.fused_preview_point_binary_chunk_hashes = preview_binary_point_chunk_hashes;
         }
-        manifest.fused_summary = Some(FusedSceneSummary::from(chunk));
+        let summary = FusedSceneSummary::from(chunk);
+        manifest.fused_summary = Some(summary.clone());
+        let product = WorldProduct {
+            id: "local-active".to_owned(),
+            pose_authority: "local-pr2-relative".to_owned(),
+            surface_mode: "surfel".to_owned(),
+            fused_chunk_hash: hash.clone(),
+            point_binary_chunk_hashes: manifest.fused_point_binary_chunk_hashes.clone(),
+            preview_point_binary_chunk_hashes: manifest
+                .fused_preview_point_binary_chunk_hashes
+                .clone(),
+            summary,
+            pose_solution_hash: None,
+        };
+        manifest
+            .world_products
+            .retain(|existing| existing.id != product.id);
+        manifest.world_products.push(product);
+        manifest
+            .world_products
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        manifest.selected_world_product = Some("local-active".to_owned());
         self.write_manifest(&manifest)?;
         Ok(hash)
+    }
+
+    /// Selects one already-published product for legacy Studio/export fields.
+    /// The product catalogue itself remains intact, so switching views is
+    /// reversible and cannot mutate the measured evidence.
+    pub fn select_world_product(&self, id: &str) -> Result<(), SceneBundleError> {
+        let mut manifest = self.manifest()?;
+        let product = manifest
+            .world_products
+            .iter()
+            .find(|product| product.id == id)
+            .cloned()
+            .ok_or_else(|| {
+                SceneBundleError::InvalidArtifact(format!("unknown world product {id:?}"))
+            })?;
+        manifest.fused_chunk_hash = Some(product.fused_chunk_hash);
+        manifest.fused_point_binary_chunk_hashes = product.point_binary_chunk_hashes;
+        manifest.fused_preview_point_binary_chunk_hashes =
+            product.preview_point_binary_chunk_hashes;
+        manifest.fused_summary = Some(product.summary);
+        manifest.selected_world_product = Some(id.to_owned());
+        self.write_manifest(&manifest)
     }
 
     fn write_fused_point_chunk(&self, chunk: &FusedPointChunk) -> Result<String, SceneBundleError> {
