@@ -212,6 +212,20 @@ enum Command {
         #[arg(long)]
         pose_solution: String,
     },
+    /// Publish an official DA3 pose-conditioned sidecar result as a separate
+    /// COLMAP-camera world. The sidecar must bind the immutable raster and
+    /// exact pose solution before its PLY can become visible in Studio.
+    ImportDa3PoseConditioned {
+        #[arg(long)]
+        scene: PathBuf,
+        /// Directory created by `tools/run_da3_pose_conditioned.py`.
+        #[arg(long)]
+        artifact: PathBuf,
+        /// Hash of the globally bundle-adjusted COLMAP pose solution supplied
+        /// to official DA3 as extrinsics and intrinsics.
+        #[arg(long)]
+        pose_solution: String,
+    },
     /// Attach the exact decoded-raster contract to a legacy scene before
     /// importing a global pose provider. This never re-runs DA3 inference.
     RasterRecord {
@@ -417,6 +431,26 @@ enum Command {
         #[arg(long)]
         tsdf: bool,
     },
+}
+
+/// Deliberately small import contract for the official Python DA3 sidecar.
+/// The Rust process verifies all identities again; it never treats a PLY as a
+/// trustworthy geometry product merely because it happens to be nearby.
+#[derive(Debug, Deserialize)]
+struct Da3PoseConditionedArtifact {
+    schema: String,
+    raster_fingerprint: String,
+    pose_solution_hash: String,
+    align_to_input_ext_scale: bool,
+    frames: Vec<usize>,
+    ply: Da3PoseConditionedPly,
+}
+
+#[derive(Debug, Deserialize)]
+struct Da3PoseConditionedPly {
+    schema: String,
+    file: String,
+    sha256: String,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1303,6 +1337,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "fused_points": cloud.points.len(),
                     "surface": "surfel",
                     "consistency": if photometric { "photometric-only" } else { "geometric" },
+                })
+            );
+        }
+        Command::ImportDa3PoseConditioned {
+            scene,
+            artifact,
+            pose_solution,
+        } => {
+            let bundle = SceneBundle::open(scene)?;
+            let raster = bundle.read_raster_manifest()?;
+            let sidecar: Da3PoseConditionedArtifact = serde_json::from_reader(BufReader::new(
+                File::open(artifact.join("manifest.json"))?,
+            ))?;
+            if sidecar.schema != "vestra.da3-pose-conditioned/v1"
+                || sidecar.raster_fingerprint != raster.raster_fingerprint
+                || sidecar.pose_solution_hash != pose_solution
+                || !sidecar.align_to_input_ext_scale
+            {
+                return Err("DA3 artifact does not bind this raster, COLMAP pose solution, and external pose scale".into());
+            }
+            if sidecar.ply.schema != "vestra.da3-pose-conditioned-ply/v1"
+                || Path::new(&sidecar.ply.file)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    != Some(sidecar.ply.file.as_str())
+                || sha256_file(&artifact.join(&sidecar.ply.file))? != sidecar.ply.sha256
+            {
+                return Err(
+                    "DA3 artifact PLY is missing, unsafe, or does not match its recorded SHA-256"
+                        .into(),
+                );
+            }
+            let solution = bundle.read_pose_solution(&pose_solution)?;
+            let registered = solution
+                .frames
+                .iter()
+                .filter(|frame| frame.registered)
+                .map(|frame| frame.frame_index)
+                .collect::<Vec<_>>();
+            if sidecar.frames != registered || registered.is_empty() {
+                return Err(
+                    "DA3 artifact frame ownership differs from the registered COLMAP trajectory"
+                        .into(),
+                );
+            }
+            let cloud = import_colmap_fused_ply(artifact.join(&sidecar.ply.file))?;
+            let id = "da3-pose-conditioned-colmap-surfel";
+            let chunk_hash = bundle.write_fused_scene_as(
+                &cloud,
+                id,
+                "da3-base-pose-conditioned-colmap",
+                "surfel",
+                Some(pose_solution.clone()),
+            )?;
+            bundle.set_world_product_source_frames(id, &registered)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.da3-pose-conditioned-import/v1",
+                    "bundle": bundle.root(),
+                    "artifact": artifact,
+                    "pose_solution": pose_solution,
+                    "source_frames": registered.len(),
+                    "fused_chunk": chunk_hash,
+                    "fused_points": cloud.points.len(),
+                    "surface": "surfel",
+                    "authority": "official-da3-pose-conditioned-colmap",
                 })
             );
         }
