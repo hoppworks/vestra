@@ -34,6 +34,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--resolution", type=int, default=518)
+    parser.add_argument("--start-index", type=int, default=0)
+    parser.add_argument("--frame-count", type=int, help="contiguous manifest frame count for a GPU-safe chunk")
     return parser.parse_args()
 
 
@@ -68,7 +70,15 @@ def main() -> int:
         raise FileNotFoundError(model_path)
 
     raster, raster_path = raster_manifest(scene)
-    frames = raster["frames"]
+    all_frames = raster["frames"]
+    if args.start_index < 0 or args.start_index >= len(all_frames):
+        raise ValueError("start-index is outside the raster manifest")
+    end_index = len(all_frames) if args.frame_count is None else args.start_index + args.frame_count
+    if args.frame_count is not None and args.frame_count <= 0:
+        raise ValueError("frame-count must be positive")
+    if end_index > len(all_frames):
+        raise ValueError("requested VGGT chunk exceeds the raster manifest")
+    frames = all_frames[args.start_index:end_index]
     names: list[str] = []
     for frame in frames:
         name = frame.get("file_name")
@@ -121,6 +131,8 @@ def main() -> int:
         "resolution": args.resolution,
         "device": torch.cuda.get_device_name(0),
         "dtype": str(dtype),
+        "start_index": args.start_index,
+        "frame_count": len(frames),
     }
     fingerprint = hashlib.sha256(
         json.dumps(settings, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -132,14 +144,18 @@ def main() -> int:
         "coordinate_convention": CONVENTION,
         "frames": [
             {
-                "frame_index": index,
+                "frame_index": frame["frame_index"],
                 "image_name": name,
                 "registered": True,
                 "world_to_camera": [float(value) for value in w2c[index].reshape(-1)],
             }
-            for index, name in enumerate(names)
+            for index, (frame, name) in enumerate(zip(frames, names, strict=True))
         ],
-        "diagnostics": {"input_frames": len(names), "registered_frames": len(names), "duplicate_images": 0},
+        "diagnostics": {
+            "input_frames": len(all_frames),
+            "registered_frames": len(names),
+            "duplicate_images": 0,
+        },
         "provenance": {"raster_manifest": str(raster_path), "settings": settings},
     }
     output.write_text(json.dumps(solution, indent=2) + "\n", encoding="utf-8")
