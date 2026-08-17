@@ -103,6 +103,36 @@ def percentile(values: Any, q: float, np: Any) -> float | None:
     return float(np.percentile(valid, q)) if valid.size else None
 
 
+def coarse_local_ratio(
+    da3_depth: Any, mvs_depth: Any, cells: int, minimum_samples: int, np: Any,
+) -> Any:
+    """Build a conservative piecewise-local MVS/DA3 scale map.
+
+    This is a continuity experiment, not a shape hallucination.  A cell gets a
+    correction only when it has enough valid MVS observations; all other cells
+    retain exact DA3 depth.  Ratios outside a wide physically plausible band
+    are ignored so an isolated mismatched MVS layer cannot warp a whole tile.
+    """
+    height, width = da3_depth.shape
+    result = np.ones_like(da3_depth, dtype=np.float32)
+    if cells <= 0:
+        return result
+    valid = (np.isfinite(da3_depth) & (da3_depth > 0) & np.isfinite(mvs_depth)
+             & (mvs_depth > 0))
+    ratio = np.zeros_like(da3_depth, dtype=np.float32)
+    ratio[valid] = mvs_depth[valid] / da3_depth[valid]
+    valid &= (ratio >= 0.5) & (ratio <= 2.0)
+    cell_height = max(1, math.ceil(height / cells))
+    cell_width = max(1, math.ceil(width / cells))
+    for top in range(0, height, cell_height):
+        for left in range(0, width, cell_width):
+            bottom, right = min(height, top + cell_height), min(width, left + cell_width)
+            values = ratio[top:bottom, left:right][valid[top:bottom, left:right]]
+            if values.size >= minimum_samples:
+                result[top:bottom, left:right] = np.median(values)
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact", type=Path, required=True,
@@ -112,10 +142,14 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--confidence-percentile", type=float, default=40.0)
     parser.add_argument("--pixel-stride", type=int, default=2)
+    parser.add_argument("--coarse-local-ratio-cells", type=int, default=0,
+                        help="optional MVS-guided local DA3 scale grid; 0 keeps exact-pixel-only hybrid")
+    parser.add_argument("--minimum-cell-samples", type=int, default=16)
     args = parser.parse_args()
     if args.output.exists():
         parser.error(f"output already exists: {args.output}")
-    if args.pixel_stride <= 0 or not 0 <= args.confidence_percentile <= 100:
+    if (args.pixel_stride <= 0 or not 0 <= args.confidence_percentile <= 100
+            or args.coarse_local_ratio_cells < 0 or args.minimum_cell_samples <= 0):
         parser.error("pixel stride and confidence percentile are invalid")
 
     import numpy as np
@@ -147,6 +181,11 @@ def main() -> None:
         mvs_depth = project_mvs_depth(positions, intrinsics[ordinal], extrinsics[ordinal], 504, 336, np)
         observed = np.isfinite(mvs_depth) & (mvs_depth > 0)
         source_conf = conf[ordinal]
+        local_ratio = coarse_local_ratio(
+            depth[ordinal], mvs_depth, args.coarse_local_ratio_cells,
+            args.minimum_cell_samples, np,
+        )
+        depth[ordinal] *= local_ratio
         # Retain MVS only where it has a real Z-buffer sample.  The confidence
         # floor ensures those observations survive the established percentile
         # emission policy without deleting untouched DA3 support.
@@ -159,6 +198,7 @@ def main() -> None:
             "mvs_pixels": int(observed.sum()),
             "mvs_coverage": float(observed.mean()),
             "mvs_depth_median": percentile(mvs_depth[observed], 50, np),
+            "corrected_pixels": int((local_ratio != 1.0).sum()),
         })
     args.output.mkdir(parents=True)
     selected_output = args.output / "selected.npz"
@@ -178,7 +218,12 @@ def main() -> None:
     manifest["hybrid"] = {
         "mvs_ply_sha256": sha256_file(args.mvs_ply),
         "mvs_vertices": int(len(positions)),
-        "pixel_policy": "mvs-zbuffer-where-observed-else-da3/v1",
+        "pixel_policy": (
+            "mvs-zbuffer-plus-coarse-local-ratio/v1"
+            if args.coarse_local_ratio_cells else "mvs-zbuffer-where-observed-else-da3/v1"
+        ),
+        "coarse_local_ratio_cells": args.coarse_local_ratio_cells,
+        "minimum_cell_samples": args.minimum_cell_samples,
         "per_frame": coverage,
         "median_mvs_coverage": percentile(np.asarray([row["mvs_coverage"] for row in coverage]), 50, np),
     }

@@ -548,7 +548,11 @@ fn validate_mvs_hybrid_evidence(sidecar: &Da3PoseConditionedArtifact) -> Result<
         .ok_or("MVS-DA3 hybrid artifact has no MVS provenance")?;
     if !is_sha256(&hybrid.mvs_ply_sha256)
         || hybrid.mvs_vertices == 0
-        || hybrid.pixel_policy != "mvs-zbuffer-where-observed-else-da3/v1"
+        || !matches!(
+            hybrid.pixel_policy.as_str(),
+            "mvs-zbuffer-where-observed-else-da3/v1"
+                | "mvs-zbuffer-plus-coarse-local-ratio/v1"
+        )
         || !hybrid.median_mvs_coverage.is_finite()
         || hybrid.median_mvs_coverage <= 0.0
         || hybrid.median_mvs_coverage > 1.0
@@ -1480,6 +1484,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))?;
             let calibrated = sidecar.schema == "vestra.da3-pose-conditioned-calibration/v2";
             let mvs_hybrid = sidecar.schema == "vestra.da3-mvs-hybrid/v1";
+            let mvs_guided = mvs_hybrid
+                && sidecar
+                    .hybrid
+                    .as_ref()
+                    .is_some_and(|hybrid| {
+                        hybrid.pixel_policy == "mvs-zbuffer-plus-coarse-local-ratio/v1"
+                    });
             let verified_derivative = calibrated || mvs_hybrid;
             if (sidecar.schema != "vestra.da3-pose-conditioned/v1" && !verified_derivative)
                 || sidecar.raster_fingerprint != raster.raster_fingerprint
@@ -1563,7 +1574,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             let cloud = import_colmap_fused_ply(artifact.join(&sidecar.ply.file))?;
-            let id = if mvs_hybrid {
+            let id = if mvs_guided {
+                "da3-mvs-guided-colmap-surfel"
+            } else if mvs_hybrid {
                 "da3-mvs-hybrid-colmap-surfel"
             } else if calibrated {
                 "da3-pose-conditioned-colmap-calibrated-surfel"
@@ -1581,7 +1594,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     depth_target.join(&frame.file),
                 )?;
             }
-            let authority = if mvs_hybrid {
+            let authority = if mvs_guided {
+                "colmap-mvs-geometric-plus-da3-local-guidance"
+            } else if mvs_hybrid {
                 "colmap-mvs-geometric-plus-da3"
             } else if calibrated {
                 "da3-base-pose-conditioned-colmap-calibrated"
@@ -2379,7 +2394,11 @@ mod tests {
             },
         };
         assert!(validate_mvs_hybrid_evidence(&sidecar).is_ok());
-        let mut incomplete = sidecar;
+        let mut guided = sidecar;
+        guided.hybrid.as_mut().unwrap().pixel_policy =
+            "mvs-zbuffer-plus-coarse-local-ratio/v1".into();
+        assert!(validate_mvs_hybrid_evidence(&guided).is_ok());
+        let mut incomplete = guided;
         incomplete.hybrid.as_mut().unwrap().median_mvs_coverage = 0.0;
         assert!(validate_mvs_hybrid_evidence(&incomplete).is_err());
     }

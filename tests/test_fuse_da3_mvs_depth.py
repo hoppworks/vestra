@@ -31,6 +31,17 @@ class MvsHybridProjectionTest(unittest.TestCase):
         self.assertEqual(float(depth[1, 1]), 2.0)
         self.assertTrue(np.isinf(depth[0, 0]))
 
+    def test_coarse_local_ratio_changes_only_well_observed_tiles(self):
+        import numpy as np
+
+        da3 = np.full((4, 4), 2.0, dtype=np.float32)
+        mvs = np.full((4, 4), np.inf, dtype=np.float32)
+        mvs[:2, :2] = 3.0
+        ratio = HYBRID.coarse_local_ratio(da3, mvs, cells=2, minimum_samples=3, np=np)
+        self.assertTrue(np.allclose(ratio[:2, :2], 1.5))
+        self.assertTrue(np.allclose(ratio[:2, 2:], 1.0))
+        self.assertTrue(np.allclose(ratio[2:, :], 1.0))
+
 
 if __name__ == "__main__":
     unittest.main()

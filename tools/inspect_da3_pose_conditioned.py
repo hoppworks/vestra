@@ -52,6 +52,11 @@ def camera_depth(w2c: list[float], position: list[float]) -> float:
     return w2c[8] * position[0] + w2c[9] * position[1] + w2c[10] * position[2] + w2c[11]
 
 
+def source_pixel_to_raster_pixel(value: float, source_extent: float, raster_extent: float) -> float:
+    """Map pixel centres through the same resize convention as the DA3 input."""
+    return (value + 0.5) * raster_extent / source_extent - 0.5
+
+
 def inspect(scene: Path, artifact: Path, pose_hash: str) -> dict[str, Any]:
     import numpy as np
 
@@ -78,7 +83,11 @@ def inspect(scene: Path, artifact: Path, pose_hash: str) -> dict[str, Any]:
             xy = observation.get("image_xy")
             if frame_index not in cameras or not isinstance(xy, list) or len(xy) != 2:
                 continue
-            observed[frame_index].append((point, float(xy[0]) * 504.0 / source_width, float(xy[1]) * 336.0 / source_height))
+            observed[frame_index].append((
+                point,
+                source_pixel_to_raster_pixel(float(xy[0]), source_width, 504.0),
+                source_pixel_to_raster_pixel(float(xy[1]), source_height, 336.0),
+            ))
 
     ratios: list[float] = []
     per_frame: dict[int, list[float]] = defaultdict(list)
