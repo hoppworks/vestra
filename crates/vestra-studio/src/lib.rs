@@ -13,8 +13,8 @@ use std::{
 };
 
 use vestra_core::{
-    CameraCalibration, MeasuredPoint, SceneBundle, SceneManifest, SimilarityTransform,
-    WindowMeasuredChunk, camera_centre_direction,
+    camera_centre_direction, CameraCalibration, MeasuredPoint, SceneBundle, SceneManifest,
+    SimilarityTransform, WindowMeasuredChunk,
 };
 
 const INDEX_HTML: &str = include_str!("index.html");
@@ -1041,7 +1041,7 @@ fn frame_global_evidence(
         else {
             continue;
         };
-        let Some((origin, forward, corners, vertical_fov_radians, aspect_ratio)) =
+        let Some((origin, forward, corners, right, up, vertical_fov_radians, aspect_ratio)) =
             colmap_camera_ray(frame.world_to_camera, camera)
         else {
             continue;
@@ -1055,6 +1055,8 @@ fn frame_global_evidence(
             "origin": origin,
             "forward": forward,
             "corners": corners,
+            "right": right,
+            "up": up,
             // This is not cosmetic metadata: Studio uses it only for the
             // explicit "match 3D camera" mode, where the projection must
             // agree with the calibrated source raster rather than the browser
@@ -1074,7 +1076,15 @@ fn frame_global_evidence(
 fn colmap_camera_ray(
     pose: [f64; 12],
     camera: &vestra_core::ColmapCameraModel,
-) -> Option<([f32; 3], [f32; 3], [[f32; 3]; 4], f32, f32)> {
+) -> Option<(
+    [f32; 3],
+    [f32; 3],
+    [[f32; 3]; 4],
+    [f32; 3],
+    [f32; 3],
+    f32,
+    f32,
+)> {
     let [focal, cx, cy, radial] = *<&[f64; 4]>::try_from(camera.parameters.as_slice()).ok()?;
     if !(focal.is_finite() && focal > 0.0 && cx.is_finite() && cy.is_finite() && radial.is_finite())
     {
@@ -1096,6 +1106,15 @@ fn colmap_camera_ray(
             .all(|value| value.is_finite())
             .then_some(world.map(|value| value as f32))
     };
+    let camera_axis = |axis: [f64; 3]| {
+        let world = [
+            pose[0] * axis[0] + pose[4] * axis[1] + pose[8] * axis[2],
+            pose[1] * axis[0] + pose[5] * axis[1] + pose[9] * axis[2],
+            pose[2] * axis[0] + pose[6] * axis[1] + pose[10] * axis[2],
+        ];
+        let length = world.iter().map(|value| value * value).sum::<f64>().sqrt();
+        (length.is_finite() && length > 1e-9).then_some(world.map(|value| (value / length) as f32))
+    };
     let direction = |image: [f64; 2]| {
         let (xd, yd) = ((image[0] - cx) / focal, (image[1] - cy) / focal);
         let (mut x, mut y) = (xd, yd);
@@ -1107,16 +1126,14 @@ fn colmap_camera_ray(
             x = xd / scale;
             y = yd / scale;
         }
-        let world = [
-            pose[0] * x + pose[4] * y + pose[8],
-            pose[1] * x + pose[5] * y + pose[9],
-            pose[2] * x + pose[6] * y + pose[10],
-        ];
-        let length = world.iter().map(|value| value * value).sum::<f64>().sqrt();
-        (length.is_finite() && length > 1e-9).then_some(world.map(|value| (value / length) as f32))
+        camera_axis([x, y, 1.0])
     };
     let origin = centre([0.0, 0.0, 0.0])?;
-    let forward = direction([cx, cy])?;
+    let forward = camera_axis([0.0, 0.0, 1.0])?;
+    let right = camera_axis([1.0, 0.0, 0.0])?;
+    // COLMAP camera +Y points down in the source raster. Studio needs the
+    // image's visual-up direction, not an arbitrary global up vector.
+    let up = camera_axis([0.0, -1.0, 0.0])?;
     let corners = [
         direction([0.0, 0.0])?,
         direction([camera.width as f64 - 1.0, 0.0])?,
@@ -1133,6 +1150,8 @@ fn colmap_camera_ray(
             origin,
             forward,
             corners,
+            right,
+            up,
             vertical_fov_radians as f32,
             aspect_ratio as f32,
         ))
@@ -1371,7 +1390,10 @@ fn product_depth_frame(
             .find(|candidate| Some(candidate.id.as_str()) == selected)
             .ok_or("depth request has no selected world product")?;
         if product.depth_frame_count == 0
-            || !product.source_frame_indices.binary_search(&frame_index).is_ok()
+            || !product
+                .source_frame_indices
+                .binary_search(&frame_index)
+                .is_ok()
         {
             return Err("selected product has no retained depth frame".into());
         }
@@ -1937,12 +1959,15 @@ mod tests {
             height: 1080,
             parameters: vec![810.0, 810.0, 540.0, 0.0],
         };
-        let (origin, forward, corners, vertical_fov_radians, aspect_ratio) = colmap_camera_ray(
-            [1.0, 0.0, 0.0, -2.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, -3.0],
-            &camera,
-        )
-        .expect("valid calibrated COLMAP camera");
+        let (origin, forward, corners, right, up, vertical_fov_radians, aspect_ratio) =
+            colmap_camera_ray(
+                [1.0, 0.0, 0.0, -2.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, -3.0],
+                &camera,
+            )
+            .expect("valid calibrated COLMAP camera");
         assert_eq!(origin, [2.0, -1.0, 3.0]);
+        assert_eq!(right, [1.0, 0.0, 0.0]);
+        assert_eq!(up, [0.0, -1.0, 0.0]);
         assert!(forward.iter().all(|value| value.is_finite()));
         assert!(corners.iter().flatten().all(|value| value.is_finite()));
         assert!((vertical_fov_radians - 2.0 * (2.0_f32 / 3.0).atan()).abs() < 1e-6);
