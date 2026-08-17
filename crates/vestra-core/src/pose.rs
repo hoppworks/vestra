@@ -49,6 +49,14 @@ pub struct PoseSolution {
     pub coordinate_convention: String,
     pub frames: Vec<PoseFrame>,
     pub diagnostics: PoseDiagnostics,
+    /// Optional sparse SfM evidence for frame-global depth rebasing.
+    ///
+    /// The legacy window-Sim(3) path needs only W2C poses.  A frame-global
+    /// product additionally needs calibrated rays and sparse 3D tracks to
+    /// calibrate DA3's relative per-frame depth without making a locally
+    /// drifting window trajectory authoritative.
+    #[serde(default)]
+    pub global_trajectory: Option<GlobalTrajectoryEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +80,41 @@ pub struct PoseDiagnostics {
     pub input_frames: usize,
     pub registered_frames: usize,
     pub duplicate_images: usize,
+}
+
+/// Calibrated sparse evidence exported from one globally bundle-adjusted
+/// COLMAP component. Image coordinates remain in the pose-input image space;
+/// consumers map them to Vestra's immutable raster using the recorded camera
+/// dimensions and crop contract.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GlobalTrajectoryEvidence {
+    pub camera_models: Vec<ColmapCameraModel>,
+    pub frame_camera_ids: BTreeMap<usize, u64>,
+    pub tracks: Vec<SparseTrack>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ColmapCameraModel {
+    pub camera_id: u64,
+    pub model: String,
+    pub width: usize,
+    pub height: usize,
+    /// COLMAP camera-model parameters in the model's documented order.
+    pub parameters: Vec<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SparseTrack {
+    pub point_id: u64,
+    pub position: [f64; 3],
+    pub reprojection_error_px: f64,
+    pub observations: Vec<TrackObservation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TrackObservation {
+    pub frame_index: usize,
+    pub image_xy: [f64; 2],
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -148,9 +191,7 @@ pub fn validate_pose_solution(
     }
     let expected_convention = match solution.provider.kind.as_str() {
         "colmap" => "COLMAP world; W2C row-major 3x4 f64",
-        "droid-slam" | "vggt" | "hybrid-colmap-droid" => {
-            "OpenCV world; W2C row-major 3x4 f64"
-        }
+        "droid-slam" | "vggt" | "hybrid-colmap-droid" => "OpenCV world; W2C row-major 3x4 f64",
         other => {
             return Err(PoseError::Solution(format!(
                 "unsupported pose provider {other:?}"
@@ -209,6 +250,78 @@ pub fn validate_pose_solution(
         return Err(PoseError::Solution(
             "diagnostic registered-frame count does not match frames".to_owned(),
         ));
+    }
+    if let Some(evidence) = &solution.global_trajectory {
+        validate_global_trajectory_evidence(evidence, &seen, solution.provider.kind.as_str())?;
+    }
+    Ok(())
+}
+
+fn validate_global_trajectory_evidence(
+    evidence: &GlobalTrajectoryEvidence,
+    registered_frames: &BTreeSet<usize>,
+    provider_kind: &str,
+) -> Result<(), PoseError> {
+    if provider_kind != "colmap" {
+        return Err(PoseError::Solution(
+            "global sparse trajectory evidence is currently supported only for COLMAP".to_owned(),
+        ));
+    }
+    let cameras = evidence
+        .camera_models
+        .iter()
+        .map(|camera| (camera.camera_id, camera))
+        .collect::<BTreeMap<_, _>>();
+    if cameras.len() != evidence.camera_models.len() || cameras.is_empty() {
+        return Err(PoseError::Solution(
+            "global trajectory camera IDs must be unique and non-empty".to_owned(),
+        ));
+    }
+    for camera in &evidence.camera_models {
+        if camera.model != "SIMPLE_RADIAL"
+            || camera.width == 0
+            || camera.height == 0
+            || camera.parameters.len() != 4
+            || !camera.parameters.iter().all(|value| value.is_finite())
+            || camera.parameters[0] <= 0.0
+        {
+            return Err(PoseError::Solution(
+                "global trajectory supports only finite SIMPLE_RADIAL cameras".to_owned(),
+            ));
+        }
+    }
+    for (&frame_index, &camera_id) in &evidence.frame_camera_ids {
+        if !registered_frames.contains(&frame_index) || !cameras.contains_key(&camera_id) {
+            return Err(PoseError::Solution(
+                "global trajectory frame-camera bindings must reference registered frames and cameras"
+                    .to_owned(),
+            ));
+        }
+    }
+    let mut point_ids = BTreeSet::new();
+    for track in &evidence.tracks {
+        if !point_ids.insert(track.point_id)
+            || !track.position.iter().all(|value| value.is_finite())
+            || !track.reprojection_error_px.is_finite()
+            || track.reprojection_error_px < 0.0
+            || track.observations.is_empty()
+        {
+            return Err(PoseError::Solution(
+                "global sparse tracks must have unique IDs and finite observations".to_owned(),
+            ));
+        }
+        let mut observed_frames = BTreeSet::new();
+        for observation in &track.observations {
+            if !registered_frames.contains(&observation.frame_index)
+                || !observed_frames.insert(observation.frame_index)
+                || !observation.image_xy.iter().all(|value| value.is_finite())
+            {
+                return Err(PoseError::Solution(
+                    "global track observations must be finite and reference unique registered frames"
+                        .to_owned(),
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -346,9 +459,331 @@ pub fn parse_colmap_images_txt(
             registered_frames,
             duplicate_images: 0,
         },
+        global_trajectory: None,
     };
     validate_pose_solution(&solution, raster)?;
     Ok(solution)
+}
+
+/// Parses the complete text model emitted after COLMAP global bundle
+/// adjustment. Unlike [`parse_colmap_images_txt`], this retains calibrated
+/// camera rays and sparse tracks so Vestra can rebase *individual DA3 frames*
+/// into the global SfM coordinate system.
+pub fn parse_colmap_global_model(
+    cameras_txt: &str,
+    images_txt: &str,
+    points3d_txt: &str,
+    raster: &RasterManifest,
+    provider: PoseProvider,
+) -> Result<PoseSolution, PoseError> {
+    raster.validate()?;
+    let cameras = parse_colmap_cameras(cameras_txt)?;
+    let records = parse_colmap_image_records(images_txt, raster)?;
+    let mut frame_camera_ids = BTreeMap::new();
+    let mut observation_by_point = BTreeMap::<u64, Vec<TrackObservation>>::new();
+    let mut frames = Vec::with_capacity(records.len());
+    for record in records {
+        if !cameras.contains_key(&record.camera_id) {
+            return Err(PoseError::Solution(format!(
+                "COLMAP image {} references unknown camera {}",
+                record.frame_index, record.camera_id
+            )));
+        }
+        if frame_camera_ids
+            .insert(record.frame_index, record.camera_id)
+            .is_some()
+        {
+            return Err(PoseError::DuplicateRaster {
+                image_name: record.image_name,
+            });
+        }
+        for observation in record.observations {
+            if let Some(point_id) = observation.point_id {
+                observation_by_point
+                    .entry(point_id)
+                    .or_default()
+                    .push(TrackObservation {
+                        frame_index: record.frame_index,
+                        image_xy: observation.xy,
+                    });
+            }
+        }
+        frames.push(PoseFrame {
+            frame_index: record.frame_index,
+            image_name: record.image_name,
+            registered: true,
+            world_to_camera: quaternion_w2c_matrix(
+                record.quaternion[0],
+                record.quaternion[1],
+                record.quaternion[2],
+                record.quaternion[3],
+                record.translation[0],
+                record.translation[1],
+                record.translation[2],
+            )?,
+        });
+    }
+    frames.sort_by_key(|frame| frame.frame_index);
+    let tracks = parse_colmap_tracks(points3d_txt, &observation_by_point)?;
+    let registered_frames = frames.len();
+    let solution = PoseSolution {
+        schema: "vestra.pose-solution/v1".to_owned(),
+        provider,
+        raster_fingerprint: raster.fingerprint(),
+        coordinate_convention: "COLMAP world; W2C row-major 3x4 f64".to_owned(),
+        frames,
+        diagnostics: PoseDiagnostics {
+            input_frames: raster.frames.len(),
+            registered_frames,
+            duplicate_images: 0,
+        },
+        global_trajectory: Some(GlobalTrajectoryEvidence {
+            camera_models: cameras.into_values().collect(),
+            frame_camera_ids,
+            tracks,
+        }),
+    };
+    validate_pose_solution(&solution, raster)?;
+    Ok(solution)
+}
+
+#[derive(Debug)]
+struct ColmapImageRecord {
+    frame_index: usize,
+    image_name: String,
+    camera_id: u64,
+    quaternion: [f64; 4],
+    translation: [f64; 3],
+    observations: Vec<ColmapImageObservation>,
+}
+
+#[derive(Debug)]
+struct ColmapImageObservation {
+    xy: [f64; 2],
+    point_id: Option<u64>,
+}
+
+fn parse_colmap_cameras(text: &str) -> Result<BTreeMap<u64, ColmapCameraModel>, PoseError> {
+    let mut cameras = BTreeMap::new();
+    for (offset, raw) in text.lines().enumerate() {
+        let line = offset + 1;
+        let fields = raw.split_whitespace().collect::<Vec<_>>();
+        if fields.is_empty() || fields[0].starts_with('#') {
+            continue;
+        }
+        if fields.len() != 8 || fields[1] != "SIMPLE_RADIAL" {
+            return Err(PoseError::ColmapLine {
+                line,
+                reason: "expected CAMERA_ID SIMPLE_RADIAL WIDTH HEIGHT F CX CY K".to_owned(),
+            });
+        }
+        let camera_id = parse_colmap_u64(fields[0], line, "CAMERA_ID")?;
+        let width = parse_colmap_usize(fields[2], line, "WIDTH")?;
+        let height = parse_colmap_usize(fields[3], line, "HEIGHT")?;
+        let parameters = fields[4..]
+            .iter()
+            .map(|value| parse_colmap_f64(value, line, "camera parameter"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let camera = ColmapCameraModel {
+            camera_id,
+            model: "SIMPLE_RADIAL".to_owned(),
+            width,
+            height,
+            parameters,
+        };
+        if cameras.insert(camera_id, camera).is_some() {
+            return Err(PoseError::ColmapLine {
+                line,
+                reason: "duplicate CAMERA_ID".to_owned(),
+            });
+        }
+    }
+    if cameras.is_empty() {
+        return Err(PoseError::Solution(
+            "COLMAP model has no cameras".to_owned(),
+        ));
+    }
+    Ok(cameras)
+}
+
+fn parse_colmap_image_records(
+    text: &str,
+    raster: &RasterManifest,
+) -> Result<Vec<ColmapImageRecord>, PoseError> {
+    let by_name = raster
+        .frames
+        .iter()
+        .map(|frame| (frame.file_name.as_str(), frame.frame_index))
+        .collect::<BTreeMap<_, _>>();
+    let mut lines = text.lines().enumerate().peekable();
+    let mut records = Vec::new();
+    let mut seen = BTreeSet::new();
+    while let Some((offset, raw)) = lines.next() {
+        let line = offset + 1;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let fields = trimmed.split_whitespace().collect::<Vec<_>>();
+        if fields.len() != 10 {
+            return Err(PoseError::ColmapLine {
+                line,
+                reason: "expected IMAGE_ID QW QX QY QZ TX TY TZ CAMERA_ID NAME".to_owned(),
+            });
+        }
+        let image_name = fields[9].to_owned();
+        let Some(&frame_index) = by_name.get(image_name.as_str()) else {
+            return Err(PoseError::UnknownRaster { image_name });
+        };
+        if !seen.insert(frame_index) {
+            return Err(PoseError::DuplicateRaster { image_name });
+        }
+        let observations = match lines.next() {
+            Some((_, observation_line)) => parse_colmap_observations(observation_line, line)?,
+            None => {
+                return Err(PoseError::ColmapLine {
+                    line,
+                    reason: "missing 2D observation line".to_owned(),
+                });
+            }
+        };
+        records.push(ColmapImageRecord {
+            frame_index,
+            image_name,
+            camera_id: parse_colmap_u64(fields[8], line, "CAMERA_ID")?,
+            quaternion: [
+                parse_colmap_f64(fields[1], line, "QW")?,
+                parse_colmap_f64(fields[2], line, "QX")?,
+                parse_colmap_f64(fields[3], line, "QY")?,
+                parse_colmap_f64(fields[4], line, "QZ")?,
+            ],
+            translation: [
+                parse_colmap_f64(fields[5], line, "TX")?,
+                parse_colmap_f64(fields[6], line, "TY")?,
+                parse_colmap_f64(fields[7], line, "TZ")?,
+            ],
+            observations,
+        });
+    }
+    if records.is_empty() {
+        return Err(PoseError::Solution("COLMAP model has no images".to_owned()));
+    }
+    Ok(records)
+}
+
+fn parse_colmap_observations(
+    raw: &str,
+    pose_line: usize,
+) -> Result<Vec<ColmapImageObservation>, PoseError> {
+    let fields = raw.split_whitespace().collect::<Vec<_>>();
+    if fields.len() % 3 != 0 {
+        return Err(PoseError::ColmapLine {
+            line: pose_line + 1,
+            reason: "2D observations must be X Y POINT3D_ID triples".to_owned(),
+        });
+    }
+    fields
+        .chunks_exact(3)
+        .map(|fields| {
+            let point = fields[2]
+                .parse::<i64>()
+                .map_err(|_| PoseError::ColmapLine {
+                    line: pose_line + 1,
+                    reason: "POINT3D_ID is not i64".to_owned(),
+                })?;
+            Ok(ColmapImageObservation {
+                xy: [
+                    parse_colmap_f64(fields[0], pose_line + 1, "X")?,
+                    parse_colmap_f64(fields[1], pose_line + 1, "Y")?,
+                ],
+                point_id: (point >= 0).then_some(point as u64),
+            })
+        })
+        .collect()
+}
+
+fn parse_colmap_tracks(
+    text: &str,
+    observations: &BTreeMap<u64, Vec<TrackObservation>>,
+) -> Result<Vec<SparseTrack>, PoseError> {
+    let mut tracks = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (offset, raw) in text.lines().enumerate() {
+        let line = offset + 1;
+        let fields = raw.split_whitespace().collect::<Vec<_>>();
+        if fields.is_empty() || fields[0].starts_with('#') {
+            continue;
+        }
+        if fields.len() < 8 || (fields.len() - 8) % 2 != 0 {
+            return Err(PoseError::ColmapLine {
+                line,
+                reason: "invalid POINT3D track line".to_owned(),
+            });
+        }
+        let point_id = parse_colmap_u64(fields[0], line, "POINT3D_ID")?;
+        if !seen.insert(point_id) {
+            return Err(PoseError::ColmapLine {
+                line,
+                reason: "duplicate POINT3D_ID".to_owned(),
+            });
+        }
+        let Some(observations) = observations.get(&point_id) else {
+            continue;
+        };
+        let mut unique_frames = BTreeSet::new();
+        let track_observations = observations
+            .iter()
+            .copied()
+            .filter(|observation| unique_frames.insert(observation.frame_index))
+            .collect::<Vec<_>>();
+        if track_observations.is_empty() {
+            continue;
+        }
+        tracks.push(SparseTrack {
+            point_id,
+            position: [
+                parse_colmap_f64(fields[1], line, "X")?,
+                parse_colmap_f64(fields[2], line, "Y")?,
+                parse_colmap_f64(fields[3], line, "Z")?,
+            ],
+            reprojection_error_px: parse_colmap_f64(fields[7], line, "ERROR")?,
+            observations: track_observations,
+        });
+    }
+    if tracks.is_empty() {
+        return Err(PoseError::Solution(
+            "COLMAP model has no raster-bound sparse tracks".to_owned(),
+        ));
+    }
+    Ok(tracks)
+}
+
+fn parse_colmap_u64(value: &str, line: usize, name: &str) -> Result<u64, PoseError> {
+    value.parse::<u64>().map_err(|_| PoseError::ColmapLine {
+        line,
+        reason: format!("{name} is not u64"),
+    })
+}
+
+fn parse_colmap_usize(value: &str, line: usize, name: &str) -> Result<usize, PoseError> {
+    value.parse::<usize>().map_err(|_| PoseError::ColmapLine {
+        line,
+        reason: format!("{name} is not usize"),
+    })
+}
+
+fn parse_colmap_f64(value: &str, line: usize, name: &str) -> Result<f64, PoseError> {
+    let parsed = value.parse::<f64>().map_err(|_| PoseError::ColmapLine {
+        line,
+        reason: format!("{name} is not f64"),
+    })?;
+    if !parsed.is_finite() {
+        return Err(PoseError::ColmapLine {
+            line,
+            reason: format!("{name} is not finite"),
+        });
+    }
+    Ok(parsed)
 }
 
 fn quaternion_w2c_matrix(
@@ -485,6 +920,44 @@ mod tests {
     }
 
     #[test]
+    fn parses_raster_bound_global_colmap_tracks() {
+        let solution = parse_colmap_global_model(
+            "1 SIMPLE_RADIAL 1620 1080 800 810 540 0.01\n",
+            "1 1 0 0 0 0 0 0 1 frame-000001.ppm\n810 540 9\n2 1 0 0 0 1 0 0 1 frame-000002.ppm\n812 540 9\n",
+            "9 0 0 4 255 0 0 0.5 1 0 2 0\n",
+            &raster(),
+            PoseProvider {
+                kind: "colmap".to_owned(),
+                version: "4.1.1".to_owned(),
+                settings_fingerprint: "global-ba".to_owned(),
+            },
+        )
+        .unwrap();
+        let evidence = solution.global_trajectory.as_ref().unwrap();
+        assert_eq!(evidence.camera_models[0].width, 1620);
+        assert_eq!(evidence.frame_camera_ids[&0], 1);
+        assert_eq!(evidence.tracks.len(), 1);
+        assert_eq!(evidence.tracks[0].observations.len(), 2);
+        validate_pose_solution(&solution, &raster()).unwrap();
+    }
+
+    #[test]
+    fn refuses_global_track_without_raster_bound_observations() {
+        let result = parse_colmap_global_model(
+            "1 SIMPLE_RADIAL 1620 1080 800 810 540 0.01\n",
+            "1 1 0 0 0 0 0 0 1 frame-000001.ppm\n810 540 -1\n",
+            "9 0 0 4 255 0 0 0.5 1 0\n",
+            &raster(),
+            PoseProvider {
+                kind: "colmap".to_owned(),
+                version: "4.1.1".to_owned(),
+                settings_fingerprint: "global-ba".to_owned(),
+            },
+        );
+        assert!(matches!(result, Err(PoseError::Solution(_))));
+    }
+
+    #[test]
     fn accepts_only_a_raster_bound_supported_sidecar_solution() {
         let raster = raster();
         let solution = PoseSolution {
@@ -507,6 +980,7 @@ mod tests {
                 registered_frames: 1,
                 duplicate_images: 0,
             },
+            global_trajectory: None,
         };
         validate_pose_solution(&solution, &raster).unwrap();
 

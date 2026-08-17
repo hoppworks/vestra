@@ -33,8 +33,10 @@ pub use geometry::{
     backproject_measured_view,
 };
 pub use pose::{
-    PoseDiagnostics, PoseError, PoseFrame, PoseProvider, PoseSolution, RasterCrop, RasterFrame,
-    RasterManifest, finalized_raster_manifest, parse_colmap_images_txt, validate_pose_solution,
+    ColmapCameraModel, GlobalTrajectoryEvidence, PoseDiagnostics, PoseError, PoseFrame,
+    PoseProvider, PoseSolution, RasterCrop, RasterFrame, RasterManifest, SparseTrack,
+    TrackObservation, finalized_raster_manifest, parse_colmap_global_model,
+    parse_colmap_images_txt, validate_pose_solution,
 };
 pub use pose_graph::{
     PoseGraphEdge, PoseGraphError, PoseGraphReport, PoseGraphSettings, RelativePoseGraph,

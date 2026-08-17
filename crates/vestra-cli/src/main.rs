@@ -114,6 +114,22 @@ enum Command {
         #[arg(long)]
         settings_fingerprint: String,
     },
+    /// Publish the complete globally bundle-adjusted COLMAP model, including
+    /// calibrated rays and sparse tracks for frame-global depth rebasing.
+    PoseImportColmapModel {
+        #[arg(long)]
+        scene: PathBuf,
+        #[arg(long)]
+        cameras_txt: PathBuf,
+        #[arg(long)]
+        images_txt: PathBuf,
+        #[arg(long)]
+        points3d_txt: PathBuf,
+        #[arg(long, default_value = "unknown")]
+        provider_version: String,
+        #[arg(long)]
+        settings_fingerprint: String,
+    },
     /// Validate and publish a provider-neutral W2C pose solution.  DROID-SLAM
     /// and VGGT sidecars must emit this exact schema against the immutable
     /// decoded-raster manifest; this command never fills missing poses.
@@ -1029,6 +1045,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "schema": "vestra.pose-import/v1",
                     "pose_solution": hash,
                     "registered_frames": solution.diagnostics.registered_frames,
+                    "input_frames": solution.diagnostics.input_frames,
+                })
+            );
+        }
+        Command::PoseImportColmapModel {
+            scene,
+            cameras_txt,
+            images_txt,
+            points3d_txt,
+            provider_version,
+            settings_fingerprint,
+        } => {
+            let bundle = SceneBundle::open(scene)?;
+            let raster = bundle.read_raster_manifest()?;
+            let solution = vestra_core::parse_colmap_global_model(
+                &std::fs::read_to_string(cameras_txt)?,
+                &std::fs::read_to_string(images_txt)?,
+                &std::fs::read_to_string(points3d_txt)?,
+                &raster,
+                vestra_core::PoseProvider {
+                    kind: "colmap".to_owned(),
+                    version: provider_version,
+                    settings_fingerprint,
+                },
+            )?;
+            let track_count = solution
+                .global_trajectory
+                .as_ref()
+                .map_or(0, |evidence| evidence.tracks.len());
+            let hash = bundle.write_pose_solution(&solution)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.pose-import-global-model/v1",
+                    "pose_solution": hash,
+                    "registered_frames": solution.diagnostics.registered_frames,
+                    "sparse_tracks": track_count,
                     "input_frames": solution.diagnostics.input_frames,
                 })
             );

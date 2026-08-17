@@ -1748,6 +1748,7 @@ mod tests {
                 registered_frames: local_centres.len(),
                 duplicate_images: 0,
             },
+            global_trajectory: None,
         };
         let transform =
             fit_window_to_global_pose(&window, &solution, GlobalPoseFusionSettings::default())
