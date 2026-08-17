@@ -25,6 +25,11 @@ pub struct FrameGlobalFusionSettings {
     /// fail the held-out scale gate are omitted, never interpolated, but a
     /// product with only isolated good fragments must not be published.
     pub minimum_fused_frame_fraction: f32,
+    /// Bounded, deterministic evidence set for normal-space TSDF. The raw
+    /// surfel mode remains complete; this prevents a redundant dense raster
+    /// from turning a browser-oriented surface product into an hours-long PCA
+    /// job.
+    pub maximum_tsdf_observations: Option<usize>,
     /// Build a second, explicit TSDF surface rather than raw rebased surfels.
     pub tsdf: Option<TsdfSettings>,
 }
@@ -36,6 +41,7 @@ impl Default for FrameGlobalFusionSettings {
             maximum_held_out_median_log_error: 0.20,
             maximum_track_reprojection_error_px: 2.5,
             minimum_fused_frame_fraction: 0.85,
+            maximum_tsdf_observations: Some(6_000_000),
             tsdf: Some(TsdfSettings::default()),
         }
     }
@@ -130,13 +136,48 @@ pub fn fuse_scene_bundle_frame_global(
         .ok_or(FrameGlobalFusionError::MissingTrajectoryEvidence)?;
     let raster = bundle.read_raster_manifest()?;
     let views = canonical_views(bundle)?;
-    let mut observations = Vec::new();
+    let reports = views
+        .iter()
+        .map(|(frame_index, view)| {
+            report_for_frame(*frame_index, view, &solution, evidence, &raster, settings)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let accepted = reports
+        .iter()
+        .map(|report| {
+            report.scale.is_some()
+                && report
+                    .held_out_median_log_error
+                    .is_some_and(|error| error <= settings.maximum_held_out_median_log_error)
+                && global_pose_and_camera(report.frame_index, &solution, evidence).is_some()
+        })
+        .collect::<Vec<_>>();
+    let candidate_observations = views
+        .iter()
+        .zip(&accepted)
+        .filter(|(_, accepted)| **accepted)
+        .map(|((_, view), _)| view.points.len())
+        .sum();
+    let tsdf_sample_threshold = settings
+        .maximum_tsdf_observations
+        .map(|budget| observation_sample_threshold(candidate_observations, budget));
+    let mut observations = Vec::with_capacity(
+        settings
+            .maximum_tsdf_observations
+            .unwrap_or(candidate_observations)
+            .min(candidate_observations),
+    );
     let mut raw_points = Vec::new();
     let mut cameras = Vec::new();
     let mut fused_frames = 0;
     let mut omitted_frames = 0;
-    for (frame_index, view) in views {
-        let report = report_for_frame(frame_index, &view, &solution, evidence, &raster, settings)?;
+    for ((frame_index, view), (report, accepted)) in
+        views.into_iter().zip(reports.into_iter().zip(accepted))
+    {
+        if !accepted {
+            omitted_frames += 1;
+            continue;
+        }
         let Some(scale) = report.scale else {
             omitted_frames += 1;
             continue;
@@ -164,7 +205,12 @@ pub fn fuse_scene_bundle_frame_global(
             else {
                 continue;
             };
-            if let Some(_) = settings.tsdf {
+            if settings.tsdf.is_some() {
+                if tsdf_sample_threshold.is_some_and(|threshold| {
+                    !keep_tsdf_observation(frame_index, point.source_pixel, threshold)
+                }) {
+                    continue;
+                }
                 observations.push(TsdfObservation {
                     position,
                     color_srgb: point.color_srgb,
@@ -251,10 +297,29 @@ fn validate_settings(settings: FrameGlobalFusionSettings) -> Result<(), FrameGlo
         || settings.maximum_track_reprojection_error_px <= 0.0
         || !settings.minimum_fused_frame_fraction.is_finite()
         || !(0.0..=1.0).contains(&settings.minimum_fused_frame_fraction)
+        || settings
+            .maximum_tsdf_observations
+            .is_some_and(|budget| budget == 0)
     {
         return Err(FrameGlobalFusionError::InvalidSettings);
     }
     Ok(())
+}
+
+fn observation_sample_threshold(candidate_observations: usize, budget: usize) -> u64 {
+    if candidate_observations <= budget {
+        return u64::MAX;
+    }
+    ((budget as f64 / candidate_observations as f64) * u64::MAX as f64) as u64
+}
+
+fn keep_tsdf_observation(frame_index: usize, source_pixel: [u32; 2], threshold: u64) -> bool {
+    let mut hash = frame_index as u64 ^ 0x9e37_79b9_7f4a_7c15;
+    hash ^= u64::from(source_pixel[0]).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    hash = hash.rotate_left(27).wrapping_mul(0x94d0_49bb_1331_11eb);
+    hash ^= u64::from(source_pixel[1]).wrapping_mul(0x369d_ea0f_31a5_3f85);
+    hash ^= hash >> 29;
+    hash <= threshold
 }
 
 fn has_required_coverage(fused_frames: usize, total_frames: usize, minimum_fraction: f32) -> bool {
@@ -646,5 +711,16 @@ mod tests {
         assert!(has_required_coverage(200, 230, 0.85));
         assert!(!has_required_coverage(195, 230, 0.85));
         assert!(!has_required_coverage(0, 0, 0.85));
+    }
+
+    #[test]
+    fn tsdf_sampling_is_deterministic_and_bounded() {
+        let threshold = observation_sample_threshold(55_000_000, 6_000_000);
+        assert!(threshold < u64::MAX);
+        assert_eq!(
+            keep_tsdf_observation(17, [42, 99], threshold),
+            keep_tsdf_observation(17, [42, 99], threshold)
+        );
+        assert_eq!(observation_sample_threshold(12, 12), u64::MAX);
     }
 }
