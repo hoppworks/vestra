@@ -73,16 +73,40 @@ the installed COLMAP build reports `geom_consistency: 0` before neighbour maps
 exist. A later geometric fusion may only be labelled geometric when the log
 explicitly reports `geom_consistency: 1` and a geometric fused PLY exists.
 
-## Current control run
+## Current geometric control run
 
-The current IMG_2323 result is **photometric-only**, not geometric: the
-installed COLMAP container reported `geom_consistency: 0` for the available
-PatchMatch maps. `stereo_fusion --input_type photometric` produced
-`1,484,779` surfels, published as `colmap-mvs-photometric-control` with pose
-solution `e931ea6a82a354e46e308aa3146ca99064112d1c3ccb4f2b9f5b4459a5dee5e9`.
-It carries 220 registered camera rays and source-frame references. This proves
-that source-camera inspection is now possible; it does **not** classify the
-geometry as coherent yet.
+The initial photometric-only control remains preserved as
+`colmap-mvs-photometric-control`. It was followed by a separate geometric
+PatchMatch/fusion pass in the same immutable copied workspace:
+
+| Item | Result |
+| --- | --- |
+| Geometric fusion command | `stereo_fusion --input_type geometric` |
+| Fused points | 1,517,276 |
+| Published product | `colmap-mvs-geometric` |
+| Source-camera evidence | 220 registered cameras and source frames |
+| Camera reprojection coverage | 50.43% (frame 0), 30.47% (55), 27.41% (110), 15.24% (165) |
+| Product classification | **Partial** |
+
+The four depth-tested MVS reprojections show stable room structure in the
+well-observed areas: ceiling beams, chair/table geometry, floor, door/window
+frames, and furniture appear in compatible locations under their original
+calibrated cameras. The final sampled view has much lower coverage, so the
+cloud is not complete enough to claim a coherent full-room reconstruction.
+It is nevertheless decisive negative evidence against the old explanation
+that the global COLMAP trajectory itself necessarily produces a spiral: a
+global multi-view geometry control can preserve substantial room structure
+without any window-to-window Sim(3) chaining.
+
+Studio now keeps this as a distinct raw MVS surfel product and its `match 3D
+camera` action uses the exact COLMAP pose, roll, vertical field of view, and
+3:2 camera aspect. The visual point size is intentionally reduced in this
+mode so the MVS evidence is not hidden by oversized surfel discs. This is a
+viewer-only projection rule; it does not alter the PLY or camera authority.
+
+The held-out sparse-track/dense-depth comparison remains unexecuted. That
+means this run is a quality-control and trajectory decision, not an accuracy
+certificate or a metric-scale claim.
 
 ## Acceptance evidence
 
