@@ -28,7 +28,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--droid-root", type=Path, required=True)
     parser.add_argument("--raster-manifest", type=Path, required=True)
     parser.add_argument("--images-dir", type=Path, required=True)
-    parser.add_argument("--calibration", type=Path, required=True)
+    calibration = parser.add_mutually_exclusive_group(required=True)
+    calibration.add_argument("--calibration", type=Path, help="fx fy cx cy [distortion...] text file")
+    calibration.add_argument(
+        "--colmap-cameras",
+        type=Path,
+        help="validated COLMAP cameras.txt; derives the DROID pinhole calibration",
+    )
     parser.add_argument("--weights", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--filter-thresh", type=float, default=2.4)
@@ -43,6 +49,25 @@ def native_git_revision(root: Path) -> str:
     return subprocess.check_output(
         ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
     ).strip()
+
+
+def calibration_from_colmap(path: Path) -> tuple[float, float, float, float]:
+    """Reads the first calibrated camera from COLMAP's text model.
+
+    DROID consumes the undistorted pinhole component only.  Keeping this
+    derivation here avoids a hand-entered focal length between the COLMAP and
+    DROID experiments while retaining the exact source file in provenance.
+    """
+    rows = [line.split() for line in path.read_text().splitlines() if line and not line.startswith("#")]
+    if len(rows) != 1 or len(rows[0]) < 8:
+        raise SystemExit("expected exactly one valid COLMAP camera in cameras.txt")
+    _, model, _, _, *params = rows[0]
+    values = [float(value) for value in params]
+    if model in {"SIMPLE_PINHOLE", "SIMPLE_RADIAL", "RADIAL"} and len(values) >= 3:
+        return values[0], values[0], values[1], values[2]
+    if model in {"PINHOLE", "OPENCV", "FULL_OPENCV"} and len(values) >= 4:
+        return values[0], values[1], values[2], values[3]
+    raise SystemExit(f"unsupported COLMAP camera model {model!r}")
 
 
 def main() -> None:
@@ -65,10 +90,15 @@ def main() -> None:
     import torch  # noqa: PLC0415
     from droid import Droid  # noqa: PLC0415
 
-    calibration = np.loadtxt(args.calibration, delimiter=" ")
-    if calibration.shape[0] < 4:
-        raise SystemExit("calibration must contain fx fy cx cy")
-    fx, fy, cx, cy = (float(value) for value in calibration[:4])
+    if args.colmap_cameras:
+        fx, fy, cx, cy = calibration_from_colmap(args.colmap_cameras)
+        calibration_source = args.colmap_cameras
+    else:
+        calibration = np.loadtxt(args.calibration, delimiter=" ")
+        if calibration.shape[0] < 4:
+            raise SystemExit("calibration must contain fx fy cx cy")
+        fx, fy, cx, cy = (float(value) for value in calibration[:4])
+        calibration_source = args.calibration
 
     def stream():
         for ordinal, path in enumerate(image_paths):
@@ -143,7 +173,7 @@ def main() -> None:
     settings = {
         "droid_revision": native_git_revision(args.droid_root),
         "weights_sha256": hashlib.sha256(args.weights.read_bytes()).hexdigest(),
-        "calibration_sha256": hashlib.sha256(args.calibration.read_bytes()).hexdigest(),
+        "calibration_sha256": hashlib.sha256(calibration_source.read_bytes()).hexdigest(),
         "filter_thresh": args.filter_thresh,
         "keyframe_thresh": args.keyframe_thresh,
         "frontend_window": args.frontend_window,
