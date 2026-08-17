@@ -30,10 +30,17 @@ pub struct CaptureQuality {
     pub mean_adjacent_luma_delta: f32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VideoExtractionSettings {
     pub width: usize,
     pub height: usize,
+    /// Candidate frames per second before geometry selection. This is a rate,
+    /// not a duration-dependent total, so a long capture does not silently
+    /// become temporally sparse.
+    pub candidate_fps: f64,
+    /// Safety ceiling for a single local capture. It prevents an accidental
+    /// multi-hour upload from exhausting the host while retaining a quality-
+    /// first candidate rate for normal room walkthroughs.
     pub max_frames: usize,
 }
 
@@ -42,7 +49,8 @@ impl Default for VideoExtractionSettings {
         Self {
             width: 504,
             height: 336,
-            max_frames: 120,
+            candidate_fps: 8.0,
+            max_frames: 1800,
         }
     }
 }
@@ -90,7 +98,12 @@ pub fn extract_video_frames(
     work_directory: impl Into<PathBuf>,
     settings: VideoExtractionSettings,
 ) -> Result<VideoFrames, VideoInputError> {
-    if settings.width == 0 || settings.height == 0 || settings.max_frames == 0 {
+    if settings.width == 0
+        || settings.height == 0
+        || settings.max_frames == 0
+        || !settings.candidate_fps.is_finite()
+        || settings.candidate_fps <= 0.0
+    {
         return Err(VideoInputError::InvalidSettings);
     }
     let duration_seconds = probe_duration(video)?;
@@ -137,7 +150,7 @@ struct VideoGeometry {
 /// to the reconstruction aspect ratio, then resize. This avoids the geometric
 /// distortion caused by a direct non-uniform scale.
 fn center_crop_filter(
-    duration_seconds: f64,
+    _duration_seconds: f64,
     settings: VideoExtractionSettings,
     geometry: VideoGeometry,
 ) -> Result<String, VideoInputError> {
@@ -161,8 +174,8 @@ fn center_crop_filter(
     let crop_x = (geometry.width - crop_width) / 2;
     let crop_y = (geometry.height - crop_height) / 2;
     Ok(format!(
-        "fps={}/{duration_seconds:.9},crop={crop_width}:{crop_height}:{crop_x}:{crop_y},scale={target_width}:{target_height}:flags=lanczos",
-        settings.max_frames,
+        "fps={:.9},crop={crop_width}:{crop_height}:{crop_x}:{crop_y},scale={target_width}:{target_height}:flags=lanczos",
+        settings.candidate_fps,
     ))
 }
 
@@ -463,6 +476,7 @@ mod tests {
         let settings = VideoExtractionSettings {
             width: 2,
             height: 1,
+            candidate_fps: 1.0,
             max_frames: 2,
         };
         let cached = load_decoded_frame_cache_with_duration(&root, settings, 3.0).unwrap();
@@ -526,7 +540,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             filter,
-            "fps=120/12.000000000,crop=1620:1080:150:0,scale=504:336:flags=lanczos"
+            "fps=8.000000000,crop=1620:1080:150:0,scale=504:336:flags=lanczos"
         );
     }
 

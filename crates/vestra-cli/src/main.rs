@@ -54,8 +54,13 @@ enum Command {
         /// Provenance must match exactly; incompatible checkpoints are refused.
         #[arg(long)]
         resume: bool,
-        #[arg(long, default_value_t = 120)]
-        frames: usize,
+        /// Candidate image rate before later motion/quality selection. This
+        /// remains constant as video duration grows.
+        #[arg(long, default_value_t = 8.0)]
+        candidate_fps: f64,
+        /// Safety ceiling, not a quality target. At 8 fps it covers 225 s.
+        #[arg(long, default_value_t = 1800)]
+        hard_max_frames: usize,
         #[arg(long, default_value_t = 504)]
         width: usize,
         #[arg(long, default_value_t = 336)]
@@ -148,8 +153,10 @@ enum Command {
         jobs: PathBuf,
         #[arg(long, default_value_t = 4317)]
         port: u16,
-        #[arg(long, default_value_t = 120)]
-        frames: usize,
+        #[arg(long, default_value_t = 8.0)]
+        candidate_fps: f64,
+        #[arg(long, default_value_t = 1800)]
+        hard_max_frames: usize,
         #[arg(long, default_value_t = 504)]
         width: usize,
         #[arg(long, default_value_t = 336)]
@@ -304,7 +311,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             model,
             output,
             resume,
-            frames,
+            candidate_fps,
+            hard_max_frames,
             width,
             height,
             chunk_size,
@@ -321,7 +329,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 model_fingerprint: sha256_file(&model)?,
                 settings_fingerprint: settings_fingerprint(
                     &video,
-                    frames,
+                    candidate_fps,
+                    hard_max_frames,
                     width,
                     height,
                     chunk_size,
@@ -347,7 +356,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let decode_settings = VideoExtractionSettings {
                 width,
                 height,
-                max_frames: frames,
+                candidate_fps,
+                max_frames: hard_max_frames,
             };
             let decoded_directory = output.join("decoded");
             let decoded = if resume && decoded_directory.is_dir() {
@@ -436,7 +446,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             model,
             jobs,
             port,
-            frames,
+            candidate_fps,
+            hard_max_frames,
             width,
             height,
             chunk_size,
@@ -453,7 +464,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 model,
                 jobs_root: jobs,
                 port,
-                frames,
+                candidate_fps,
+                hard_max_frames,
                 width,
                 height,
                 chunk_size,
@@ -494,6 +506,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 VideoExtractionSettings {
                     width,
                     height,
+                    candidate_fps: 1.0,
                     max_frames: frames,
                 },
             )?;
@@ -542,6 +555,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 VideoExtractionSettings {
                     width,
                     height,
+                    candidate_fps: 1.0,
                     max_frames: requested_frames,
                 },
             )?;
@@ -1313,7 +1327,8 @@ fn sha256_file(path: &PathBuf) -> Result<String, Box<dyn std::error::Error>> {
 #[allow(clippy::too_many_arguments)]
 fn settings_fingerprint(
     video: &PathBuf,
-    frames: usize,
+    candidate_fps: f64,
+    hard_max_frames: usize,
     width: usize,
     height: usize,
     chunk_size: usize,
@@ -1324,7 +1339,7 @@ fn settings_fingerprint(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let video_hash = sha256_file(video)?;
     let settings = format!(
-        "video={video_hash};frames={frames};width={width};height={height};chunk={chunk_size};overlap={overlap};minimum_confidence={minimum_confidence:?};pixel_stride={pixel_stride};cpp_pr2_relative={cpp_pr2_relative}"
+        "video={video_hash};candidate_fps={candidate_fps:?};hard_max_frames={hard_max_frames};width={width};height={height};chunk={chunk_size};overlap={overlap};minimum_confidence={minimum_confidence:?};pixel_stride={pixel_stride};cpp_pr2_relative={cpp_pr2_relative}"
     );
     Ok(Sha256::digest(settings.as_bytes())
         .iter()

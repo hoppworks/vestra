@@ -47,7 +47,8 @@ pub struct IntakeConfig {
     pub model: PathBuf,
     pub jobs_root: PathBuf,
     pub port: u16,
-    pub frames: usize,
+    pub candidate_fps: f64,
+    pub hard_max_frames: usize,
     pub width: usize,
     pub height: usize,
     pub chunk_size: usize,
@@ -100,9 +101,14 @@ pub fn serve_intake(config: IntakeConfig) -> Result<(), StudioError> {
     if !config.model.is_file() {
         return Err(StudioError::IntakeConfig("the model file is missing"));
     }
-    if config.frames == 0 || config.width == 0 || config.height == 0 {
+    if config.hard_max_frames == 0
+        || !config.candidate_fps.is_finite()
+        || config.candidate_fps <= 0.0
+        || config.width == 0
+        || config.height == 0
+    {
         return Err(StudioError::IntakeConfig(
-            "frame and raster dimensions must be positive",
+            "candidate rate, frame ceiling, and raster dimensions must be positive",
         ));
     }
     fs::create_dir_all(&config.jobs_root)?;
@@ -163,7 +169,8 @@ enum IntakeOutcome {
 /// would violate the scene provenance contract checked by `reconstruct`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct IntakeSettings {
-    frames: usize,
+    candidate_fps: f64,
+    hard_max_frames: usize,
     width: usize,
     height: usize,
     chunk_size: usize,
@@ -408,7 +415,8 @@ fn job_is_in_progress(job: &IntakeJob) -> bool {
 impl From<&IntakeConfig> for IntakeSettings {
     fn from(config: &IntakeConfig) -> Self {
         Self {
-            frames: config.frames,
+            candidate_fps: config.candidate_fps,
+            hard_max_frames: config.hard_max_frames,
             width: config.width,
             height: config.height,
             chunk_size: config.chunk_size,
@@ -527,8 +535,10 @@ fn spawn_reconstruction(
             config.model.to_string_lossy().as_ref(),
             "--output",
             job.scene.to_string_lossy().as_ref(),
-            "--frames",
-            &job.settings.frames.to_string(),
+            "--candidate-fps",
+            &job.settings.candidate_fps.to_string(),
+            "--hard-max-frames",
+            &job.settings.hard_max_frames.to_string(),
             "--width",
             &job.settings.width.to_string(),
             "--height",
@@ -1312,7 +1322,8 @@ mod tests {
             scene: root.join("world.vestra"),
             log: root.join("reconstruct.log"),
             settings: IntakeSettings {
-                frames: 1,
+                candidate_fps: 1.0,
+                hard_max_frames: 1,
                 width: 1,
                 height: 1,
                 chunk_size: 1,
@@ -1444,7 +1455,8 @@ mod tests {
         let job_root = root.join("job-000007");
         fs::create_dir_all(&job_root).unwrap();
         let settings = IntakeSettings {
-            frames: 24,
+            candidate_fps: 8.0,
+            hard_max_frames: 24,
             width: 504,
             height: 336,
             chunk_size: 12,
@@ -1471,7 +1483,8 @@ mod tests {
             model: root.join("model.gguf"),
             jobs_root: root.clone(),
             port: 4317,
-            frames: 1,
+            candidate_fps: 1.0,
+            hard_max_frames: 1,
             width: 1,
             height: 1,
             chunk_size: 1,
@@ -1484,7 +1497,8 @@ mod tests {
         let recovered = recover_latest_job(&config).unwrap().unwrap();
         assert_eq!(recovered.id, 7);
         assert_eq!(recovered.outcome, IntakeOutcome::Interrupted);
-        assert_eq!(recovered.settings.frames, settings.frames);
+        assert_eq!(recovered.settings.candidate_fps, settings.candidate_fps);
+        assert_eq!(recovered.settings.hard_max_frames, settings.hard_max_frames);
         assert_eq!(recovered.settings.pixel_stride, settings.pixel_stride);
         assert_eq!(recovered.settings.tsdf, settings.tsdf);
         assert_eq!(
