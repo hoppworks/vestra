@@ -52,6 +52,22 @@ pose solution or a Vestra artifact.
 7. Inspect the raw MVS cloud from multiple original-camera views before any
    smoothing, TSDF, or conversion to a Vestra product.
 
+For a reproducible, non-browser-only inspection, render at least four
+temporally separated registered cameras through the immutable pose solution:
+
+```sh
+python3 tools/inspect_colmap_mvs.py \
+  --ply /tmp/vestra-mvs-img2323-dense-r1/fused-geometric.ply \
+  --pose-solution <scene>/chunks/pose-<pose-solution-hash>.json \
+  --frames 0 55 110 165 \
+  --output /tmp/vestra-mvs-img2323-camera-inspection \
+  --maximum-points 6000000
+```
+
+The tool writes colour PPM reprojections plus `inspection.json` containing
+depth-tested coverage per source camera.  Those images are inspection evidence
+only; the tool cannot publish, alter, or smooth the cloud.
+
 The first PatchMatch pass must be recorded as photometric initialization if
 the installed COLMAP build reports `geom_consistency: 0` before neighbour maps
 exist. A later geometric fusion may only be labelled geometric when the log
