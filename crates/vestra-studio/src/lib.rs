@@ -1479,6 +1479,8 @@ mod tests {
         assert!(INDEX_HTML.contains("fused_preview_point_binary_chunk_hashes"));
         assert!(INDEX_HTML.contains("attribute float a"));
         assert!(INDEX_HTML.contains("bind(batch.a)"));
+        assert!(INDEX_HTML.contains("a:make(radii,'a',1)"));
+        assert!(INDEX_HTML.contains("attribute.size||3"));
         assert!(INDEX_HTML.contains("id=\"products\""));
         assert!(INDEX_HTML.contains("function bindProductSelector"));
         assert!(INDEX_HTML.contains("fetch('manifest.json'+productSuffix"));
