@@ -98,6 +98,20 @@ enum Command {
         #[arg(long, default_value_t = true, action = clap::ArgAction::SetTrue)]
         cpp_pr2_relative: bool,
     },
+    /// Validate and publish a COLMAP text-model pose solution for the exact
+    /// decoded rasters stored by a scene. This does not alter the local world.
+    PoseImportColmap {
+        #[arg(long)]
+        scene: PathBuf,
+        /// COLMAP `images.txt` emitted by `model_converter --output_type TXT`.
+        #[arg(long)]
+        images_txt: PathBuf,
+        #[arg(long, default_value = "unknown")]
+        provider_version: String,
+        /// Hash of the versioned COLMAP command/settings contract.
+        #[arg(long)]
+        settings_fingerprint: String,
+    },
     /// Export the fused relative-scale world as an open ASCII PLY file.
     Export {
         #[arg(long)]
@@ -921,6 +935,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "fused_chunk": fusion.chunk_hash,
                     "windows": fusion.aligned_windows,
                     "fused_points": fusion.points,
+                })
+            );
+        }
+        Command::PoseImportColmap {
+            scene,
+            images_txt,
+            provider_version,
+            settings_fingerprint,
+        } => {
+            let bundle = SceneBundle::open(scene)?;
+            let raster = bundle.read_raster_manifest()?;
+            let text = std::fs::read_to_string(images_txt)?;
+            let solution = vestra_core::parse_colmap_images_txt(
+                &text,
+                &raster,
+                vestra_core::PoseProvider {
+                    kind: "colmap".to_owned(),
+                    version: provider_version,
+                    settings_fingerprint,
+                },
+            )?;
+            let hash = bundle.write_pose_solution(&solution)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.pose-import/v1",
+                    "pose_solution": hash,
+                    "registered_frames": solution.diagnostics.registered_frames,
+                    "input_frames": solution.diagnostics.input_frames,
                 })
             );
         }
