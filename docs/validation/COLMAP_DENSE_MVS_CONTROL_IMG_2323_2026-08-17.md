@@ -88,6 +88,19 @@ PatchMatch/fusion pass in the same immutable copied workspace:
 | Camera reprojection coverage | 50.43% (frame 0), 30.47% (55), 27.41% (110), 15.24% (165) |
 | Product classification | **Partial** |
 
+The same four original-camera depth buffers were also compared against
+independent COLMAP sparse landmarks with reprojection error at most 2.5 px.
+The comparison is depth-tested and uses the same half-pixel 1620×1080 →
+504×336 resize convention as the DA3 calibration path. It found 1,932 covered
+observations out of 2,283 (84.63%), with median absolute log-depth error
+0.01947 and p95 0.32011. This is strong evidence that MVS preserves the global
+geometry where it observes a surface, but the 15–50% image coverage still
+rules out treating MVS alone as a complete-room product.
+
+`tools/inspect_colmap_mvs.py --track-report` reproduces this evidence. The
+tool intentionally reports coverage separately from error: no MVS sample is
+silently substituted for an unobserved landmark.
+
 The four depth-tested MVS reprojections show stable room structure in the
 well-observed areas: ceiling beams, chair/table geometry, floor, door/window
 frames, and furniture appear in compatible locations under their original

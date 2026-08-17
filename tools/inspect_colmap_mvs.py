@@ -156,7 +156,7 @@ def load_cameras(path: Path, wanted: set[int]) -> list[Camera]:
     return cameras
 
 
-def render(vertices: Iterable[Vertex], camera: Camera, width: int, height: int, output: Path) -> dict:
+def render(vertices: Iterable[Vertex], camera: Camera, width: int, height: int, output: Path) -> tuple[dict, array]:
     depth = array("f", [math.inf]) * (width * height)
     rgb = bytearray(width * height * 3)
     visible = 0
@@ -192,6 +192,76 @@ def render(vertices: Iterable[Vertex], camera: Camera, width: int, height: int, 
         "coverage": visible / (width * height),
         "finite_vertices_seen": finite,
         "output": output.name,
+    }, depth
+
+
+def percentile(values: list[float], percent: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = (len(ordered) - 1) * percent / 100.0
+    lower, upper = math.floor(index), math.ceil(index)
+    if lower == upper:
+        return ordered[lower]
+    return ordered[lower] * (upper - index) + ordered[upper] * (index - lower)
+
+
+def sampled_depth(depth: array, width: int, height: int, x: float, y: float) -> float | None:
+    """Return the nearest visible MVS surface around an exact source pixel.
+
+    Sparse COLMAP tracks and independently rasterized MVS vertices need not
+    quantize to the same output pixel.  The 3x3 depth-tested search stays local
+    while avoiding a false 'no coverage' result from rounding alone.
+    """
+    if not (math.isfinite(x) and math.isfinite(y)):
+        return None
+    centre_x, centre_y = round(x), round(y)
+    values = [
+        depth[row * width + column]
+        for row in range(max(0, centre_y - 1), min(height, centre_y + 2))
+        for column in range(max(0, centre_x - 1), min(width, centre_x + 2))
+        if math.isfinite(depth[row * width + column])
+    ]
+    return min(values) if values else None
+
+
+def track_depth_report(solution: dict, cameras: Iterable[Camera], depth_by_frame: dict[int, array], width: int, height: int) -> dict:
+    """Compare dense MVS Z against independent sparse COLMAP landmark Z."""
+    camera_by_frame = {camera.frame_index: camera for camera in cameras}
+    errors: list[float] = []
+    observations = 0
+    covered = 0
+    for track in solution.get("global_trajectory", {}).get("tracks", []):
+        if float(track.get("reprojection_error_px", math.inf)) > 2.5:
+            continue
+        point = track.get("position")
+        if not isinstance(point, list) or len(point) != 3:
+            continue
+        for observation in track.get("observations", []):
+            frame = int(observation.get("frame_index", -1))
+            camera = camera_by_frame.get(frame)
+            xy = observation.get("image_xy")
+            if camera is None or not isinstance(xy, list) or len(xy) != 2:
+                continue
+            observations += 1
+            scale_x, scale_y = width / camera.width, height / camera.height
+            x = (float(xy[0]) + 0.5) * scale_x - 0.5
+            y = (float(xy[1]) + 0.5) * scale_y - 0.5
+            measured = sampled_depth(depth_by_frame[frame], width, height, x, y)
+            r = camera.w2c
+            expected = r[8] * float(point[0]) + r[9] * float(point[1]) + r[10] * float(point[2]) + r[11]
+            if measured is None or not math.isfinite(expected) or expected <= 0:
+                continue
+            covered += 1
+            errors.append(abs(math.log(measured / expected)))
+    return {
+        "schema": "vestra.colmap-mvs-track-depth-report/v1",
+        "maximum_sparse_track_reprojection_error_px": 2.5,
+        "observations": observations,
+        "covered_observations": covered,
+        "coverage": covered / observations if observations else 0.0,
+        "median_abs_log_depth_error": percentile(errors, 50),
+        "p95_abs_log_depth_error": percentile(errors, 95),
     }
 
 
@@ -205,6 +275,8 @@ def main() -> None:
     parser.add_argument("--height", type=int, default=336)
     parser.add_argument("--maximum-points", type=int, default=None,
                         help="deterministic uniform stride before rendering")
+    parser.add_argument("--track-report", action="store_true",
+                        help="compare depth-tested MVS Z with sparse COLMAP tracks in --frames")
     args = parser.parse_args()
     if args.width <= 0 or args.height <= 0 or args.maximum_points == 0:
         parser.error("dimensions and maximum-points must be positive")
@@ -212,15 +284,24 @@ def main() -> None:
     if not vertices:
         raise SystemExit("no vertices selected from PLY")
     args.output.mkdir(parents=True, exist_ok=True)
-    reports = [render(vertices, camera, args.width, args.height,
-                      args.output / f"mvs-frame-{camera.frame_index:06d}.ppm")
-               for camera in load_cameras(args.pose_solution, set(args.frames))]
+    solution = json.loads(args.pose_solution.read_text())
+    cameras = load_cameras(args.pose_solution, set(args.frames))
+    rendered = [render(vertices, camera, args.width, args.height,
+                       args.output / f"mvs-frame-{camera.frame_index:06d}.ppm")
+                for camera in cameras]
+    reports = [report for report, _ in rendered]
     summary = {
         "schema": "vestra.colmap-mvs-camera-inspection/v1",
         "ply": str(args.ply),
         "vertices_rendered": len(vertices),
         "frames": reports,
     }
+    if args.track_report:
+        summary["track_depth"] = track_depth_report(
+            solution, cameras,
+            {camera.frame_index: depth for camera, (_, depth) in zip(cameras, rendered)},
+            args.width, args.height,
+        )
     (args.output / "inspection.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary))
 

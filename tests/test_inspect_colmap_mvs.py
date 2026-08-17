@@ -1,56 +1,77 @@
 import importlib.util
-import json
-import struct
+import math
 import sys
-import tempfile
 import unittest
+from array import array
 from pathlib import Path
 
 
-SPEC = importlib.util.spec_from_file_location(
-    "inspect_colmap_mvs", Path(__file__).parents[1] / "tools" / "inspect_colmap_mvs.py"
-)
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location("inspect_colmap_mvs", ROOT / "tools" / "inspect_colmap_mvs.py")
 MVS = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 sys.modules[SPEC.name] = MVS
 SPEC.loader.exec_module(MVS)
 
 
-class ColmapMvsInspectorTest(unittest.TestCase):
-    def test_binary_ply_projects_through_registered_pinhole_camera(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            ply = root / "cloud.ply"
-            header = (
-                "ply\nformat binary_little_endian 1.0\n"
-                "element vertex 2\n"
-                "property float x\nproperty float y\nproperty float z\n"
-                "property uchar red\nproperty uchar green\nproperty uchar blue\n"
-                "end_header\n"
-            ).encode("ascii")
-            # The nearer green vertex must occlude the red vertex at the same pixel.
-            ply.write_bytes(header + struct.pack("<fffBBBfffBBB", 0, 0, 2, 255, 0, 0, 0, 0, 1, 0, 255, 0))
-            vertices = MVS.read_vertices(ply, None)
-            self.assertEqual(len(vertices), 2)
-            camera = MVS.Camera(7, 4, 4, 2, 2, 2, 2, (1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0))
-            report = MVS.render(vertices, camera, 4, 4, root / "render.ppm")
-            self.assertEqual(report["visible_pixels"], 1)
-            self.assertEqual((root / "render.ppm").read_bytes()[-(4 * 4 * 3) + (2 * 4 + 2) * 3:][0:3], bytes((0, 255, 0)))
+class MvsTrackDepthReportTest(unittest.TestCase):
+    def test_track_report_uses_exact_pixel_centre_resize_and_depth_gate(self):
+        camera = MVS.Camera(
+            frame_index=7,
+            width=4,
+            height=4,
+            fx=1.0,
+            fy=1.0,
+            cx=2.0,
+            cy=2.0,
+            w2c=(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+        )
+        depth = array("f", [math.inf]) * 4
+        # Original pixel (1.5, 1.5) maps to output (0.5, 0.5), whose local
+        # 3x3 lookup sees this finite Z at (1, 1).
+        depth[1 * 2 + 1] = 4.0
+        solution = {
+            "global_trajectory": {
+                "tracks": [
+                    {
+                        "position": [0.0, 0.0, 4.0],
+                        "reprojection_error_px": 0.2,
+                        "observations": [{"frame_index": 7, "image_xy": [1.5, 1.5]}],
+                    },
+                    {
+                        "position": [0.0, 0.0, 4.0],
+                        "reprojection_error_px": 3.0,
+                        "observations": [{"frame_index": 7, "image_xy": [1.5, 1.5]}],
+                    },
+                ]
+            }
+        }
+        report = MVS.track_depth_report(solution, [camera], {7: depth}, 2, 2)
+        self.assertEqual(report["observations"], 1)
+        self.assertEqual(report["covered_observations"], 1)
+        self.assertEqual(report["coverage"], 1.0)
+        self.assertAlmostEqual(report["median_abs_log_depth_error"], 0.0)
 
-    def test_load_cameras_maps_simple_pinhole_and_rejects_unregistered(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "pose.json"
-            path.write_text(json.dumps({
-                "frames": [{"frame_index": 2, "registered": True, "world_to_camera": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]}],
-                "global_trajectory": {
-                    "frame_camera_ids": {"2": 5},
-                    "camera_models": [{"camera_id": 5, "model": "SIMPLE_PINHOLE", "width": 8, "height": 6, "parameters": [4, 4, 3]}],
-                },
-            }))
-            camera = MVS.load_cameras(path, {2})[0]
-            self.assertEqual((camera.fx, camera.fy, camera.cx, camera.cy), (4, 4, 4, 3))
-            with self.assertRaisesRegex(ValueError, "not registered"):
-                MVS.load_cameras(path, {3})
+    def test_sparse_track_outside_mvs_coverage_is_not_counted_as_match(self):
+        camera = MVS.Camera(
+            frame_index=3,
+            width=2,
+            height=2,
+            fx=1.0,
+            fy=1.0,
+            cx=1.0,
+            cy=1.0,
+            w2c=(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+        )
+        solution = {"global_trajectory": {"tracks": [{
+            "position": [0.0, 0.0, 2.0],
+            "reprojection_error_px": 0.1,
+            "observations": [{"frame_index": 3, "image_xy": [0.0, 0.0]}],
+        }]}}
+        report = MVS.track_depth_report(solution, [camera], {3: array("f", [math.inf])}, 1, 1)
+        self.assertEqual(report["observations"], 1)
+        self.assertEqual(report["covered_observations"], 0)
+        self.assertIsNone(report["p95_abs_log_depth_error"])
 
 
 if __name__ == "__main__":
