@@ -74,18 +74,18 @@ enum Command {
         overlap: usize,
         #[arg(long, default_value_t = 1.0)]
         minimum_confidence: f32,
-        /// One retained depth pixel per stride-square source pixels. The
-        /// local JSON/WebGL v1 default intentionally caps a 120-frame job to
-        /// a practical surfel volume; use 1 only for small diagnostics.
+        /// One retained depth pixel per stride-square source pixels. Product
+        /// jobs use 2 for a dense but bounded source cloud; 1 is reserved for
+        /// small PR #2 oracle diagnostics.
         #[arg(long, default_value_t = 8)]
         pixel_stride: usize,
         /// Build PR #2 normal-space TSDF surfels instead of compatibility voxel fusion.
         #[arg(long)]
         tsdf: bool,
-        /// Use the PR #2 relative seam and loop-closure profile. This is the
-        /// default for new worlds. The flag remains accepted explicitly so
-        /// intake subprocesses can record the selected profile unambiguously.
-        #[arg(long, default_value_t = true, action = clap::ArgAction::SetTrue)]
+        /// Capture the dense PR #2 oracle evidence profile. Product captures
+        /// keep this opt-in so their configured confidence/point stride are
+        /// respected; parity fixtures select it explicitly.
+        #[arg(long)]
         cpp_pr2_relative: bool,
     },
     /// Rebuild the derived world from a bundle's immutable measured windows.
@@ -244,17 +244,16 @@ enum Command {
         overlap: usize,
         #[arg(long, default_value_t = 1.0)]
         minimum_confidence: f32,
-        #[arg(long, default_value_t = 8)]
+        #[arg(long, default_value_t = 2)]
         pixel_stride: usize,
         /// Publish a normal-space TSDF surfel derivative in addition to the
         /// immutable measured evidence. This improves surface continuity but
         /// never changes the recorded camera/depth observations.
         #[arg(long, default_value_t = true, action = clap::ArgAction::SetTrue)]
         tsdf: bool,
-        /// Capture and fuse the dense PR #2-relative geometry profile. This
-        /// is the default for new browser jobs; it preserves the evidence
-        /// needed for closed-loop ICP and deferred pose-graph fusion.
-        #[arg(long, default_value_t = true, action = clap::ArgAction::SetTrue)]
+        /// Capture the dense PR #2 oracle evidence profile. The local product
+        /// uses its configured stride and quality gates by default.
+        #[arg(long)]
         cpp_pr2_relative: bool,
     },
     /// Capture window-scoped DA3 output for the pinned C++ PR #2 stitcher oracle.
@@ -1617,7 +1616,7 @@ mod tests {
     use vestra_core::{AlignmentReport, FusedPoint, FusedSceneChunk};
 
     #[test]
-    fn new_browser_jobs_default_to_the_pr2_closed_loop_profile() {
+    fn new_browser_jobs_default_to_bounded_product_geometry() {
         let cli = Cli::try_parse_from([
             "vestra",
             "app",
@@ -1628,12 +1627,15 @@ mod tests {
         ])
         .unwrap();
         let Command::App {
-            cpp_pr2_relative, ..
+            cpp_pr2_relative,
+            pixel_stride,
+            ..
         } = cli.command
         else {
             panic!("expected app command");
         };
-        assert!(cpp_pr2_relative);
+        assert!(!cpp_pr2_relative);
+        assert_eq!(pixel_stride, 2);
     }
 
     #[test]
