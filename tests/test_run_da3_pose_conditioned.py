@@ -51,7 +51,12 @@ class PoseConditionedRunnerTest(unittest.TestCase):
             "frames": pose_frames,
             "global_trajectory": {
                 "camera_models": [{"camera_id": 1, "model": "SIMPLE_RADIAL", "width": 504, "height": 336, "parameters": [300, 252, 168, 0]}],
-                "frame_camera_ids": {str(index): 1 for index in range(5)}, "tracks": [],
+                "frame_camera_ids": {str(index): 1 for index in range(5)},
+                "tracks": [
+                    {"point_id": 1, "observations": [{"frame_index": 0}, {"frame_index": 2}, {"frame_index": 4}]},
+                    {"point_id": 2, "observations": [{"frame_index": 0}, {"frame_index": 2}]},
+                    {"point_id": 3, "observations": [{"frame_index": 1}, {"frame_index": 3}]},
+                ],
             },
         }))
         (scene / "manifest.json").write_text(json.dumps({"raster_manifest_hash": raster_hash}))
@@ -73,6 +78,37 @@ class PoseConditionedRunnerTest(unittest.TestCase):
             # The 504×336 pose camera is rescaled into the decoded 2×2 PPM
             # evidence before any GPU inference receives it.
             self.assertAlmostEqual(SIDECAR.read_inputs(scene, pose_hash)[1][0].intrinsics[0], 300 * 2 / 504)
+
+    def test_covisibility_layout_is_deterministic_bounded_and_covers_every_frame(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scene, pose_hash = self.write_scene(Path(directory))
+            _, frames = SIDECAR.read_inputs(scene, pose_hash)
+            first = SIDECAR.covisibility_batches(scene, pose_hash, frames, batch_size=3, overlap=1)
+            second = SIDECAR.covisibility_batches(scene, pose_hash, frames, batch_size=3, overlap=1)
+            first_indices = [[frame.index for frame in batch] for batch in first]
+            self.assertEqual(first_indices, [[frame.index for frame in batch] for batch in second])
+            self.assertTrue(all(3 <= len(batch) <= 3 for batch in first_indices))
+            self.assertEqual(set().union(*map(set, first_indices)), {0, 1, 2, 3, 4})
+            # The highest-covisibility triplet must be selected together in
+            # at least one bounded model context.
+            self.assertTrue(any({0, 2, 4}.issubset(batch) for batch in map(set, first_indices)))
+
+    def test_validate_only_records_covisibility_layout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scene, pose_hash = self.write_scene(root)
+            output = root / "covisibility-artifact"
+            subprocess.run([
+                sys.executable, str(RUNNER), "--scene", str(scene), "--pose-solution", pose_hash,
+                "--output", str(output), "--batch-size", "3", "--overlap", "1",
+                "--batch-layout", "covisibility", "--validate-only",
+            ], cwd=ROOT, check=True, capture_output=True, text=True)
+            manifest = json.loads((output / "manifest.json").read_text())
+            self.assertEqual(manifest["batch_layout"], "covisibility")
+            self.assertEqual(
+                set().union(*(set(batch["frames"]) for batch in manifest["batches"])),
+                {0, 1, 2, 3, 4},
+            )
 
     def test_validate_only_rejects_raster_tampering_before_model_work(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -17,6 +17,7 @@ import math
 import struct
 import sys
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -170,6 +171,79 @@ def batches(frames: list[Frame], batch_size: int, overlap: int) -> list[list[Fra
         if start + batch_size >= len(frames):
             break
         start += stride
+    return result
+
+
+def covisibility_batches(scene: Path, pose_hash: str, frames: list[Frame], batch_size: int, overlap: int) -> list[list[Frame]]:
+    """Build bounded DA3 contexts from shared COLMAP landmark observations.
+
+    Temporal proximity is a poor proxy after a turn or doorway transition.
+    This deterministic greedy cover keeps every registered view in one core
+    group and adds high-covisibility context views from other cores. It never
+    estimates or modifies a pose: COLMAP's already global W2C remains the
+    camera authority passed to DA3.
+    """
+    if len(frames) < 3:
+        fail("pose-conditioned external-scale inference requires at least three registered frames")
+    if batch_size < 3 or overlap < 0 or overlap >= batch_size:
+        fail("batch size must be >=3 and overlap must be in [0, batch_size)")
+    pose = json.loads((scene / "chunks" / f"pose-{pose_hash}.json").read_text(encoding="utf-8"))
+    trajectory = pose.get("global_trajectory")
+    if not isinstance(trajectory, dict):
+        fail("pose solution has no global calibrated trajectory")
+    order = {frame.index: ordinal for ordinal, frame in enumerate(frames)}
+    weights: dict[tuple[int, int], int] = {}
+    for track in trajectory.get("tracks", []):
+        observed = sorted({int(item.get("frame_index", -1)) for item in track.get("observations", []) if int(item.get("frame_index", -1)) in order})
+        for left, right in combinations(observed, 2):
+            key = (left, right)
+            weights[key] = weights.get(key, 0) + 1
+
+    def weight(left: int, right: int) -> int:
+        return weights.get((left, right) if left < right else (right, left), 0)
+
+    def temporal_distance(left: int, group: list[int]) -> int:
+        return min(abs(order[left] - order[member]) for member in group)
+
+    core_size = batch_size - overlap
+    remaining = {frame.index for frame in frames}
+    result: list[list[Frame]] = []
+    by_index = {frame.index: frame for frame in frames}
+    while remaining:
+        # Prefer a frame with the strongest remaining co-observation support;
+        # index is the deterministic final tie-breaker.
+        anchor = min(
+            remaining,
+            key=lambda index: (-sum(weight(index, other) for other in remaining if other != index), order[index]),
+        )
+        core = [anchor]
+        remaining.remove(anchor)
+        while remaining and len(core) < core_size:
+            candidate = min(
+                remaining,
+                key=lambda index: (
+                    -sum(weight(index, member) for member in core),
+                    temporal_distance(index, core),
+                    order[index],
+                ),
+            )
+            core.append(candidate)
+            remaining.remove(candidate)
+        context_pool = [frame.index for frame in frames if frame.index not in core]
+        context_pool.sort(
+            key=lambda index: (
+                -sum(weight(index, member) for member in core),
+                temporal_distance(index, core),
+                order[index],
+            )
+        )
+        # The final core can contain fewer than `core_size` frames. DA3's
+        # external-scale path still requires a real three-view context.
+        context_count = max(overlap, 3 - len(core))
+        selected = core + context_pool[: min(context_count, len(context_pool))]
+        # Keep the model input order stable by raster/frame order. This also
+        # makes first-owner depth emission deterministic across reruns.
+        result.append([by_index[index] for index in sorted(selected, key=order.__getitem__)])
     return result
 
 
@@ -338,7 +412,11 @@ def write_depth_frames(directory: Path, batch_paths: Iterable[Path], np: Any) ->
 
 def run(args: argparse.Namespace) -> None:
     raster_fingerprint, frames = read_inputs(args.scene, args.pose_solution)
-    layout = batches(frames, args.batch_size, args.overlap)
+    layout = (
+        covisibility_batches(args.scene, args.pose_solution, frames, args.batch_size, args.overlap)
+        if args.batch_layout == "covisibility"
+        else batches(frames, args.batch_size, args.overlap)
+    )
     if args.pixel_stride <= 0:
         fail("pixel stride must be positive")
     if not 0.0 <= args.confidence_percentile <= 100.0:
@@ -349,7 +427,7 @@ def run(args: argparse.Namespace) -> None:
     manifest: dict[str, Any] = {
         "schema": SCHEMA, "raster_fingerprint": raster_fingerprint, "pose_solution_hash": args.pose_solution,
         "model_ref": args.model_ref, "model_revision": args.model_revision, "batch_size": args.batch_size,
-        "overlap": args.overlap, "pixel_stride": args.pixel_stride, "process_resolution": [504, 336],
+        "overlap": args.overlap, "batch_layout": args.batch_layout, "pixel_stride": args.pixel_stride, "process_resolution": [504, 336],
         "align_to_input_ext_scale": True, "frames": [frame.index for frame in frames],
         "batches": [{"frames": [frame.index for frame in batch]} for batch in layout],
     }
@@ -427,6 +505,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--overlap", type=int, default=4)
+    parser.add_argument("--batch-layout", choices=("temporal", "covisibility"), default="temporal")
     parser.add_argument("--confidence-percentile", type=float, default=40.0)
     parser.add_argument("--pixel-stride", type=int, default=2)
     parser.add_argument("--validate-only", action="store_true")
