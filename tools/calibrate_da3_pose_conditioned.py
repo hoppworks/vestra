@@ -34,6 +34,35 @@ def median(values: list[float]) -> float | None:
     return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) * 0.5
 
 
+def overlap_report(rows: list[dict[str, Any]], directory: Path, np: Any) -> dict[str, Any]:
+    """Measure independently predicted overlap frames before canonical choice."""
+    by_frame: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_frame[int(row["frame_index"])].append(row)
+    errors: list[Any] = []
+    frames = 0
+    for candidates in by_frame.values():
+        if len(candidates) < 2:
+            continue
+        # Candidate order is deterministic; only compare the first two because
+        # the bounded DA3 runner currently repeats a frame at most once.
+        left, right = candidates[:2]
+        with np.load(directory / left["calibrated_batch"]) as a, np.load(directory / right["calibrated_batch"]) as b:
+            ld, rd = a["depth"][left["source_slot"]], b["depth"][right["source_slot"]]
+            lc, rc = a["conf"][left["source_slot"]], b["conf"][right["source_slot"]]
+        valid = np.isfinite(ld) & np.isfinite(rd) & (ld > 0) & (rd > 0) & np.isfinite(lc) & np.isfinite(rc) & (lc > 0) & (rc > 0)
+        if valid.any():
+            errors.append(np.abs(ld[valid] - rd[valid]) / np.maximum(ld[valid], rd[valid]))
+            frames += 1
+    values = np.concatenate(errors) if errors else np.empty(0, dtype=np.float32)
+    return {
+        "overlapped_frames": frames,
+        "samples": int(values.size),
+        "median_relative_error": float(np.percentile(values, 50)) if values.size else None,
+        "p95_relative_error": float(np.percentile(values, 95)) if values.size else None,
+    }
+
+
 def bilinear(depth: Any, x: float, y: float) -> float | None:
     height, width = depth.shape
     if not (math.isfinite(x) and math.isfinite(y)) or x < 0 or y < 0 or x > width - 1 or y > height - 1:
@@ -218,6 +247,9 @@ def run(args: argparse.Namespace) -> None:
     ]
     if len(published) / max(len(source["frames"]), 1) < 0.85:
         raise ValueError("fewer than 85% of registered frames passed held-out depth calibration")
+    overlap = overlap_report(rows, args.output, np)
+    if overlap["p95_relative_error"] is None or overlap["p95_relative_error"] > args.maximum_overlap_p95_relative_error:
+        raise ValueError("calibrated overlap continuity failed its p95 gate")
     manifest["published_frames"] = published
     manifest["decision"] = "accepted"
     manifest["summary"] = {
@@ -225,6 +257,7 @@ def run(args: argparse.Namespace) -> None:
         "total_predictions": len(rows),
         "accepted_frames": len(published),
         "total_registered_frames": len(source["frames"]),
+        "cross_batch_depth_continuity": overlap,
     }
     selected = [canonical[frame][1] for frame in published]
     selected_arrays = []
@@ -259,10 +292,11 @@ def main() -> None:
     parser.add_argument("--minimum-training-samples", type=int, default=12)
     parser.add_argument("--minimum-held-out-samples", type=int, default=6)
     parser.add_argument("--maximum-held-out-median-log-error", type=float, default=0.20)
+    parser.add_argument("--maximum-overlap-p95-relative-error", type=float, default=0.22)
     parser.add_argument("--confidence-percentile", type=float, default=40.0)
     parser.add_argument("--pixel-stride", type=int, default=2)
     args = parser.parse_args()
-    if args.minimum_training_samples <= 0 or args.minimum_held_out_samples <= 0 or args.maximum_held_out_median_log_error < 0:
+    if args.minimum_training_samples <= 0 or args.minimum_held_out_samples <= 0 or args.maximum_held_out_median_log_error < 0 or args.maximum_overlap_p95_relative_error < 0:
         parser.error("calibration thresholds must be positive")
     run(args)
 
