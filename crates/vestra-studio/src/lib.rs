@@ -169,7 +169,9 @@ enum IntakeOutcome {
 /// would violate the scene provenance contract checked by `reconstruct`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct IntakeSettings {
+    #[serde(default = "default_candidate_fps")]
     candidate_fps: f64,
+    #[serde(default = "default_hard_max_frames")]
     hard_max_frames: usize,
     width: usize,
     height: usize,
@@ -181,6 +183,14 @@ struct IntakeSettings {
     tsdf: bool,
     #[serde(default)]
     cpp_pr2_relative: bool,
+}
+
+const fn default_candidate_fps() -> f64 {
+    8.0
+}
+
+const fn default_hard_max_frames() -> usize {
+    1800
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
