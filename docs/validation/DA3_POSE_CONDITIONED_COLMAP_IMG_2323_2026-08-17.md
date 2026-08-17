@@ -152,3 +152,19 @@ observations are more predictive than an arbitrary view-angle threshold for
 this capture; enforcing a uniform angle splits useful context without fixing
 the hard depth outliers. The runner keeps the option for controlled future
 experiments, but it is not used by any published product.
+
+## Withdrawn calibration prototype
+
+An initial post-inference sparse-track scale prototype improved the aggregate
+diagnostic values, but it was **withdrawn before acceptance**. It did not yet
+select one overlap prediction using train-only evidence, did not use the exact
+half-pixel raster mapping, and originally allowed failed first-owner frames to
+remain in the PLY. Its temporary browser import was immediately restored to
+the immutable raw sidecar; it must not be used as a quality result.
+
+The replacement is a separate calibrated-artifact contract: stable track-ID
+split, exact resize mapping, train-only overlap candidate selection, held-out
+per-frame/context/product gates, accepted-frame-only assets, and a dedicated
+Rust publisher that cannot overwrite the raw DA3 product. Until that V2
+contract passes, the published DA3 products remain the uncalibrated raw and
+TSDF diagnostic layers.
