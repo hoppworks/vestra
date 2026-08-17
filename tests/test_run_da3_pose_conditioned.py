@@ -211,6 +211,32 @@ class PoseConditionedRunnerTest(unittest.TestCase):
         self.assertAlmostEqual(report["scale"], 2.0)
         self.assertAlmostEqual(report["held_out_median_log_error"], 0.0)
 
+    def test_canonical_prediction_never_uses_held_out_error(self):
+        rows = [
+            {
+                "frame_index": 7,
+                "train_median_log_error": 0.10,
+                "train_samples": 20,
+                "held_out_median_log_error": 0.99,
+                "batch_index": 1,
+                "source_slot": 0,
+            },
+            {
+                "frame_index": 7,
+                "train_median_log_error": 0.11,
+                "train_samples": 20,
+                "held_out_median_log_error": 0.00,
+                "batch_index": 0,
+                "source_slot": 0,
+            },
+        ]
+        selected = CALIBRATION.canonical_predictions(rows)
+        self.assertIs(selected[7], rows[0])
+        # Deliberately make the non-selected candidate look perfect on the
+        # hold-out split.  The source slot remains unchanged.
+        rows[1]["held_out_median_log_error"] = -100.0
+        self.assertIs(CALIBRATION.canonical_predictions(rows)[7], rows[0])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -465,8 +465,70 @@ struct Da3PoseConditionedArtifact {
     published_frames: Option<Vec<usize>>,
     #[serde(default)]
     decision: Option<String>,
+    #[serde(default)]
+    source: Option<Da3CalibrationSource>,
+    #[serde(default)]
+    contract: Option<Da3CalibrationContract>,
     ply: Da3PoseConditionedPly,
     depth_frames: Da3PoseConditionedDepthFrames,
+}
+
+#[derive(Debug, Deserialize)]
+struct Da3CalibrationSource {
+    raw_manifest_sha256: String,
+    raster_fingerprint: String,
+    pose_solution_hash: String,
+    batch_files: Vec<Da3CalibrationBatch>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Da3CalibrationBatch {
+    file: String,
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Da3CalibrationContract {
+    minimum_accepted_frame_fraction: f64,
+    pixel_mapping: String,
+    track_split: String,
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn validate_calibrated_da3_contract(
+    sidecar: &Da3PoseConditionedArtifact,
+) -> Result<(), &'static str> {
+    let source = sidecar
+        .source
+        .as_ref()
+        .ok_or("calibrated DA3 artifact has no immutable raw-source binding")?;
+    let contract = sidecar
+        .contract
+        .as_ref()
+        .ok_or("calibrated DA3 artifact has no calibration contract")?;
+    if !is_sha256(&source.raw_manifest_sha256)
+        || source.raster_fingerprint != sidecar.raster_fingerprint
+        || source.pose_solution_hash != sidecar.pose_solution_hash
+        || source.batch_files.is_empty()
+        || source.batch_files.iter().any(|batch| {
+            Path::new(&batch.file)
+                .file_name()
+                .and_then(|name| name.to_str())
+                != Some(batch.file.as_str())
+                || !is_sha256(&batch.sha256)
+        })
+        || contract.pixel_mapping != "pixel-center-resize/v1"
+        || contract.track_split != "sha256-track-id-fold/v1"
+        || !contract.minimum_accepted_frame_fraction.is_finite()
+        || contract.minimum_accepted_frame_fraction < 0.85
+        || contract.minimum_accepted_frame_fraction > 1.0
+    {
+        return Err("calibrated DA3 artifact violates the V2 provenance contract");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1400,6 +1462,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if calibrated && sidecar.decision.as_deref() != Some("accepted") {
                 return Err("calibrated DA3 artifact was not accepted by its held-out evidence contract".into());
             }
+            if calibrated {
+                validate_calibrated_da3_contract(&sidecar)?;
+            }
             if sidecar.ply.schema != "vestra.da3-pose-conditioned-ply/v1"
                 || Path::new(&sidecar.ply.file)
                     .file_name()
@@ -2199,6 +2264,49 @@ mod tests {
     fn lock_parser_extracts_pinned_component_revisions() {
         assert_eq!(locked_revision("engine").unwrap().len(), 40);
         assert_eq!(locked_revision("kernels").unwrap().len(), 40);
+    }
+
+    #[test]
+    fn calibrated_da3_contract_requires_immutable_source_and_safe_profile() {
+        let sidecar = Da3PoseConditionedArtifact {
+            schema: "vestra.da3-pose-conditioned-calibration/v2".into(),
+            raster_fingerprint: "raster".into(),
+            pose_solution_hash: "pose".into(),
+            align_to_input_ext_scale: true,
+            frames: vec![1],
+            published_frames: Some(vec![1]),
+            decision: Some("accepted".into()),
+            source: Some(Da3CalibrationSource {
+                raw_manifest_sha256: "a".repeat(64),
+                raster_fingerprint: "raster".into(),
+                pose_solution_hash: "pose".into(),
+                batch_files: vec![Da3CalibrationBatch {
+                    file: "batch-0000.npz".into(),
+                    sha256: "b".repeat(64),
+                }],
+            }),
+            contract: Some(Da3CalibrationContract {
+                minimum_accepted_frame_fraction: 0.85,
+                pixel_mapping: "pixel-center-resize/v1".into(),
+                track_split: "sha256-track-id-fold/v1".into(),
+            }),
+            ply: Da3PoseConditionedPly {
+                schema: "vestra.da3-pose-conditioned-ply/v1".into(),
+                file: "world.ply".into(),
+                sha256: "c".repeat(64),
+            },
+            depth_frames: Da3PoseConditionedDepthFrames {
+                schema: "vestra.da3-pose-conditioned-depth-frames/v1".into(),
+                directory: "depth-frames".into(),
+                width: 504,
+                height: 336,
+                frames: Vec::new(),
+            },
+        };
+        assert!(validate_calibrated_da3_contract(&sidecar).is_ok());
+        let mut unsafe_sidecar = sidecar;
+        unsafe_sidecar.contract.as_mut().unwrap().track_split = "random".into();
+        assert!(validate_calibrated_da3_contract(&unsafe_sidecar).is_err());
     }
 
     #[test]

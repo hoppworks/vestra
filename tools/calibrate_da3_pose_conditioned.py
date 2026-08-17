@@ -157,6 +157,32 @@ def calibrate_depth(
     }
 
 
+def canonical_predictions(
+    rows: list[dict[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    """Choose one prediction per frame without looking at hold-out quality.
+
+    The calibrated output must not select a more flattering overlapping DA3
+    prediction based on the same held-out landmarks used to accept it.  Keep
+    this decision isolated and directly testable.
+    """
+    canonical: dict[int, tuple[tuple[float, int, int, int], dict[str, Any]]] = {}
+    for row in rows:
+        frame_index = int(row["frame_index"])
+        key = (
+            float(row["train_median_log_error"])
+            if row["train_median_log_error"] is not None
+            else math.inf,
+            -int(row["train_samples"]),
+            int(row["batch_index"]),
+            int(row["source_slot"]),
+        )
+        current = canonical.get(frame_index)
+        if current is None or key < current[0]:
+            canonical[frame_index] = (key, row)
+    return {frame_index: candidate[1] for frame_index, candidate in canonical.items()}
+
+
 def run(args: argparse.Namespace) -> None:
     import numpy as np
 
@@ -226,22 +252,11 @@ def run(args: argparse.Namespace) -> None:
         batch["sha256"] = sha256_file(target)
         paths.append(target)
     rows = manifest["calibration_frames"]
-    canonical = {}
-    for row in rows:
-        frame_index = row["frame_index"]
-        current = canonical.get(frame_index)
-        # Held-out data deliberately does not participate in this ordering.
-        key = (
-            row["train_median_log_error"] if row["train_median_log_error"] is not None else math.inf,
-            -row["train_samples"], row["batch_index"], row["source_slot"],
-        )
-        if current is None or key < current[0]:
-            canonical[frame_index] = (key, row)
+    canonical = canonical_predictions(rows)
     published = [
         frame_index
         for frame_index in source["frames"]
-        if (candidate := canonical.get(frame_index)) is not None
-        and (row := candidate[1]) is not None
+        if (row := canonical.get(frame_index)) is not None
         and row["accepted"]
         and row["held_out_median_log_error"] <= args.maximum_held_out_median_log_error
     ]
@@ -259,7 +274,7 @@ def run(args: argparse.Namespace) -> None:
         "total_registered_frames": len(source["frames"]),
         "cross_batch_depth_continuity": overlap,
     }
-    selected = [canonical[frame][1] for frame in published]
+    selected = [canonical[frame] for frame in published]
     selected_arrays = []
     for row in selected:
         with np.load(args.output / row["calibrated_batch"]) as arrays:
