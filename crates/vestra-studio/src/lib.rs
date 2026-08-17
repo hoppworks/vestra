@@ -1339,6 +1339,9 @@ mod tests {
         assert!(INDEX_HTML.contains("function selectVisualChunkUrls(urls,binary)"));
         assert!(INDEX_HTML.contains("await loadLayer(visualUrls,Boolean(binary),hasFused)"));
         assert!(INDEX_HTML.contains("selectVisualChunkUrls(fusedUrls,fusedBinary)"));
+        assert!(INDEX_HTML.contains("fused_preview_point_binary_chunk_hashes"));
+        assert!(INDEX_HTML.contains("attribute float a"));
+        assert!(INDEX_HTML.contains("bind(batch.a)"));
     }
 
     #[test]

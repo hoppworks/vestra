@@ -5,6 +5,7 @@
 //! make a partial scene appear complete.
 
 use std::{
+    collections::BTreeMap,
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -24,6 +25,10 @@ const FUSED_POINT_CHUNK_SIZE: usize = 50_000;
 const FUSED_POINT_BINARY_MAGIC: [u8; 4] = *b"VSPT";
 const FUSED_POINT_BINARY_VERSION: u16 = 1;
 const FUSED_POINT_BINARY_STRIDE: u16 = 40;
+/// A browser-resident preview must remain bounded, but its selection must be
+/// spatially representative rather than a prefix of frame-ordered emission.
+const SPATIAL_PREVIEW_POINT_BUDGET: usize = 4_000_000;
+const SPATIAL_PREVIEW_GRID: usize = 64;
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +58,10 @@ pub struct SceneManifest {
     /// point chunks remain available as a transparent compatibility layer.
     #[serde(default)]
     pub fused_point_binary_chunk_hashes: Vec<String>,
+    /// Spatially stratified surfels for the interactive preview. The complete
+    /// binary layer above remains canonical evidence/export data.
+    #[serde(default)]
+    pub fused_preview_point_binary_chunk_hashes: Vec<String>,
     /// Small, manifest-resident diagnostics for the browser. Keeping this
     /// summary out of the progressive point payload means inspection does not
     /// require downloading the canonical fused chunk.
@@ -140,6 +149,7 @@ impl SceneBundle {
             fused_chunk_hash: None,
             fused_point_chunk_hashes: Vec::new(),
             fused_point_binary_chunk_hashes: Vec::new(),
+            fused_preview_point_binary_chunk_hashes: Vec::new(),
             fused_summary: None,
             capture_quality: None,
         })?;
@@ -224,6 +234,11 @@ impl SceneBundle {
             .chunks(FUSED_POINT_CHUNK_SIZE)
             .map(|points| self.write_fused_point_binary_chunk(points))
             .collect::<Result<Vec<_>, _>>()?;
+        let preview = spatial_preview_points(&chunk.points, SPATIAL_PREVIEW_POINT_BUDGET);
+        let preview_binary_point_chunk_hashes = preview
+            .chunks(FUSED_POINT_CHUNK_SIZE)
+            .map(|points| self.write_fused_point_binary_chunk(points))
+            .collect::<Result<Vec<_>, _>>()?;
         let payload = serde_json::to_vec(chunk)?;
         let hash = sha256_hex(&payload);
         let chunk_path = self
@@ -242,6 +257,9 @@ impl SceneBundle {
         }
         if manifest.fused_point_binary_chunk_hashes != binary_point_chunk_hashes {
             manifest.fused_point_binary_chunk_hashes = binary_point_chunk_hashes;
+        }
+        if manifest.fused_preview_point_binary_chunk_hashes != preview_binary_point_chunk_hashes {
+            manifest.fused_preview_point_binary_chunk_hashes = preview_binary_point_chunk_hashes;
         }
         manifest.fused_summary = Some(FusedSceneSummary::from(chunk));
         self.write_manifest(&manifest)?;
@@ -368,6 +386,98 @@ impl From<&FusedSceneChunk> for FusedSceneSummary {
             pose_graph_final_cost: chunk.pose_graph.as_ref().map(|report| report.final_cost),
         }
     }
+}
+
+/// Produces a bounded, spatially representative browser layer without touching
+/// the canonical fused evidence. Every occupied coarse cell contributes its
+/// deterministic best representative; the remaining budget is filled by a
+/// position-hashed sample, so a frame-ordered prefix can never dominate the
+/// preview.
+fn spatial_preview_points(points: &[FusedPoint], budget: usize) -> Vec<FusedPoint> {
+    if points.len() <= budget {
+        return points.to_vec();
+    }
+    let mut low = [f32::INFINITY; 3];
+    let mut high = [f32::NEG_INFINITY; 3];
+    for point in points {
+        if !point.position.iter().all(|value| value.is_finite()) {
+            continue;
+        }
+        for axis in 0..3 {
+            low[axis] = low[axis].min(point.position[axis]);
+            high[axis] = high[axis].max(point.position[axis]);
+        }
+    }
+    if !low.iter().chain(high.iter()).all(|value| value.is_finite()) {
+        return points.iter().take(budget).cloned().collect();
+    }
+
+    let mut anchors = BTreeMap::<u64, (u64, usize)>::new();
+    for (index, point) in points.iter().enumerate() {
+        let Some(cell) = spatial_cell(point.position, low, high) else {
+            continue;
+        };
+        let hash = preview_hash(point, index);
+        match anchors.entry(cell) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert((hash, index));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) if hash < entry.get().0 => {
+                entry.insert((hash, index));
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {}
+        }
+    }
+    let anchor_indices = anchors
+        .into_values()
+        .map(|(_, index)| index)
+        .collect::<std::collections::BTreeSet<_>>();
+    let random_budget = budget.saturating_sub(anchor_indices.len());
+    let threshold = ((random_budget as f64 / points.len() as f64) * u64::MAX as f64) as u64;
+    let mut anchored = Vec::with_capacity(anchor_indices.len());
+    let mut sampled = Vec::new();
+    for (index, point) in points.iter().enumerate() {
+        if anchor_indices.contains(&index) {
+            anchored.push(point.clone());
+        } else if point.position.iter().all(|value| value.is_finite()) {
+            let hash = preview_hash(point, index);
+            if hash <= threshold {
+                sampled.push((hash, point.clone()));
+            }
+        }
+    }
+    let remainder = budget.saturating_sub(anchored.len());
+    if sampled.len() > remainder {
+        sampled.select_nth_unstable_by_key(remainder, |(hash, _)| *hash);
+        sampled.truncate(remainder);
+    }
+    anchored.extend(sampled.into_iter().map(|(_, point)| point));
+    anchored
+}
+
+fn spatial_cell(position: [f32; 3], low: [f32; 3], high: [f32; 3]) -> Option<u64> {
+    if !position.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    let mut cell = 0_u64;
+    for axis in 0..3 {
+        let range = (high[axis] - low[axis]).max(f32::EPSILON);
+        let coordinate = (((position[axis] - low[axis]) / range) * SPATIAL_PREVIEW_GRID as f32)
+            .floor()
+            .clamp(0.0, (SPATIAL_PREVIEW_GRID - 1) as f32) as u64;
+        cell = cell * SPATIAL_PREVIEW_GRID as u64 + coordinate;
+    }
+    Some(cell)
+}
+
+fn preview_hash(point: &FusedPoint, index: usize) -> u64 {
+    let mut value = index as u64 ^ 0x9e37_79b9_7f4a_7c15;
+    for coordinate in point.position {
+        value ^= u64::from(coordinate.to_bits());
+        value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value ^= value >> 27;
+    }
+    value ^ (value >> 31)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -513,6 +623,7 @@ mod tests {
         );
         assert_eq!(manifest.fused_point_chunk_hashes.len(), 1);
         assert_eq!(manifest.fused_point_binary_chunk_hashes.len(), 1);
+        assert_eq!(manifest.fused_preview_point_binary_chunk_hashes.len(), 1);
         let binary = fs::read(root.join(CHUNKS_DIRECTORY).join(format!(
             "points-{}.bin",
             manifest.fused_point_binary_chunk_hashes[0]
@@ -562,6 +673,7 @@ mod tests {
         let manifest = bundle.manifest().unwrap();
         assert_eq!(manifest.fused_point_chunk_hashes.len(), 2);
         assert_eq!(manifest.fused_point_binary_chunk_hashes.len(), 2);
+        assert_eq!(manifest.fused_preview_point_binary_chunk_hashes.len(), 2);
         assert_eq!(
             bundle
                 .read_fused_point_chunk(&manifest.fused_point_chunk_hashes[0])
@@ -579,6 +691,31 @@ mod tests {
             1
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn spatial_preview_keeps_representatives_from_distant_occupied_cells() {
+        let point = |position| crate::FusedPoint {
+            position,
+            normal: [0.0, 0.0, 1.0],
+            color_srgb: [4, 5, 6],
+            confidence: 1.0,
+            radius: 0.1,
+            first_observing_frame: 0,
+            contributors: 1,
+        };
+        let preview = spatial_preview_points(
+            &[
+                point([0.0, 0.0, 0.0]),
+                point([0.01, 0.0, 0.0]),
+                point([100.0, 100.0, 100.0]),
+                point([100.01, 100.0, 100.0]),
+            ],
+            2,
+        );
+        assert_eq!(preview.len(), 2);
+        assert!(preview.iter().any(|point| point.position[0] < 1.0));
+        assert!(preview.iter().any(|point| point.position[0] > 99.0));
     }
 
     #[test]
