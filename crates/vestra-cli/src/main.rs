@@ -1548,12 +1548,15 @@ fn raster_manifest_for_decoded(
         .enumerate()
         .map(|(frame_index, _)| {
             let file_name = format!("frame-{:06}.ppm", frame_index + 1);
+            let candidate_index = decoded.candidate_indices.get(frame_index).ok_or_else(|| {
+                format!("decoded frame {frame_index} is missing candidate time identity")
+            })?;
             Ok(RasterFrame {
                 frame_index,
                 sha256: sha256_file(&decoded.decoded_directory.join(&file_name))?,
                 file_name,
-                timestamp_millis: ((frame_index as f64 / settings.candidate_fps) * 1000.0).round()
-                    as u64,
+                timestamp_millis: ((*candidate_index as f64 / settings.candidate_fps) * 1000.0)
+                    .round() as u64,
             })
         })
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;

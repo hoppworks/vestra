@@ -44,6 +44,32 @@ pub struct VideoExtractionSettings {
     pub max_frames: usize,
 }
 
+/// Selection policy applied after the fixed-rate candidate decode.
+///
+/// This is deliberately an image-evidence selector, not a pose estimator: it
+/// rejects near-duplicate or visibly blurred candidate rasters while bounding
+/// the time between retained views. Camera/SLAM providers can later make the
+/// stronger, geometry-aware decision from the same canonical rasters.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GeometryKeyframeSettings {
+    /// Minimum thumbnail luma change from the last retained frame.
+    pub minimum_novelty: f32,
+    /// Do not leave a longer temporal hole even when a walk-through is slow.
+    pub maximum_gap_seconds: f64,
+    /// Minimum local-luma-gradient score for a non-forced retained frame.
+    pub minimum_sharpness: f32,
+}
+
+impl Default for GeometryKeyframeSettings {
+    fn default() -> Self {
+        Self {
+            minimum_novelty: 0.015,
+            maximum_gap_seconds: 0.6,
+            minimum_sharpness: 0.012,
+        }
+    }
+}
+
 impl Default for VideoExtractionSettings {
     fn default() -> Self {
         Self {
@@ -59,8 +85,18 @@ impl Default for VideoExtractionSettings {
 pub struct VideoFrames {
     pub duration_seconds: f64,
     pub frames: Vec<OwnedFrame>,
+    /// Indices in the fixed-rate candidate sequence. These preserve exact
+    /// source time identity after the canonical rasters are renumbered.
+    pub candidate_indices: Vec<usize>,
     pub decoded_directory: PathBuf,
     pub capture_quality: CaptureQuality,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct DecodeSelectionManifest {
+    schema: String,
+    candidate_fps: f64,
+    candidate_indices: Vec<usize>,
 }
 
 /// Exact source and crop geometry of the canonical decoded raster.
@@ -129,7 +165,9 @@ pub fn extract_video_frames(
         return Err(VideoInputError::ExistingOutput(decoded_directory));
     }
     fs::create_dir_all(&decoded_directory)?;
-    let frame_pattern = decoded_directory.join("frame-%06d.ppm");
+    let candidates_directory = decoded_directory.join("candidates");
+    fs::create_dir_all(&candidates_directory)?;
+    let frame_pattern = candidates_directory.join("candidate-%06d.ppm");
     let filter = center_crop_filter(duration_seconds, settings, geometry)?;
     let decode = Command::new("ffmpeg")
         .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
@@ -146,6 +184,18 @@ pub fn extract_video_frames(
         ));
     }
 
+    let candidates = load_decoded_rgb24_cache(&candidates_directory, settings)?;
+    let candidate_indices = select_geometry_keyframes(
+        &candidates,
+        settings.candidate_fps,
+        GeometryKeyframeSettings::default(),
+    );
+    write_selected_cache(&decoded_directory, &candidates, &candidate_indices)?;
+    write_selection_manifest(
+        &decoded_directory,
+        settings.candidate_fps,
+        &candidate_indices,
+    )?;
     load_decoded_frame_cache_with_duration(&decoded_directory, settings, duration_seconds)
 }
 
@@ -317,13 +367,192 @@ fn load_decoded_frame_cache_with_duration(
     duration_seconds: f64,
 ) -> Result<VideoFrames, VideoInputError> {
     let frames = load_decoded_rgb24_cache(decoded_directory, settings)?;
+    let candidate_indices =
+        load_selection_manifest(decoded_directory, settings.candidate_fps, frames.len())?;
     let capture_quality = assess_capture_quality(&frames);
     Ok(VideoFrames {
         duration_seconds,
         frames,
+        candidate_indices,
         decoded_directory: decoded_directory.to_path_buf(),
         capture_quality,
     })
+}
+
+fn selection_manifest_path(decoded_directory: &Path) -> PathBuf {
+    decoded_directory.join("selection.json")
+}
+
+fn write_selection_manifest(
+    decoded_directory: &Path,
+    candidate_fps: f64,
+    candidate_indices: &[usize],
+) -> Result<(), VideoInputError> {
+    let bytes = serde_json::to_vec_pretty(&DecodeSelectionManifest {
+        schema: "vestra.decode-selection/v1".to_owned(),
+        candidate_fps,
+        candidate_indices: candidate_indices.to_vec(),
+    })
+    .map_err(|error| VideoInputError::InvalidCache {
+        path: decoded_directory.to_path_buf(),
+        reason: format!("cannot serialize selection manifest: {error}"),
+    })?;
+    fs::write(selection_manifest_path(decoded_directory), bytes)?;
+    Ok(())
+}
+
+fn load_selection_manifest(
+    decoded_directory: &Path,
+    candidate_fps: f64,
+    frame_count: usize,
+) -> Result<Vec<usize>, VideoInputError> {
+    let path = selection_manifest_path(decoded_directory);
+    if !path.is_file() {
+        // Legacy decode caches were uniformly sampled and therefore have the
+        // identity mapping. Keeping them readable avoids silent cache churn.
+        return Ok((0..frame_count).collect());
+    }
+    let manifest =
+        serde_json::from_slice::<DecodeSelectionManifest>(&fs::read(&path)?).map_err(|error| {
+            VideoInputError::InvalidCache {
+                path: decoded_directory.to_path_buf(),
+                reason: format!("selection manifest is invalid: {error}"),
+            }
+        })?;
+    if manifest.schema != "vestra.decode-selection/v1"
+        || manifest.candidate_fps.to_bits() != candidate_fps.to_bits()
+        || manifest.candidate_indices.len() != frame_count
+        || manifest
+            .candidate_indices
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+    {
+        return Err(VideoInputError::InvalidCache {
+            path: decoded_directory.to_path_buf(),
+            reason: "selection manifest does not match the candidate-rate/frame contract"
+                .to_owned(),
+        });
+    }
+    Ok(manifest.candidate_indices)
+}
+
+fn write_selected_cache(
+    decoded_directory: &Path,
+    candidates: &[OwnedFrame],
+    candidate_indices: &[usize],
+) -> Result<(), VideoInputError> {
+    for (selected_index, &candidate_index) in candidate_indices.iter().enumerate() {
+        let frame =
+            candidates
+                .get(candidate_index)
+                .ok_or_else(|| VideoInputError::InvalidCache {
+                    path: decoded_directory.to_path_buf(),
+                    reason: "selected candidate index is outside decoded candidate cache"
+                        .to_owned(),
+                })?;
+        let mut bytes = format!("P6\n{} {}\n255\n", frame.width, frame.height).into_bytes();
+        bytes.extend_from_slice(&frame.rgb_hwc_u8);
+        fs::write(
+            decoded_directory.join(format!("frame-{:06}.ppm", selected_index + 1)),
+            bytes,
+        )?;
+    }
+    Ok(())
+}
+
+/// Returns candidate indices for geometry inference. The first and final
+/// candidates are always retained. Every other accepted frame must be sharp
+/// enough and visually new relative to the *last retained* view, unless the
+/// temporal-gap guard forces a sample.
+pub fn select_geometry_keyframes(
+    candidates: &[OwnedFrame],
+    candidate_fps: f64,
+    settings: GeometryKeyframeSettings,
+) -> Vec<usize> {
+    if candidates.len() <= 2
+        || !candidate_fps.is_finite()
+        || candidate_fps <= 0.0
+        || !settings.maximum_gap_seconds.is_finite()
+        || settings.maximum_gap_seconds <= 0.0
+    {
+        return (0..candidates.len()).collect();
+    }
+    let signatures = candidates.iter().map(frame_signature).collect::<Vec<_>>();
+    let maximum_gap = (settings.maximum_gap_seconds * candidate_fps)
+        .ceil()
+        .max(1.0) as usize;
+    let mut selected = vec![0];
+    for candidate_index in 1..candidates.len() - 1 {
+        let previous = *selected.last().expect("first candidate is retained");
+        let signature = &signatures[candidate_index];
+        let novelty = mean_absolute_difference(&signatures[previous].luma, &signature.luma);
+        let forced = candidate_index - previous >= maximum_gap;
+        if forced
+            || (signature.sharpness >= settings.minimum_sharpness
+                && novelty >= settings.minimum_novelty)
+        {
+            selected.push(candidate_index);
+        }
+    }
+    if selected.last().copied() != Some(candidates.len() - 1) {
+        selected.push(candidates.len() - 1);
+    }
+    selected
+}
+
+#[derive(Debug)]
+struct FrameSignature {
+    luma: Vec<f32>,
+    sharpness: f32,
+}
+
+fn frame_signature(frame: &OwnedFrame) -> FrameSignature {
+    const SAMPLE_WIDTH: usize = 32;
+    const SAMPLE_HEIGHT: usize = 24;
+    let mut luma = Vec::with_capacity(SAMPLE_WIDTH * SAMPLE_HEIGHT);
+    for sample_y in 0..SAMPLE_HEIGHT {
+        let y = sample_y * frame.height / SAMPLE_HEIGHT;
+        for sample_x in 0..SAMPLE_WIDTH {
+            let x = sample_x * frame.width / SAMPLE_WIDTH;
+            let pixel = &frame.rgb_hwc_u8[(y * frame.width + x) * 3..][..3];
+            luma.push(
+                (0.2126 * f32::from(pixel[0])
+                    + 0.7152 * f32::from(pixel[1])
+                    + 0.0722 * f32::from(pixel[2]))
+                    / 255.0,
+            );
+        }
+    }
+    let mut gradients = 0.0;
+    let mut count = 0;
+    for y in 0..SAMPLE_HEIGHT {
+        for x in 0..SAMPLE_WIDTH {
+            let value = luma[y * SAMPLE_WIDTH + x];
+            if x + 1 < SAMPLE_WIDTH {
+                gradients += (value - luma[y * SAMPLE_WIDTH + x + 1]).abs();
+                count += 1;
+            }
+            if y + 1 < SAMPLE_HEIGHT {
+                gradients += (value - luma[(y + 1) * SAMPLE_WIDTH + x]).abs();
+                count += 1;
+            }
+        }
+    }
+    FrameSignature {
+        luma,
+        sharpness: gradients / count as f32,
+    }
+}
+
+fn mean_absolute_difference(left: &[f32], right: &[f32]) -> f32 {
+    if left.len() != right.len() || left.is_empty() {
+        return 0.0;
+    }
+    left.iter()
+        .zip(right)
+        .map(|(a, b)| (a - b).abs())
+        .sum::<f32>()
+        / left.len() as f32
 }
 
 /// Loads and validates canonical RGB24 PPM frames without probing the original
@@ -604,5 +833,81 @@ mod tests {
         )
         .unwrap();
         assert!(filter.contains("crop=1500:1000:0:0"));
+    }
+
+    fn checkerboard(offset: u8) -> OwnedFrame {
+        let width = 32;
+        let height = 24;
+        let mut rgb_hwc_u8 = Vec::with_capacity(width * height * 3);
+        for y in 0..height {
+            for x in 0..width {
+                let value = if (x + y) % 2 == 0 {
+                    offset
+                } else {
+                    255 - offset
+                };
+                rgb_hwc_u8.extend_from_slice(&[value, value, value]);
+            }
+        }
+        OwnedFrame {
+            rgb_hwc_u8,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn geometry_keyframe_selection_discards_static_duplicates_but_keeps_gap_guard() {
+        let repeated = checkerboard(0);
+        let candidates = vec![
+            repeated.clone(),
+            repeated.clone(),
+            repeated.clone(),
+            repeated,
+        ];
+        assert_eq!(
+            select_geometry_keyframes(
+                &candidates,
+                8.0,
+                GeometryKeyframeSettings {
+                    maximum_gap_seconds: 0.25,
+                    ..GeometryKeyframeSettings::default()
+                },
+            ),
+            vec![0, 2, 3]
+        );
+    }
+
+    #[test]
+    fn geometry_keyframe_selection_keeps_sharp_novel_views_without_waiting_for_gap() {
+        let candidates = vec![checkerboard(0), checkerboard(40), checkerboard(80)];
+        assert_eq!(
+            select_geometry_keyframes(
+                &candidates,
+                8.0,
+                GeometryKeyframeSettings {
+                    maximum_gap_seconds: 2.0,
+                    ..GeometryKeyframeSettings::default()
+                },
+            ),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn selection_manifest_preserves_nonuniform_candidate_timestamps() {
+        let root = std::env::temp_dir().join(format!(
+            "vestra-selection-manifest-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        write_selection_manifest(&root, 8.0, &[0, 3, 11]).unwrap();
+        assert_eq!(
+            load_selection_manifest(&root, 8.0, 3).unwrap(),
+            vec![0, 3, 11]
+        );
+        assert!(load_selection_manifest(&root, 4.0, 3).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }
