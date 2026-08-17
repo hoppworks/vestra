@@ -29,6 +29,16 @@ pub struct FrameGlobalFusionSettings {
     /// frames that independently pass the held-out gate participate; gaps in
     /// global registration or scale evidence are never bridged.
     pub temporal_scale_smoothing_radius: usize,
+    /// Maximum log-depth disagreement when confirming an observation through
+    /// an adjacent globally calibrated source frame.  This gate applies only
+    /// to the TSDF derivative; the raw surfel product remains immutable dense
+    /// evidence for inspection.
+    pub maximum_neighbor_depth_log_error: Option<f32>,
+    /// Number of independent adjacent depth maps required by the TSDF gate.
+    pub minimum_neighbor_depth_matches: usize,
+    /// Maximum source-frame-index separation considered adjacent for the
+    /// depth-consistency gate.  Gaps in registration are never interpolated.
+    pub neighbor_frame_radius: usize,
     /// Bounded, deterministic evidence set for normal-space TSDF. The raw
     /// surfel mode remains complete; this prevents a redundant dense raster
     /// from turning a browser-oriented surface product into an hours-long PCA
@@ -46,6 +56,9 @@ impl Default for FrameGlobalFusionSettings {
             maximum_track_reprojection_error_px: 2.5,
             minimum_fused_frame_fraction: 0.85,
             temporal_scale_smoothing_radius: 2,
+            maximum_neighbor_depth_log_error: Some(0.20),
+            minimum_neighbor_depth_matches: 1,
+            neighbor_frame_radius: 2,
             maximum_tsdf_observations: Some(6_000_000),
             tsdf: Some(TsdfSettings::default()),
         }
@@ -168,6 +181,7 @@ pub fn fuse_scene_bundle_frame_global(
     let mut fused_frames = 0;
     let mut accepted_frame_indices = Vec::new();
     let mut omitted_frames = 0;
+    let mut global_frames = Vec::new();
     for ((frame_index, view), (report, accepted)) in
         views.into_iter().zip(reports.into_iter().zip(accepted))
     {
@@ -194,27 +208,60 @@ pub fn fuse_scene_bundle_frame_global(
             omitted_frames += 1;
             continue;
         };
+        global_frames.push(GlobalFrame {
+            frame_index,
+            view,
+            scale,
+            pose,
+            camera: camera.clone(),
+        });
+    }
+    let depth_maps = settings
+        .maximum_neighbor_depth_log_error
+        .map(|_| global_depth_maps(&global_frames, &raster));
+    for frame in &global_frames {
         fused_frames += 1;
-        accepted_frame_indices.push(frame_index);
-        cameras.push(camera_centre(pose));
-        for point in &view.points {
-            let Some((position, normal, radius)) =
-                rebase_point(point, view.camera, pose, camera, &raster, scale)
-            else {
+        accepted_frame_indices.push(frame.frame_index);
+        cameras.push(camera_centre(frame.pose));
+        for point in &frame.view.points {
+            let Some((position, normal, radius)) = rebase_point(
+                point,
+                frame.view.camera,
+                frame.pose,
+                &frame.camera,
+                &raster,
+                frame.scale,
+            ) else {
                 continue;
             };
             if settings.tsdf.is_some() {
                 if tsdf_sample_threshold.is_some_and(|threshold| {
-                    !keep_tsdf_observation(frame_index, point.source_pixel, threshold)
+                    !keep_tsdf_observation(frame.frame_index, point.source_pixel, threshold)
                 }) {
                     continue;
+                }
+                if let (Some(maximum_error), Some(depth_maps)) = (
+                    settings.maximum_neighbor_depth_log_error,
+                    depth_maps.as_deref(),
+                ) {
+                    if !has_neighbor_depth_agreement(
+                        position,
+                        frame.frame_index,
+                        depth_maps,
+                        &raster,
+                        settings.neighbor_frame_radius,
+                        settings.minimum_neighbor_depth_matches,
+                        maximum_error,
+                    ) {
+                        continue;
+                    }
                 }
                 observations.push(TsdfObservation {
                     position,
                     color_srgb: point.color_srgb,
                     confidence: point.confidence,
                     radius,
-                    frame_index: frame_index as i32,
+                    frame_index: frame.frame_index as i32,
                 });
             } else {
                 raw_points.push(FusedPoint {
@@ -223,7 +270,7 @@ pub fn fuse_scene_bundle_frame_global(
                     color_srgb: point.color_srgb,
                     confidence: point.confidence,
                     radius,
-                    first_observing_frame: frame_index as i32,
+                    first_observing_frame: frame.frame_index as i32,
                     contributors: 1,
                 });
             }
@@ -302,12 +349,159 @@ fn validate_settings(settings: FrameGlobalFusionSettings) -> Result<(), FrameGlo
         || !settings.minimum_fused_frame_fraction.is_finite()
         || !(0.0..=1.0).contains(&settings.minimum_fused_frame_fraction)
         || settings
+            .maximum_neighbor_depth_log_error
+            .is_some_and(|value| !value.is_finite() || value < 0.0)
+        || (settings.maximum_neighbor_depth_log_error.is_some()
+            && (settings.minimum_neighbor_depth_matches == 0
+                || settings.neighbor_frame_radius == 0))
+        || settings
             .maximum_tsdf_observations
             .is_some_and(|budget| budget == 0)
     {
         return Err(FrameGlobalFusionError::InvalidSettings);
     }
     Ok(())
+}
+
+struct GlobalFrame {
+    frame_index: usize,
+    view: MeasuredFrameChunk,
+    scale: f32,
+    pose: [f64; 12],
+    camera: crate::ColmapCameraModel,
+}
+
+struct GlobalDepthMap {
+    frame_index: usize,
+    pose: [f64; 12],
+    camera: crate::ColmapCameraModel,
+    depth: Vec<f32>,
+}
+
+fn global_depth_maps(
+    frames: &[GlobalFrame],
+    raster: &crate::RasterManifest,
+) -> Vec<GlobalDepthMap> {
+    frames
+        .iter()
+        .map(|frame| {
+            let mut depth = vec![f32::NAN; raster.output_width * raster.output_height];
+            for point in &frame.view.points {
+                let x = point.source_pixel[0] as usize;
+                let y = point.source_pixel[1] as usize;
+                if x >= raster.output_width || y >= raster.output_height {
+                    continue;
+                }
+                if let Some(value) = local_camera_depth(point.position, frame.view.camera)
+                    .map(|value| value * frame.scale)
+                    .filter(|value| value.is_finite() && *value > 0.0)
+                {
+                    depth[y * raster.output_width + x] = value;
+                }
+            }
+            GlobalDepthMap {
+                frame_index: frame.frame_index,
+                pose: frame.pose,
+                camera: frame.camera.clone(),
+                depth,
+            }
+        })
+        .collect()
+}
+
+fn has_neighbor_depth_agreement(
+    position: [f32; 3],
+    source_frame: usize,
+    maps: &[GlobalDepthMap],
+    raster: &crate::RasterManifest,
+    neighbor_radius: usize,
+    minimum_matches: usize,
+    maximum_log_error: f32,
+) -> bool {
+    let mut matches = 0;
+    for map in maps {
+        if map.frame_index == source_frame
+            || map.frame_index.abs_diff(source_frame) > neighbor_radius
+        {
+            continue;
+        }
+        let Some((pixel, projected_depth)) =
+            project_world_to_raster(position, map.pose, &map.camera, raster)
+        else {
+            continue;
+        };
+        let Some(observed_depth) =
+            bilinear_depth(&map.depth, raster.output_width, raster.output_height, pixel)
+        else {
+            continue;
+        };
+        let error = (projected_depth.ln() - observed_depth.ln()).abs();
+        if error.is_finite() && error <= maximum_log_error {
+            matches += 1;
+            if matches >= minimum_matches {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn project_world_to_raster(
+    position: [f32; 3],
+    pose: [f64; 12],
+    camera: &crate::ColmapCameraModel,
+    raster: &crate::RasterManifest,
+) -> Option<([f32; 2], f32)> {
+    let [focal, cx, cy, radial] = *<&[f64; 4]>::try_from(camera.parameters.as_slice()).ok()?;
+    let point = position.map(f64::from);
+    let camera_point = [
+        pose[0] * point[0] + pose[1] * point[1] + pose[2] * point[2] + pose[3],
+        pose[4] * point[0] + pose[5] * point[1] + pose[6] * point[2] + pose[7],
+        pose[8] * point[0] + pose[9] * point[1] + pose[10] * point[2] + pose[11],
+    ];
+    if !(camera_point[2].is_finite() && camera_point[2] > 0.0) {
+        return None;
+    }
+    let (x, y) = (
+        camera_point[0] / camera_point[2],
+        camera_point[1] / camera_point[2],
+    );
+    let radial_scale = 1.0 + radial * (x * x + y * y);
+    let image = [focal * x * radial_scale + cx, focal * y * radial_scale + cy];
+    let pixel = [
+        ((image[0] + 0.5) * raster.output_width as f64 / camera.width as f64 - 0.5) as f32,
+        ((image[1] + 0.5) * raster.output_height as f64 / camera.height as f64 - 0.5) as f32,
+    ];
+    (pixel.iter().all(|value| value.is_finite())
+        && pixel[0] >= 0.0
+        && pixel[1] >= 0.0
+        && pixel[0] < raster.output_width.saturating_sub(1) as f32
+        && pixel[1] < raster.output_height.saturating_sub(1) as f32)
+        .then_some((pixel, camera_point[2] as f32))
+}
+
+fn bilinear_depth(depth: &[f32], width: usize, height: usize, pixel: [f32; 2]) -> Option<f32> {
+    let x0 = pixel[0].floor() as usize;
+    let y0 = pixel[1].floor() as usize;
+    let (x1, y1) = (x0.checked_add(1)?, y0.checked_add(1)?);
+    if x1 >= width || y1 >= height {
+        return None;
+    }
+    let tx = pixel[0] - x0 as f32;
+    let ty = pixel[1] - y0 as f32;
+    let values = [
+        depth[y0 * width + x0],
+        depth[y0 * width + x1],
+        depth[y1 * width + x0],
+        depth[y1 * width + x1],
+    ];
+    values
+        .iter()
+        .all(|value| value.is_finite() && *value > 0.0)
+        .then_some(
+            (values[0] * (1.0 - tx) + values[1] * tx) * (1.0 - ty)
+                + (values[2] * (1.0 - tx) + values[3] * tx) * ty,
+        )
 }
 
 fn observation_sample_threshold(candidate_observations: usize, budget: usize) -> u64 {
@@ -907,5 +1101,71 @@ mod tests {
         };
         assert!(candidate_report_is_better(&verified, &weak, settings));
         assert!(!candidate_report_is_better(&weak, &verified, settings));
+    }
+
+    #[test]
+    fn tsdf_neighbor_gate_accepts_only_reprojected_depth_agreement() {
+        let raster = crate::finalized_raster_manifest(crate::RasterManifest {
+            schema: String::new(),
+            source_sha256: "x".into(),
+            duration_seconds: 1.0,
+            source_width: 4,
+            source_height: 4,
+            crop: crate::RasterCrop {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 4,
+            },
+            output_width: 4,
+            output_height: 4,
+            frames: vec![],
+            raster_fingerprint: String::new(),
+        });
+        let map = GlobalDepthMap {
+            frame_index: 1,
+            pose: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            camera: crate::ColmapCameraModel {
+                camera_id: 1,
+                model: "SIMPLE_RADIAL".into(),
+                width: 4,
+                height: 4,
+                parameters: vec![2.0, 1.5, 1.5, 0.0],
+            },
+            depth: vec![2.0; 16],
+        };
+        assert!(has_neighbor_depth_agreement(
+            [0.0, 0.0, 2.0],
+            0,
+            &[map],
+            &raster,
+            2,
+            1,
+            0.02
+        ));
+        let inconsistent = GlobalDepthMap {
+            depth: vec![1.0; 16],
+            ..GlobalDepthMap {
+                frame_index: 1,
+                pose: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                camera: crate::ColmapCameraModel {
+                    camera_id: 1,
+                    model: "SIMPLE_RADIAL".into(),
+                    width: 4,
+                    height: 4,
+                    parameters: vec![2.0, 1.5, 1.5, 0.0],
+                },
+                depth: vec![2.0; 16],
+            }
+        };
+        assert!(!has_neighbor_depth_agreement(
+            [0.0, 0.0, 2.0],
+            0,
+            &[inconsistent],
+            &raster,
+            2,
+            1,
+            0.02
+        ));
     }
 }
