@@ -19,6 +19,8 @@ close(move([0,0,0], yaw90, 10, 'forward'), [-.6,0,0]);
 close(controls.cameraToViewer([2, 3, 4]), [2, -3, -4]);
 close(controls.cameraToViewer([0, 1, 0]), [0, -1, 0]);
 close(controls.cameraToViewer([0, 0, 1]), [0, 0, -1]);
+const matched = controls.cameraBasis(controls.orientationFromBasis([0,0,1], [0,1,0], [-1,0,0]));
+close(matched.right, [0,0,1]); close(matched.up, [0,1,0]); close(matched.backward, [-1,0,0]);
 let orientation = identity;
 for (let index = 0; index < 10_000; index++) orientation = controls.orbit(orientation, .013, -.009);
 assert.ok(Math.abs(Math.hypot(...orientation) - 1) < 1e-12, 'orbit quaternion remains unit length');

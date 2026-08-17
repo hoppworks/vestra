@@ -10,11 +10,22 @@
   function orbit(orientation, horizontal, vertical) { let next = normalizeQuaternion(quaternionMultiply(axisAngle([0, 1, 0], horizontal), orientation)); const right = rotate(next, [1, 0, 0]); return normalizeQuaternion(quaternionMultiply(axisAngle(right, vertical), next)); }
   // backward points target → camera, so forward is -backward.
   function cameraBasis(orientation) { const backward = normalize(rotate(orientation, [0, 0, 1])), rotatedUp = normalize(rotate(orientation, [0, 1, 0])), right = normalize(cross(rotatedUp, backward)), up = normalize(cross(backward, right)); return { right, up, backward, forward: backward.map(value => -value) }; }
+  // Builds a camera orientation from an orthonormal world-space basis.
+  function orientationFromBasis(right, up, backward) {
+    const r = normalize(right), u = normalize(up), b = normalize(backward);
+    const m00=r[0],m01=u[0],m02=b[0],m10=r[1],m11=u[1],m12=b[1],m20=r[2],m21=u[2],m22=b[2],trace=m00+m11+m22;
+    let q;
+    if(trace>0){const s=Math.sqrt(trace+1)*2;q=[(m21-m12)/s,(m02-m20)/s,(m10-m01)/s,.25*s];}
+    else if(m00>m11&&m00>m22){const s=Math.sqrt(1+m00-m11-m22)*2;q=[.25*s,(m01+m10)/s,(m02+m20)/s,(m21-m12)/s];}
+    else if(m11>m22){const s=Math.sqrt(1+m11-m00-m22)*2;q=[(m01+m10)/s,.25*s,(m12+m21)/s,(m02-m20)/s];}
+    else{const s=Math.sqrt(1+m22-m00-m11)*2;q=[(m02+m20)/s,(m12+m21)/s,.25*s,(m10-m01)/s];}
+    return normalizeQuaternion(q);
+  }
   function move(center, orientation, distance, command, ratio = .06) { const basis = cameraBasis(orientation), step = Math.max(distance * ratio, .01), direction = {forward:basis.forward, backward:basis.backward, left:basis.right.map(value => -value), right:basis.right, up:[0,1,0], down:[0,-1,0]}[command]; return direction ? center.map((value, axis) => value + direction[axis] * step) : center.slice(); }
   function commandForKey(key) { return {ArrowUp:'forward',ArrowDown:'backward',ArrowLeft:'left',ArrowRight:'right',e:'up',E:'up',d:'down',D:'down'}[key] || null; }
   // DA3 camera coordinates are +X right, +Y down, +Z forward. WebGL's scene
   // presentation uses +X right, +Y up, -Z forward. This proper 180° X rotation
   // keeps positions, normals, and camera rays coherent.
   function cameraToViewer(vector) { return [vector[0], -vector[1], -vector[2]]; }
-  root.VestraCameraControls = { axisAngle, cameraBasis, cameraToViewer, commandForKey, move, normalizeQuaternion, orbit, quaternionMultiply, rotate };
+  root.VestraCameraControls = { axisAngle, cameraBasis, cameraToViewer, commandForKey, move, normalizeQuaternion, orbit, orientationFromBasis, quaternionMultiply, rotate };
 }(typeof window === 'undefined' ? globalThis : window));
