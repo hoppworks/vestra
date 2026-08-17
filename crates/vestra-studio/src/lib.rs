@@ -1041,7 +1041,8 @@ fn frame_global_evidence(
         else {
             continue;
         };
-        let Some((origin, forward, corners)) = colmap_camera_ray(frame.world_to_camera, camera)
+        let Some((origin, forward, corners, vertical_fov_radians, aspect_ratio)) =
+            colmap_camera_ray(frame.world_to_camera, camera)
         else {
             continue;
         };
@@ -1054,6 +1055,12 @@ fn frame_global_evidence(
             "origin": origin,
             "forward": forward,
             "corners": corners,
+            // This is not cosmetic metadata: Studio uses it only for the
+            // explicit "match 3D camera" mode, where the projection must
+            // agree with the calibrated source raster rather than the browser
+            // window's aspect ratio.
+            "vertical_fov_radians": vertical_fov_radians,
+            "aspect_ratio": aspect_ratio,
         }));
     }
     Ok(serde_json::to_vec(&serde_json::json!({
@@ -1067,7 +1074,7 @@ fn frame_global_evidence(
 fn colmap_camera_ray(
     pose: [f64; 12],
     camera: &vestra_core::ColmapCameraModel,
-) -> Option<([f32; 3], [f32; 3], [[f32; 3]; 4])> {
+) -> Option<([f32; 3], [f32; 3], [[f32; 3]; 4], f32, f32)> {
     let [focal, cx, cy, radial] = *<&[f64; 4]>::try_from(camera.parameters.as_slice()).ok()?;
     if !(focal.is_finite() && focal > 0.0 && cx.is_finite() && cy.is_finite() && radial.is_finite())
     {
@@ -1116,7 +1123,19 @@ fn colmap_camera_ray(
         direction([camera.width as f64 - 1.0, camera.height as f64 - 1.0])?,
         direction([0.0, camera.height as f64 - 1.0])?,
     ];
-    Some((origin, forward, corners))
+    let vertical_fov_radians = 2.0 * ((camera.height as f64) / (2.0 * focal)).atan();
+    let aspect_ratio = camera.width as f64 / camera.height as f64;
+    (vertical_fov_radians.is_finite()
+        && vertical_fov_radians > 0.0
+        && aspect_ratio.is_finite()
+        && aspect_ratio > 0.0)
+        .then_some((
+            origin,
+            forward,
+            corners,
+            vertical_fov_radians as f32,
+            aspect_ratio as f32,
+        ))
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -1674,6 +1693,15 @@ mod tests {
     }
 
     #[test]
+    fn studio_matches_a_calibrated_source_camera_with_its_own_lens() {
+        assert!(INDEX_HTML.contains("vertical_fov_radians"));
+        assert!(INDEX_HTML.contains("aspect_ratio"));
+        assert!(INDEX_HTML.contains("matchedCamera"));
+        assert!(INDEX_HTML.contains("matched calibrated source camera and lens"));
+        assert!(INDEX_HTML.contains("gl.viewport(left,bottom,width,height)"));
+    }
+
+    #[test]
     fn studio_does_not_offer_legacy_measurements_for_an_independent_world() {
         assert!(INDEX_HTML.contains("independentWorld"));
         assert!(INDEX_HTML.contains("selectedProduct.pose_authority!=='local-pr2-relative'"));
@@ -1909,7 +1937,7 @@ mod tests {
             height: 1080,
             parameters: vec![810.0, 810.0, 540.0, 0.0],
         };
-        let (origin, forward, corners) = colmap_camera_ray(
+        let (origin, forward, corners, vertical_fov_radians, aspect_ratio) = colmap_camera_ray(
             [1.0, 0.0, 0.0, -2.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, -3.0],
             &camera,
         )
@@ -1917,6 +1945,8 @@ mod tests {
         assert_eq!(origin, [2.0, -1.0, 3.0]);
         assert!(forward.iter().all(|value| value.is_finite()));
         assert!(corners.iter().flatten().all(|value| value.is_finite()));
+        assert!((vertical_fov_radians - 2.0 * (2.0_f32 / 3.0).atan()).abs() < 1e-6);
+        assert!((aspect_ratio - 1.5).abs() < 1e-6);
     }
 
     #[test]
