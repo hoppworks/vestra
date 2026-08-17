@@ -3,8 +3,8 @@
 ## Purpose
 
 This is an isolated geometry-control experiment for the frame-global Vestra
-route. It does not modify a `.vestra` scene and it does not count as a Vestra
-product until its geometry has been inspected.
+route. It publishes a separately labelled, immutable browser product; it does
+not modify DA3 measurements or replace a Vestra-derived world.
 
 It answers a narrow causal question: **does the accepted COLMAP global bundle
 adjustment support a coherent dense reconstruction for this capture?**
@@ -41,18 +41,32 @@ pose solution or a Vestra artifact.
    registered image.
 3. Run the geometric-consistency pass after neighbouring depth maps exist.
 4. `stereo_fusion --input_type geometric` writes `fused.ply`.
-5. `vestra import-colmap-mvs --scene <scene> --ply fused.ply` publishes a
+5. `vestra import-colmap-mvs --scene <scene> --ply fused.ply --pose-solution <hash>` publishes a
    verified geometric cloud as the independent `colmap-mvs-geometric` Studio
    product. If the provider emitted only photometric maps, the caller must add
    `--photometric`; the result is then named `colmap-mvs-photometric-control`.
    Neither route mutates DA3 measurements nor replaces a Vestra-derived product.
-6. Inspect the raw MVS cloud from multiple original-camera views before any
+6. The pose solution attaches only its registered source frames and calibrated
+   camera rays to the MVS product. Studio keeps the DA3 replay hidden: MVS has
+   no DA3 depth replay to show.
+7. Inspect the raw MVS cloud from multiple original-camera views before any
    smoothing, TSDF, or conversion to a Vestra product.
 
 The first PatchMatch pass must be recorded as photometric initialization if
 the installed COLMAP build reports `geom_consistency: 0` before neighbour maps
 exist. A later geometric fusion may only be labelled geometric when the log
 explicitly reports `geom_consistency: 1` and a geometric fused PLY exists.
+
+## Current control run
+
+The current IMG_2323 result is **photometric-only**, not geometric: the
+installed COLMAP container reported `geom_consistency: 0` for the available
+PatchMatch maps. `stereo_fusion --input_type photometric` produced
+`1,484,779` surfels, published as `colmap-mvs-photometric-control` with pose
+solution `e931ea6a82a354e46e308aa3146ca99064112d1c3ccb4f2b9f5b4459a5dee5e9`.
+It carries 220 registered camera rays and source-frame references. This proves
+that source-camera inspection is now possible; it does **not** classify the
+geometry as coherent yet.
 
 ## Acceptance evidence
 
