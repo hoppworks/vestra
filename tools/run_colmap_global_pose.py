@@ -94,7 +94,7 @@ def read_raster_manifest(scene: Path) -> tuple[dict, Path]:
     return raster, raster_path
 
 
-def verify_rasters(scene: Path, raster: dict) -> Path:
+def verify_rasters(scene: Path, raster: dict) -> list[str]:
     decoded = scene / "decoded"
     frames = raster.get("frames")
     if not isinstance(frames, list) or not frames:
@@ -112,7 +112,28 @@ def verify_rasters(scene: Path, raster: dict) -> Path:
         if sha256_file(decoded / name) != digest:
             raise ValueError(f"decoded raster hash mismatch: {name}")
         names.add(name)
-    return decoded
+    return sorted(names)
+
+
+def stage_colmap_images(decoded: Path, names: list[str], output: Path) -> Path:
+    """Creates COLMAP's *only* image root from immutable manifest members.
+
+    The decoded cache may retain extra candidate frames for future keyframe
+    selection. COLMAP recursively discovers images, so pointing it at that
+    cache would silently turn a selected-frame experiment into a different
+    reconstruction. Hard-linking keeps the evidence byte-identical and cheap;
+    copying is a conservative cross-filesystem fallback.
+    """
+    image_root = output / "images"
+    image_root.mkdir()
+    for name in names:
+        source = decoded / name
+        destination = image_root / name
+        try:
+            os.link(source, destination)
+        except OSError:
+            shutil.copy2(source, destination)
+    return image_root
 
 
 def largest_model(models_root: Path) -> Path:
@@ -158,8 +179,9 @@ def main() -> int:
     if not scene.joinpath("manifest.json").is_file() or not tree.is_file():
         raise FileNotFoundError("scene manifest or vocabulary tree is missing")
     raster, raster_path = read_raster_manifest(scene)
-    decoded = verify_rasters(scene, raster)
+    frame_names = verify_rasters(scene, raster)
     output.mkdir(parents=True)
+    images = stage_colmap_images(scene / "decoded", frame_names, output)
     database = output / "database.db"
     sparse = output / "sparse"
     text = output / "sparse-text"
@@ -175,7 +197,7 @@ def main() -> int:
         vocabulary_tree_sha256=sha256_file(tree),
     )
     common_feature = colmap_command(args, [
-        "feature_extractor", "--database_path", str(database), "--image_path", str(decoded),
+        "feature_extractor", "--database_path", str(database), "--image_path", str(images),
         "--ImageReader.single_camera", "1", "--ImageReader.camera_model", settings.camera_model,
         "--FeatureExtraction.use_gpu", "0",
         "--FeatureExtraction.num_threads", str(settings.threads),
@@ -198,7 +220,7 @@ def main() -> int:
         "--FeatureMatching.guided_matching", "1",
     ]), log)
     run(colmap_command(args, [
-        "mapper", "--database_path", str(database), "--image_path", str(decoded),
+        "mapper", "--database_path", str(database), "--image_path", str(images),
         "--output_path", str(sparse), "--Mapper.ba_global_function_tolerance", "0.000001",
         "--Mapper.num_threads", str(settings.threads),
     ]), log)
@@ -227,6 +249,7 @@ def main() -> int:
         "raster_manifest": str(raster_path),
         "raster_fingerprint": raster["raster_fingerprint"],
         "input_frames": len(raster["frames"]),
+        "image_root": str(images),
         "registered_frames": registered,
         "settings": asdict(settings),
         "settings_fingerprint": hashlib.sha256(
