@@ -1679,6 +1679,8 @@ mod tests {
     fn studio_uses_a_depth_buffer_to_hide_occluded_surfels() {
         assert!(INDEX_HTML.contains("depth:true"));
         assert!(INDEX_HTML.contains("gl.enable(gl.DEPTH_TEST)"));
+        assert!(INDEX_HTML.contains("const MAX_SURFEL_PIXELS=12"));
+        assert!(INDEX_HTML.contains("gl_PointSize=clamp"));
         assert!(INDEX_HTML.contains("gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT)"));
     }
 
