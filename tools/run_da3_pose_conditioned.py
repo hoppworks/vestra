@@ -110,10 +110,26 @@ def read_inputs(scene: Path, pose_hash: str) -> tuple[str, list[Frame]]:
 
 
 def batches(frames: list[Frame], batch_size: int, overlap: int) -> list[list[Frame]]:
-    if batch_size < 2 or overlap < 0 or overlap >= batch_size:
-        fail("batch size must be >=2 and overlap must be in [0, batch_size)")
+    if len(frames) < 3:
+        fail("pose-conditioned external-scale inference requires at least three registered frames")
+    if batch_size < 3 or overlap < 0 or overlap >= batch_size:
+        fail("batch size must be >=3 and overlap must be in [0, batch_size)")
     stride = batch_size - overlap
-    return [frames[start : start + batch_size] for start in range(0, len(frames), stride) if frames[start : start + batch_size]]
+    result: list[list[Frame]] = []
+    start = 0
+    while start < len(frames):
+        batch = frames[start : start + batch_size]
+        if len(batch) < 3:
+            # The official external-scale alignment needs a non-degenerate
+            # camera set. Reuse the terminal three frames rather than running
+            # a 1- or 2-view tail with silently different semantics.
+            batch = frames[-max(3, min(batch_size, len(frames))) :]
+        if not result or [frame.index for frame in result[-1]] != [frame.index for frame in batch]:
+            result.append(batch)
+        if start + batch_size >= len(frames):
+            break
+        start += stride
+    return result
 
 
 def w2c44(frame: Frame, np: Any) -> Any:

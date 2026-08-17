@@ -31,7 +31,7 @@ class PoseConditionedRunnerTest(unittest.TestCase):
         decoded.mkdir(parents=True)
         chunks.mkdir()
         frames = []
-        for index in range(3):
+        for index in range(5):
             name = f"frame-{index:06d}.ppm"
             payload = f"frame-{index}".encode()
             (decoded / name).write_bytes(payload)
@@ -45,13 +45,13 @@ class PoseConditionedRunnerTest(unittest.TestCase):
         pose_frames = [{
             "frame_index": index, "image_name": frames[index]["file_name"], "registered": True,
             "world_to_camera": [1, 0, 0, -index, 0, 1, 0, 0, 0, 0, 1, 0],
-        } for index in range(3)]
+        } for index in range(5)]
         (chunks / f"pose-{pose_hash}.json").write_text(json.dumps({
             "schema": "vestra.pose-solution/v1", "raster_fingerprint": raster_fingerprint,
             "frames": pose_frames,
             "global_trajectory": {
                 "camera_models": [{"camera_id": 1, "model": "SIMPLE_RADIAL", "width": 504, "height": 336, "parameters": [300, 252, 168, 0]}],
-                "frame_camera_ids": {str(index): 1 for index in range(3)}, "tracks": [],
+                "frame_camera_ids": {str(index): 1 for index in range(5)}, "tracks": [],
             },
         }))
         (scene / "manifest.json").write_text(json.dumps({"raster_manifest_hash": raster_hash}))
@@ -64,12 +64,12 @@ class PoseConditionedRunnerTest(unittest.TestCase):
             output = root / "artifact"
             subprocess.run([
                 sys.executable, str(RUNNER), "--scene", str(scene), "--pose-solution", pose_hash,
-                "--output", str(output), "--batch-size", "2", "--overlap", "1", "--pixel-stride", "3", "--validate-only",
+                "--output", str(output), "--batch-size", "3", "--overlap", "1", "--pixel-stride", "3", "--validate-only",
             ], cwd=ROOT, check=True, capture_output=True, text=True)
             manifest = json.loads((output / "manifest.json").read_text())
             self.assertEqual(manifest["schema"], "vestra.da3-pose-conditioned/v1")
             self.assertEqual(manifest["pixel_stride"], 3)
-            self.assertEqual([batch["frames"] for batch in manifest["batches"]], [[0, 1], [1, 2], [2]])
+            self.assertEqual([batch["frames"] for batch in manifest["batches"]], [[0, 1, 2], [2, 3, 4]])
 
     def test_validate_only_rejects_raster_tampering_before_model_work(self):
         with tempfile.TemporaryDirectory() as directory:
