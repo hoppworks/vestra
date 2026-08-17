@@ -511,8 +511,18 @@ struct Da3MvsHybridEvidence {
     mvs_depth_map_index_sha256: Option<String>,
     #[serde(default)]
     mvs_depth_map_count: Option<usize>,
+    #[serde(default)]
+    per_frame: Vec<Da3MvsPatchMatchFrame>,
     pixel_policy: String,
     median_mvs_coverage: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct Da3MvsPatchMatchFrame {
+    frame_index: usize,
+    file: String,
+    sha256: String,
+    mvs_coverage: f64,
 }
 
 fn is_sha256(value: &str) -> bool {
@@ -579,6 +589,23 @@ fn validate_mvs_hybrid_evidence(sidecar: &Da3PoseConditionedArtifact) -> Result<
         || hybrid.median_mvs_coverage > 1.0
     {
         return Err("MVS-DA3 hybrid artifact violates its dense-depth provenance contract");
+    }
+    if hybrid.pixel_policy == "colmap-patchmatch-geometric-resample-else-da3/v1" {
+        let expected_count = hybrid
+            .mvs_depth_map_count
+            .expect("PatchMatch evidence was checked above");
+        if expected_count != sidecar.frames.len()
+            || hybrid.per_frame.len() != expected_count
+            || hybrid.per_frame.iter().zip(&sidecar.frames).any(|(map, frame)| {
+                map.frame_index != *frame
+                    || map.file != format!("frame-{:06}.ppm.geometric.bin", frame + 1)
+                    || !is_sha256(&map.sha256)
+                    || !map.mvs_coverage.is_finite()
+                    || !(0.0..=1.0).contains(&map.mvs_coverage)
+            })
+        {
+            return Err("PatchMatch MVS evidence does not cover the DA3 frame set exactly");
+        }
     }
     Ok(())
 }
@@ -2428,6 +2455,7 @@ mod tests {
                 mvs_vertices: Some(1),
                 mvs_depth_map_index_sha256: None,
                 mvs_depth_map_count: None,
+                per_frame: Vec::new(),
                 pixel_policy: "mvs-zbuffer-where-observed-else-da3/v1".into(),
                 median_mvs_coverage: 0.2,
             }),
@@ -2454,10 +2482,20 @@ mod tests {
         evidence.mvs_ply_sha256 = None;
         evidence.mvs_vertices = None;
         evidence.mvs_depth_map_index_sha256 = Some("e".repeat(64));
-        evidence.mvs_depth_map_count = Some(195);
+        evidence.mvs_depth_map_count = Some(1);
+        evidence.per_frame = vec![Da3MvsPatchMatchFrame {
+            frame_index: 1,
+            file: "frame-000002.ppm.geometric.bin".into(),
+            sha256: "f".repeat(64),
+            mvs_coverage: 0.5,
+        }];
         evidence.pixel_policy = "colmap-patchmatch-geometric-resample-else-da3/v1".into();
         assert!(validate_mvs_hybrid_evidence(&patchmatch).is_ok());
-        let mut incomplete = patchmatch;
+        let mut mismatched_frames = patchmatch;
+        mismatched_frames.hybrid.as_mut().unwrap().per_frame[0].frame_index = 2;
+        assert!(validate_mvs_hybrid_evidence(&mismatched_frames).is_err());
+        let mut incomplete = mismatched_frames;
+        incomplete.hybrid.as_mut().unwrap().per_frame[0].frame_index = 1;
         incomplete.hybrid.as_mut().unwrap().median_mvs_coverage = 0.0;
         assert!(validate_mvs_hybrid_evidence(&incomplete).is_err());
     }
