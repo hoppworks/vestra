@@ -433,9 +433,15 @@ impl SceneBundle {
             pose_solution_hash,
             source_frame_indices: Vec::new(),
         };
-        manifest
-            .world_products
-            .retain(|existing| existing.id != product.id);
+        manifest.world_products.retain(|existing| {
+            existing.id != product.id
+                    // Migration of the short-lived pre-product global world.
+                    // Its chunks remain content-addressed on disk, but it has
+                    // neither source-frame evidence nor an independent raw /
+                    // TSDF identity and must not remain selectable.
+                    && !(pose_authority == "colmap-ba-frame-global"
+                        && existing.id == "colmap-ba-frame-global-active")
+        });
         manifest.world_products.push(product);
         manifest
             .world_products
