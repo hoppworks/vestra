@@ -41,9 +41,11 @@ pose solution or a Vestra artifact.
    registered image.
 3. Run the geometric-consistency pass after neighbouring depth maps exist.
 4. `stereo_fusion --input_type geometric` writes `fused.ply`.
-5. `vestra import-colmap-mvs --scene <scene> --ply fused.ply` publishes the
-   cloud as the independent `colmap-mvs-geometric` Studio product. It neither
-   mutates DA3 measurements nor replaces a Vestra-derived product.
+5. `vestra import-colmap-mvs --scene <scene> --ply fused.ply` publishes a
+   verified geometric cloud as the independent `colmap-mvs-geometric` Studio
+   product. If the provider emitted only photometric maps, the caller must add
+   `--photometric`; the result is then named `colmap-mvs-photometric-control`.
+   Neither route mutates DA3 measurements nor replaces a Vestra-derived product.
 6. Inspect the raw MVS cloud from multiple original-camera views before any
    smoothing, TSDF, or conversion to a Vestra product.
 

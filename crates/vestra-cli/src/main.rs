@@ -201,6 +201,11 @@ enum Command {
         /// Binary-little-endian PLY produced by `colmap stereo_fusion`.
         #[arg(long)]
         ply: PathBuf,
+        /// Explicitly label this as a photometric-only MVS control. This is
+        /// required when the provider did not produce geometric consistency
+        /// maps; it must never be presented as a verified geometric world.
+        #[arg(long)]
+        photometric: bool,
     },
     /// Attach the exact decoded-raster contract to a legacy scene before
     /// importing a global pose provider. This never re-runs DA3 inference.
@@ -1244,16 +1249,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             );
         }
-        Command::ImportColmapMvs { scene, ply } => {
+        Command::ImportColmapMvs {
+            scene,
+            ply,
+            photometric,
+        } => {
             let bundle = SceneBundle::open(scene)?;
             let cloud = import_colmap_fused_ply(&ply)?;
-            let chunk_hash = bundle.write_fused_scene_as(
-                &cloud,
-                "colmap-mvs-geometric",
-                "colmap-dense-mvs",
-                "surfel",
-                None,
-            )?;
+            let (id, pose_authority) = if photometric {
+                (
+                    "colmap-mvs-photometric-control",
+                    "colmap-dense-mvs-photometric",
+                )
+            } else {
+                ("colmap-mvs-geometric", "colmap-dense-mvs-geometric")
+            };
+            let chunk_hash =
+                bundle.write_fused_scene_as(&cloud, id, pose_authority, "surfel", None)?;
             println!(
                 "{}",
                 serde_json::json!({
@@ -1263,6 +1275,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "fused_chunk": chunk_hash,
                     "fused_points": cloud.points.len(),
                     "surface": "surfel",
+                    "consistency": if photometric { "photometric-only" } else { "geometric" },
                 })
             );
         }
