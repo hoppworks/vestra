@@ -195,13 +195,18 @@ class PoseConditionedRunnerTest(unittest.TestCase):
         depth = np.full((4, 4), 2.0, dtype=np.float32)
         # Train landmarks (ids not divisible by five) and one held-out
         # landmark all lie at COLMAP camera depth four. The correction is 2.
+        train_ids = [index for index in range(100) if not CALIBRATION.held_out_track("pose", index)][:3]
         samples = [
-            (1, [0.0, 0.0, 4.0], 0.25, 0.25),
-            (2, [0.0, 0.0, 4.0], 0.50, 0.50),
-            (3, [0.0, 0.0, 4.0], 0.75, 0.75),
-            (5, [0.0, 0.0, 4.0], 0.25, 0.75),
+            (train_ids[0], [0.0, 0.0, 4.0], 0.5, 0.5, 4, 4),
+            (train_ids[1], [0.0, 0.0, 4.0], 1.5, 1.5, 4, 4),
+            (train_ids[2], [0.0, 0.0, 4.0], 2.5, 2.5, 4, 4),
+            (0, [0.0, 0.0, 4.0], 0.5, 2.5, 4, 4),
         ]
-        report = CALIBRATION.calibrate_depth(depth, samples, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0], 3, np)
+        # Pick an actual held-out track deterministically rather than relying
+        # on its numeric ID falling into a hard-coded modulo bucket.
+        held_out_id = next(index for index in range(100) if CALIBRATION.held_out_track("pose", index))
+        samples[-1] = (held_out_id, [0.0, 0.0, 4.0], 0.5, 2.5, 4, 4)
+        report = CALIBRATION.calibrate_depth(depth, samples, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0], "pose", 3, 1, np)
         self.assertTrue(report["accepted"])
         self.assertAlmostEqual(report["scale"], 2.0)
         self.assertAlmostEqual(report["held_out_median_log_error"], 0.0)

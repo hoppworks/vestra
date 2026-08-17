@@ -10,6 +10,7 @@ the deterministic held-out fifth of those landmarks.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import shutil
@@ -20,7 +21,9 @@ from typing import Any
 from run_da3_pose_conditioned import SCHEMA, batch_records, sha256_file, write_depth_frames, write_ply
 
 
-CALIBRATION_SCHEMA = "vestra.da3-pose-conditioned-depth-calibration/v1"
+CALIBRATION_SCHEMA = "vestra.da3-pose-conditioned-calibration/v2"
+PIXEL_MAPPING = "pixel-center-resize/v1"
+TRACK_SPLIT = "sha256-track-id-fold/v1"
 
 
 def median(values: list[float]) -> float | None:
@@ -51,7 +54,13 @@ def camera_depth(w2c: list[float], point: list[float]) -> float:
     return sum(w2c[8 + axis] * point[axis] for axis in range(3)) + w2c[11]
 
 
-def scale_evidence(scene: Path, pose_hash: str) -> tuple[dict[int, list[tuple[int, list[float], float, float]]], dict[int, list[float]]]:
+def held_out_track(pose_hash: str, point_id: int) -> bool:
+    """Assign one 20% hold-out bucket per stable COLMAP landmark ID."""
+    payload = f"{TRACK_SPLIT}:{pose_hash}:{point_id}".encode("ascii")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % 5 == 0
+
+
+def scale_evidence(scene: Path, pose_hash: str) -> tuple[dict[int, list[tuple[int, list[float], float, float, int, int]]], dict[int, list[float]]]:
     pose = json.loads((scene / "chunks" / f"pose-{pose_hash}.json").read_text())
     trajectory = pose.get("global_trajectory")
     if not isinstance(trajectory, dict):
@@ -59,7 +68,7 @@ def scale_evidence(scene: Path, pose_hash: str) -> tuple[dict[int, list[tuple[in
     cameras = {int(frame["frame_index"]): list(map(float, frame["world_to_camera"])) for frame in pose["frames"] if frame.get("registered")}
     models = {int(model["camera_id"]): model for model in trajectory.get("camera_models", [])}
     ids = {int(index): int(camera) for index, camera in trajectory.get("frame_camera_ids", {}).items()}
-    samples: dict[int, list[tuple[int, list[float], float, float]]] = defaultdict(list)
+    samples: dict[int, list[tuple[int, list[float], float, float, int, int]]] = defaultdict(list)
     for track in trajectory.get("tracks", []):
         point = track.get("position")
         if not isinstance(point, list) or len(point) != 3 or float(track.get("reprojection_error_px", math.inf)) > 2.5:
@@ -74,27 +83,45 @@ def scale_evidence(scene: Path, pose_hash: str) -> tuple[dict[int, list[tuple[in
             expected = camera_depth(cameras[frame], point)
             if expected <= 0 or not math.isfinite(expected):
                 continue
-            samples[frame].append((point_id, [float(value) for value in point], float(xy[0]) / float(model["width"]), float(xy[1]) / float(model["height"])))
+            samples[frame].append((
+                point_id,
+                [float(value) for value in point],
+                float(xy[0]),
+                float(xy[1]),
+                int(model["width"]),
+                int(model["height"]),
+            ))
     return samples, cameras
 
 
-def calibrate_depth(depth: Any, samples: list[tuple[int, list[float], float, float]], w2c: list[float], minimum_samples: int, np: Any) -> dict[str, Any]:
+def calibrate_depth(
+    depth: Any,
+    samples: list[tuple[int, list[float], float, float, int, int]],
+    w2c: list[float],
+    pose_hash: str,
+    minimum_samples: int,
+    minimum_held_out_samples: int,
+    np: Any,
+) -> dict[str, Any]:
     train: list[float] = []
     held_out: list[float] = []
     height, width = depth.shape
-    for point_id, point, nx, ny in samples:
-        measured = bilinear(depth, nx * (width - 1), ny * (height - 1))
+    for point_id, point, x, y, source_width, source_height in samples:
+        # This matches the immutable raster's half-pixel resize contract.
+        measured = bilinear(depth, (x + 0.5) * width / source_width - 0.5, (y + 0.5) * height / source_height - 0.5)
         expected = camera_depth(w2c, point)
         if measured is None or expected <= 0 or not math.isfinite(expected):
             continue
         log_ratio = math.log(expected / measured)
-        (held_out if point_id % 5 == 0 else train).append(log_ratio)
+        (held_out if held_out_track(pose_hash, point_id) else train).append(log_ratio)
     log_scale = median(train)
     held_out_error = median([abs(value - log_scale) for value in held_out]) if log_scale is not None else None
-    accepted = log_scale is not None and len(train) >= minimum_samples and held_out_error is not None
+    train_error = median([abs(value - log_scale) for value in train]) if log_scale is not None else None
+    accepted = log_scale is not None and len(train) >= minimum_samples and len(held_out) >= minimum_held_out_samples and held_out_error is not None
     return {
         "scale": math.exp(log_scale) if log_scale is not None else 1.0,
         "train_samples": len(train),
+        "train_median_log_error": train_error,
         "held_out_samples": len(held_out),
         "held_out_median_log_error": held_out_error,
         "accepted": accepted,
@@ -117,6 +144,9 @@ def run(args: argparse.Namespace) -> None:
         "source_artifact": str(args.artifact),
         "source_manifest_sha256": sha256_file(args.artifact / "manifest.json"),
         "minimum_training_samples": args.minimum_training_samples,
+        "minimum_held_out_samples": args.minimum_held_out_samples,
+        "pixel_mapping": PIXEL_MAPPING,
+        "track_split": TRACK_SPLIT,
         "maximum_held_out_median_log_error": args.maximum_held_out_median_log_error,
         "frames": [],
     }
@@ -132,7 +162,11 @@ def run(args: argparse.Namespace) -> None:
             frame_indices = arrays["frame_indices"].copy()
         for offset, raw_index in enumerate(frame_indices):
             frame_index = int(raw_index)
-            result = calibrate_depth(depth[offset], evidence.get(frame_index, []), cameras[frame_index], args.minimum_training_samples, np)
+            result = calibrate_depth(
+                depth[offset], evidence.get(frame_index, []), cameras[frame_index],
+                args.pose_solution, args.minimum_training_samples,
+                args.minimum_held_out_samples, np,
+            )
             result.update({"frame_index": frame_index, "batch_index": batch_index})
             if result["accepted"]:
                 depth[offset] *= float(result["scale"])
@@ -178,11 +212,12 @@ def main() -> None:
     parser.add_argument("--pose-solution", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--minimum-training-samples", type=int, default=12)
+    parser.add_argument("--minimum-held-out-samples", type=int, default=6)
     parser.add_argument("--maximum-held-out-median-log-error", type=float, default=0.20)
     parser.add_argument("--confidence-percentile", type=float, default=40.0)
     parser.add_argument("--pixel-stride", type=int, default=2)
     args = parser.parse_args()
-    if args.minimum_training_samples <= 0 or args.maximum_held_out_median_log_error < 0:
+    if args.minimum_training_samples <= 0 or args.minimum_held_out_samples <= 0 or args.maximum_held_out_median_log_error < 0:
         parser.error("calibration thresholds must be positive")
     run(args)
 
