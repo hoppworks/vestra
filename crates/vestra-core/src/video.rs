@@ -52,6 +52,10 @@ pub struct VideoExtractionSettings {
 /// stronger, geometry-aware decision from the same canonical rasters.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GeometryKeyframeSettings {
+    /// Minimum time from the previous retained raster. This prevents a smooth
+    /// pan from forwarding every high-rate candidate merely because all pixels
+    /// changed a little.
+    pub minimum_gap_seconds: f64,
     /// Minimum thumbnail luma change from the last retained frame.
     pub minimum_novelty: f32,
     /// Do not leave a longer temporal hole even when a walk-through is slow.
@@ -63,6 +67,7 @@ pub struct GeometryKeyframeSettings {
 impl Default for GeometryKeyframeSettings {
     fn default() -> Self {
         Self {
+            minimum_gap_seconds: 0.4,
             minimum_novelty: 0.015,
             maximum_gap_seconds: 0.6,
             minimum_sharpness: 0.012,
@@ -472,6 +477,8 @@ pub fn select_geometry_keyframes(
     if candidates.len() <= 2
         || !candidate_fps.is_finite()
         || candidate_fps <= 0.0
+        || !settings.minimum_gap_seconds.is_finite()
+        || settings.minimum_gap_seconds < 0.0
         || !settings.maximum_gap_seconds.is_finite()
         || settings.maximum_gap_seconds <= 0.0
     {
@@ -479,6 +486,9 @@ pub fn select_geometry_keyframes(
     }
     let signatures = candidates.iter().map(frame_signature).collect::<Vec<_>>();
     let maximum_gap = (settings.maximum_gap_seconds * candidate_fps)
+        .ceil()
+        .max(1.0) as usize;
+    let minimum_gap = (settings.minimum_gap_seconds * candidate_fps)
         .ceil()
         .max(1.0) as usize;
     let mut selected = vec![0];
@@ -489,6 +499,7 @@ pub fn select_geometry_keyframes(
         let forced = candidate_index - previous >= maximum_gap;
         if forced
             || (signature.sharpness >= settings.minimum_sharpness
+                && candidate_index - previous >= minimum_gap
                 && novelty >= settings.minimum_novelty)
         {
             selected.push(candidate_index);
@@ -870,6 +881,7 @@ mod tests {
                 &candidates,
                 8.0,
                 GeometryKeyframeSettings {
+                    minimum_gap_seconds: 0.0,
                     maximum_gap_seconds: 0.25,
                     ..GeometryKeyframeSettings::default()
                 },
@@ -886,6 +898,7 @@ mod tests {
                 &candidates,
                 8.0,
                 GeometryKeyframeSettings {
+                    minimum_gap_seconds: 0.1,
                     maximum_gap_seconds: 2.0,
                     ..GeometryKeyframeSettings::default()
                 },

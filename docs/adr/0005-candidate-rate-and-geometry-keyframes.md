@@ -12,9 +12,12 @@ opportunities for registration drift.
 ## Decision
 
 Vestra decodes at a fixed candidate rate (currently 8 fps) with a safety
-ceiling. It then retains geometry inputs deterministically using thumbnail
-luma novelty, a local sharpness floor, and a maximum 0.6-second temporal gap.
-The first and final candidate frames are always retained.
+ceiling. It then retains geometry inputs deterministically using a 0.4-second
+minimum temporal baseline, thumbnail luma novelty, a local sharpness floor,
+and a maximum 0.6-second temporal gap. The lower bound prevents a smooth pan
+from treating every candidate as a new geometry view; the upper bound keeps a
+slow walk-through from developing large temporal holes. The first and final
+candidate frames are always retained.
 
 The selected canonical rasters are renumbered for the engine, while
 `decoded/selection.json` records the original candidate indices. Raster

@@ -31,6 +31,7 @@ SCHEMA = "vestra.colmap-global-pose-run/v1"
 @dataclass(frozen=True)
 class Settings:
     colmap: str
+    container_image: str | None
     threads: int
     camera_model: str
     sequential_overlap: int
@@ -56,6 +57,26 @@ def run(command: list[str], log: Path) -> None:
         stream.write(f"exit={result.returncode}\n\n")
     if result.returncode:
         raise RuntimeError(f"COLMAP command failed ({result.returncode}); see {log}")
+
+
+def colmap_command(args: argparse.Namespace, colmap_args: list[str]) -> list[str]:
+    """Returns a direct or pinned-container COLMAP invocation.
+
+    Container mode binds only the immutable scene, the vocabulary-tree parent,
+    and the output parent at their original absolute paths. No network is
+    required after the image is present locally.
+    """
+    if not args.container_image:
+        return [args.colmap, *colmap_args]
+    roots = {
+        args.scene.resolve(),
+        args.output.resolve().parent,
+        args.vocabulary_tree.resolve().parent,
+    }
+    command = [args.container_engine, "run", "--rm", "--network", "none"]
+    for root in sorted(roots):
+        command.extend(["--volume", f"{root}:{root}:Z"])
+    return [*command, args.container_image, "colmap", *colmap_args]
 
 
 def read_raster_manifest(scene: Path) -> tuple[dict, Path]:
@@ -111,6 +132,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True, help="new, empty run directory")
     parser.add_argument("--vocabulary-tree", type=Path, required=True)
     parser.add_argument("--colmap", default="colmap", help="pinned COLMAP executable or wrapper")
+    parser.add_argument(
+        "--container-image",
+        help="optional pre-pulled COLMAP container image; keeps the run independent of host COLMAP",
+    )
+    parser.add_argument("--container-engine", default="podman")
     parser.add_argument("--threads", type=int, default=16)
     parser.add_argument("--sequential-overlap", type=int, default=20)
     parser.add_argument("--retrieval-images", type=int, default=30)
@@ -138,49 +164,50 @@ def main() -> int:
     log = output / "colmap.log"
     settings = Settings(
         colmap=args.colmap,
+        container_image=args.container_image,
         threads=args.threads,
         camera_model="SIMPLE_RADIAL",
         sequential_overlap=args.sequential_overlap,
         retrieval_images=args.retrieval_images,
         vocabulary_tree_sha256=sha256_file(tree),
     )
-    common_feature = [
-        args.colmap, "feature_extractor", "--database_path", str(database), "--image_path", str(decoded),
+    common_feature = colmap_command(args, [
+        "feature_extractor", "--database_path", str(database), "--image_path", str(decoded),
         "--ImageReader.single_camera", "1", "--ImageReader.camera_model", settings.camera_model,
         "--SiftExtraction.use_gpu", "0", "--SiftExtraction.num_threads", str(settings.threads),
-    ]
+    ])
     run(common_feature, log)
-    run([
-        args.colmap, "sequential_matcher", "--database_path", str(database),
+    run(colmap_command(args, [
+        "sequential_matcher", "--database_path", str(database),
         "--SiftMatching.use_gpu", "0", "--SiftMatching.num_threads", str(settings.threads),
         "--SequentialMatching.overlap", str(settings.sequential_overlap),
         "--SequentialMatching.quadratic_overlap", "1", "--SiftMatching.guided_matching", "1",
-    ], log)
+    ]), log)
     # Retrieval adds only visually similar candidates; geometric verification
     # remains COLMAP's matcher/mapper responsibility. This is intentionally
     # not exhaustive matching for a long local video.
-    run([
-        args.colmap, "vocab_tree_matcher", "--database_path", str(database),
+    run(colmap_command(args, [
+        "vocab_tree_matcher", "--database_path", str(database),
         "--VocabTreeMatching.vocab_tree_path", str(tree),
         "--VocabTreeMatching.num_images", str(settings.retrieval_images),
         "--SiftMatching.use_gpu", "0", "--SiftMatching.num_threads", str(settings.threads),
         "--SiftMatching.guided_matching", "1",
-    ], log)
-    run([
-        args.colmap, "mapper", "--database_path", str(database), "--image_path", str(decoded),
+    ]), log)
+    run(colmap_command(args, [
+        "mapper", "--database_path", str(database), "--image_path", str(decoded),
         "--output_path", str(sparse), "--Mapper.ba_global_function_tolerance", "0.000001",
         "--Mapper.num_threads", str(settings.threads),
-    ], log)
+    ]), log)
     model = largest_model(sparse)
     ba = output / "global-ba"
-    run([
-        args.colmap, "bundle_adjuster", "--input_path", str(model), "--output_path", str(ba),
+    run(colmap_command(args, [
+        "bundle_adjuster", "--input_path", str(model), "--output_path", str(ba),
         "--BundleAdjustment.refine_focal_length", "1", "--BundleAdjustment.refine_extra_params", "1",
-    ], log)
-    run([
-        args.colmap, "model_converter", "--input_path", str(ba), "--output_path", str(text),
+    ]), log)
+    run(colmap_command(args, [
+        "model_converter", "--input_path", str(ba), "--output_path", str(text),
         "--output_type", "TXT",
-    ], log)
+    ]), log)
     images_txt = text / "images.txt"
     # COLMAP text models store exactly two physical lines per image: the pose
     # line and its 2D observations (which may be blank). Preserve blanks so

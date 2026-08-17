@@ -24,9 +24,13 @@ python3 tools/run_colmap_global_pose.py \
   --scene /path/to/world.vestra \
   --output /path/to/colmap-retrieval-run \
   --vocabulary-tree /path/to/vocab_tree_flickr100K_words256K.bin \
-  --colmap /path/to/pinned-colmap \
+  --container-image docker.io/colmap/colmap:latest \
   --threads 16
 ```
+
+`--colmap /path/to/pinned-colmap` remains available for a directly installed
+binary. Container mode binds only the scene, vocabulary-tree and output
+directories at their original paths and runs without network access.
 
 `run.json`, `colmap.log`, the optimized COLMAP model and text `images.txt` are
 all retained. Import only the final global-BA output:

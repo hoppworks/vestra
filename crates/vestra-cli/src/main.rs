@@ -1594,7 +1594,7 @@ fn settings_fingerprint(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let video_hash = sha256_file(video)?;
     let settings = format!(
-        "video={video_hash};candidate_fps={candidate_fps:?};hard_max_frames={hard_max_frames};geometry_keyframe_selection=v1;geometry_minimum_novelty=0.015;geometry_maximum_gap_seconds=0.6;geometry_minimum_sharpness=0.012;width={width};height={height};chunk={chunk_size};overlap={overlap};minimum_confidence={minimum_confidence:?};pixel_stride={pixel_stride};cpp_pr2_relative={cpp_pr2_relative}"
+        "video={video_hash};candidate_fps={candidate_fps:?};hard_max_frames={hard_max_frames};geometry_keyframe_selection=v2;geometry_minimum_gap_seconds=0.4;geometry_minimum_novelty=0.015;geometry_maximum_gap_seconds=0.6;geometry_minimum_sharpness=0.012;width={width};height={height};chunk={chunk_size};overlap={overlap};minimum_confidence={minimum_confidence:?};pixel_stride={pixel_stride};cpp_pr2_relative={cpp_pr2_relative}"
     );
     Ok(Sha256::digest(settings.as_bytes())
         .iter()
