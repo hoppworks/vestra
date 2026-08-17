@@ -110,6 +110,20 @@ class PoseConditionedRunnerTest(unittest.TestCase):
                 {0, 1, 2, 3, 4},
             )
 
+    def test_covisibility_direction_gate_keeps_opposing_views_out_of_one_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scene, pose_hash = self.write_scene(Path(directory))
+            pose_path = scene / "chunks" / f"pose-{pose_hash}.json"
+            pose = json.loads(pose_path.read_text())
+            # Frame four observes the same landmarks but looks the other way.
+            pose["frames"][4]["world_to_camera"][10] = -1
+            pose_path.write_text(json.dumps(pose))
+            _, frames = SIDECAR.read_inputs(scene, pose_hash)
+            with self.assertRaisesRegex(ValueError, "direction-compatible"):
+                SIDECAR.covisibility_batches(
+                    scene, pose_hash, frames, batch_size=3, overlap=1, min_view_direction_dot=0.25,
+                )
+
     def test_validate_only_rejects_raster_tampering_before_model_work(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

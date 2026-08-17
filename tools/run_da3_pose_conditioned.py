@@ -174,7 +174,14 @@ def batches(frames: list[Frame], batch_size: int, overlap: int) -> list[list[Fra
     return result
 
 
-def covisibility_batches(scene: Path, pose_hash: str, frames: list[Frame], batch_size: int, overlap: int) -> list[list[Frame]]:
+def covisibility_batches(
+    scene: Path,
+    pose_hash: str,
+    frames: list[Frame],
+    batch_size: int,
+    overlap: int,
+    min_view_direction_dot: float = -1.0,
+) -> list[list[Frame]]:
     """Build bounded DA3 contexts from shared COLMAP landmark observations.
 
     Temporal proximity is a poor proxy after a turn or doorway transition.
@@ -187,11 +194,30 @@ def covisibility_batches(scene: Path, pose_hash: str, frames: list[Frame], batch
         fail("pose-conditioned external-scale inference requires at least three registered frames")
     if batch_size < 3 or overlap < 0 or overlap >= batch_size:
         fail("batch size must be >=3 and overlap must be in [0, batch_size)")
+    if not -1.0 <= min_view_direction_dot <= 1.0:
+        fail("minimum view-direction dot product must be in [-1, 1]")
     pose = json.loads((scene / "chunks" / f"pose-{pose_hash}.json").read_text(encoding="utf-8"))
     trajectory = pose.get("global_trajectory")
     if not isinstance(trajectory, dict):
         fail("pose solution has no global calibrated trajectory")
     order = {frame.index: ordinal for ordinal, frame in enumerate(frames)}
+    directions = {
+        frame.index: tuple(float(component) for component in frame.w2c[8:11])
+        for frame in frames
+    }
+
+    def compatible(index: int, group: list[int]) -> bool:
+        direction = directions[index]
+        norm = math.sqrt(sum(component * component for component in direction))
+        if not math.isfinite(norm) or norm <= 0.0:
+            fail(f"frame {index} has an invalid COLMAP optical axis")
+        for member in group:
+            other = directions[member]
+            other_norm = math.sqrt(sum(component * component for component in other))
+            dot = sum(left * right for left, right in zip(direction, other)) / (norm * other_norm)
+            if not math.isfinite(dot) or dot < min_view_direction_dot:
+                return False
+        return True
     weights: dict[tuple[int, int], int] = {}
     for track in trajectory.get("tracks", []):
         observed = sorted({int(item.get("frame_index", -1)) for item in track.get("observations", []) if int(item.get("frame_index", -1)) in order})
@@ -219,8 +245,11 @@ def covisibility_batches(scene: Path, pose_hash: str, frames: list[Frame], batch
         core = [anchor]
         remaining.remove(anchor)
         while remaining and len(core) < core_size:
+            eligible = [index for index in remaining if compatible(index, core)]
+            if not eligible:
+                break
             candidate = min(
-                remaining,
+                eligible,
                 key=lambda index: (
                     -sum(weight(index, member) for member in core),
                     temporal_distance(index, core),
@@ -229,7 +258,10 @@ def covisibility_batches(scene: Path, pose_hash: str, frames: list[Frame], batch
             )
             core.append(candidate)
             remaining.remove(candidate)
-        context_pool = [frame.index for frame in frames if frame.index not in core]
+        context_pool = [
+            frame.index for frame in frames
+            if frame.index not in core and compatible(frame.index, core)
+        ]
         context_pool.sort(
             key=lambda index: (
                 -sum(weight(index, member) for member in core),
@@ -241,6 +273,11 @@ def covisibility_batches(scene: Path, pose_hash: str, frames: list[Frame], batch
         # external-scale path still requires a real three-view context.
         context_count = max(overlap, 3 - len(core))
         selected = core + context_pool[: min(context_count, len(context_pool))]
+        if len(selected) < 3:
+            fail(
+                f"frame {anchor} has fewer than three direction-compatible COLMAP views; "
+                "relax --min-view-direction-dot or recapture"
+            )
         # Keep the model input order stable by raster/frame order. This also
         # makes first-owner depth emission deterministic across reruns.
         result.append([by_index[index] for index in sorted(selected, key=order.__getitem__)])
@@ -413,7 +450,14 @@ def write_depth_frames(directory: Path, batch_paths: Iterable[Path], np: Any) ->
 def run(args: argparse.Namespace) -> None:
     raster_fingerprint, frames = read_inputs(args.scene, args.pose_solution)
     layout = (
-        covisibility_batches(args.scene, args.pose_solution, frames, args.batch_size, args.overlap)
+        covisibility_batches(
+            args.scene,
+            args.pose_solution,
+            frames,
+            args.batch_size,
+            args.overlap,
+            args.min_view_direction_dot,
+        )
         if args.batch_layout == "covisibility"
         else batches(frames, args.batch_size, args.overlap)
     )
@@ -427,7 +471,9 @@ def run(args: argparse.Namespace) -> None:
     manifest: dict[str, Any] = {
         "schema": SCHEMA, "raster_fingerprint": raster_fingerprint, "pose_solution_hash": args.pose_solution,
         "model_ref": args.model_ref, "model_revision": args.model_revision, "batch_size": args.batch_size,
-        "overlap": args.overlap, "batch_layout": args.batch_layout, "pixel_stride": args.pixel_stride, "process_resolution": [504, 336],
+        "overlap": args.overlap, "batch_layout": args.batch_layout,
+        "min_view_direction_dot": args.min_view_direction_dot,
+        "pixel_stride": args.pixel_stride, "process_resolution": [504, 336],
         "align_to_input_ext_scale": True, "frames": [frame.index for frame in frames],
         "batches": [{"frames": [frame.index for frame in batch]} for batch in layout],
     }
@@ -506,6 +552,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--overlap", type=int, default=4)
     parser.add_argument("--batch-layout", choices=("temporal", "covisibility"), default="temporal")
+    parser.add_argument(
+        "--min-view-direction-dot",
+        type=float,
+        default=-1.0,
+        help="Require every covisibility context pair to meet this optical-axis dot product (e.g. 0.25 is <=75 degrees).",
+    )
     parser.add_argument("--confidence-percentile", type=float, default=40.0)
     parser.add_argument("--pixel-stride", type=int, default=2)
     parser.add_argument("--validate-only", action="store_true")
