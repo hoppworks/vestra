@@ -134,9 +134,25 @@ enum Command {
         #[arg(long)]
         raw_surfels: bool,
     },
+    /// Build a separate world from any validated global-pose provider.
+    FuseGlobalPose {
+        #[arg(long)]
+        scene: PathBuf,
+        #[arg(long)]
+        pose_solution: String,
+        #[arg(long)]
+        raw_surfels: bool,
+    },
     /// Report the per-window camera fit to a published COLMAP solution without
     /// changing the selected world product.
     InspectColmapGlobal {
+        #[arg(long)]
+        scene: PathBuf,
+        #[arg(long)]
+        pose_solution: String,
+    },
+    /// Report local-window camera fits to any validated global-pose provider.
+    InspectGlobalPose {
         #[arg(long)]
         scene: PathBuf,
         #[arg(long)]
@@ -1036,6 +1052,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             scene,
             pose_solution,
             raw_surfels,
+        }
+        | Command::FuseGlobalPose {
+            scene,
+            pose_solution,
+            raw_surfels,
         } => {
             let bundle = SceneBundle::open(scene)?;
             let fusion = fuse_scene_bundle_with_pose_solution(
@@ -1049,7 +1070,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "{}",
                 serde_json::json!({
-                    "schema": "vestra.colmap-global-fuse/v1",
+                    "schema": "vestra.global-pose-fuse/v1",
                     "bundle": bundle.root(),
                     "pose_solution": pose_solution,
                     "fused_chunk": fusion.chunk_hash,
@@ -1060,6 +1081,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         Command::InspectColmapGlobal {
+            scene,
+            pose_solution,
+        }
+        | Command::InspectGlobalPose {
             scene,
             pose_solution,
         } => {
