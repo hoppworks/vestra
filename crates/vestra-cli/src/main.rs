@@ -19,8 +19,8 @@ use vestra_core::{
     export_fused_splat, extract_video_frames, finalized_raster_manifest,
     fuse_scene_bundle_cpp_pr2_relative, fuse_scene_bundle_with_pose_solution,
     fuse_scene_bundle_with_settings, fused_topology, global_pose_window_reports,
-    load_decoded_frame_cache, load_decoded_rgb24_cache, plan_windows, reconstruct_frames,
-    video_raster_metadata,
+    import_colmap_fused_ply, load_decoded_frame_cache, load_decoded_rgb24_cache, plan_windows,
+    reconstruct_frames, video_raster_metadata,
 };
 use vestra_engine::{Engine, QuantPref, ViewInput};
 use vestra_studio::{IntakeConfig, serve, serve_intake};
@@ -192,6 +192,15 @@ enum Command {
         /// Emit raw surfels instead of the default frame-global TSDF product.
         #[arg(long)]
         raw_surfels: bool,
+    },
+    /// Publish a dense COLMAP-MVS control cloud as a separate browser product.
+    /// It never changes DA3 measurements or any Vestra-derived world.
+    ImportColmapMvs {
+        #[arg(long)]
+        scene: PathBuf,
+        /// Binary-little-endian PLY produced by `colmap stereo_fusion`.
+        #[arg(long)]
+        ply: PathBuf,
     },
     /// Attach the exact decoded-raster contract to a legacy scene before
     /// importing a global pose provider. This never re-runs DA3 inference.
@@ -1232,6 +1241,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "omitted_frames": fusion.omitted_frames,
                     "fused_points": fusion.points,
                     "surface": if raw_surfels { "surfel" } else { "tsdf" },
+                })
+            );
+        }
+        Command::ImportColmapMvs { scene, ply } => {
+            let bundle = SceneBundle::open(scene)?;
+            let cloud = import_colmap_fused_ply(&ply)?;
+            let chunk_hash = bundle.write_fused_scene_as(
+                &cloud,
+                "colmap-mvs-geometric",
+                "colmap-dense-mvs",
+                "surfel",
+                None,
+            )?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "vestra.colmap-mvs-import/v1",
+                    "bundle": bundle.root(),
+                    "input": ply,
+                    "fused_chunk": chunk_hash,
+                    "fused_points": cloud.points.len(),
+                    "surface": "surfel",
                 })
             );
         }

@@ -13,6 +13,7 @@ pub mod export;
 pub mod geometry;
 pub mod global_fusion;
 mod icp;
+pub mod mvs;
 pub mod pose;
 pub mod pose_graph;
 pub mod reconstruction;
@@ -37,6 +38,7 @@ pub use global_fusion::{
     FrameGlobalFusionError, FrameGlobalFusionProgress, FrameGlobalFusionSettings,
     FrameGlobalReport, frame_global_reports, fuse_scene_bundle_frame_global,
 };
+pub use mvs::{MvsImportError, import_colmap_fused_ply};
 pub use pose::{
     ColmapCameraModel, GlobalTrajectoryEvidence, PoseDiagnostics, PoseError, PoseFrame,
     PoseProvider, PoseSolution, RasterCrop, RasterFrame, RasterManifest, SparseTrack,
