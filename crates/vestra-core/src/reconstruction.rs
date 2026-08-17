@@ -195,7 +195,7 @@ pub fn fuse_scene_bundle_with_pose_solution(
     let solution = bundle.read_pose_solution(pose_solution_hash)?;
     if !matches!(
         solution.provider.kind.as_str(),
-        "colmap" | "droid-slam" | "vggt"
+        "colmap" | "droid-slam" | "vggt" | "hybrid-colmap-droid"
     ) {
         return Err(ReconstructionError::Scene(
             SceneBundleError::InvalidArtifact("unsupported global-pose provider".to_owned()),
@@ -241,7 +241,7 @@ pub fn global_pose_window_reports(
     let solution = bundle.read_pose_solution(pose_solution_hash)?;
     if !matches!(
         solution.provider.kind.as_str(),
-        "colmap" | "droid-slam" | "vggt"
+        "colmap" | "droid-slam" | "vggt" | "hybrid-colmap-droid"
     ) {
         return Err(ReconstructionError::Scene(
             SceneBundleError::InvalidArtifact("unsupported global-pose provider".to_owned()),

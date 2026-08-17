@@ -148,7 +148,9 @@ pub fn validate_pose_solution(
     }
     let expected_convention = match solution.provider.kind.as_str() {
         "colmap" => "COLMAP world; W2C row-major 3x4 f64",
-        "droid-slam" | "vggt" => "OpenCV world; W2C row-major 3x4 f64",
+        "droid-slam" | "vggt" | "hybrid-colmap-droid" => {
+            "OpenCV world; W2C row-major 3x4 f64"
+        }
         other => {
             return Err(PoseError::Solution(format!(
                 "unsupported pose provider {other:?}"
@@ -507,6 +509,10 @@ mod tests {
             },
         };
         validate_pose_solution(&solution, &raster).unwrap();
+
+        let mut hybrid = solution.clone();
+        hybrid.provider.kind = "hybrid-colmap-droid".to_owned();
+        validate_pose_solution(&hybrid, &raster).unwrap();
 
         let mut mismatched = solution.clone();
         mismatched.frames[0].image_name = "wrong.ppm".to_owned();
