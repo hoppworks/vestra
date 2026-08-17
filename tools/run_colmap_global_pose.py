@@ -86,7 +86,10 @@ def read_raster_manifest(scene: Path) -> tuple[dict, Path]:
         raise ValueError("scene has no immutable raster_manifest_hash")
     raster_path = scene / "chunks" / f"raster-{raster_hash}.json"
     raster = json.loads(raster_path.read_text(encoding="utf-8"))
-    if raster.get("schema") != "vestra.raster-manifest/v1":
+    # This is the durable core contract written by `RasterManifest`; it binds
+    # COLMAP to the exact decoded/cropped PPM evidence rather than an ad-hoc
+    # video-frame list.
+    if raster.get("schema") != "vestra.raster/v1":
         raise ValueError("unsupported raster manifest schema")
     return raster, raster_path
 
