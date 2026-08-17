@@ -1483,6 +1483,7 @@ mod tests {
         assert!(INDEX_HTML.contains("attribute.size||3"));
         assert!(INDEX_HTML.contains("id=\"products\""));
         assert!(INDEX_HTML.contains("function bindProductSelector"));
+        assert!(INDEX_HTML.contains("selectedProduct.pose_authority"));
         assert!(INDEX_HTML.contains("fetch('manifest.json'+productSuffix"));
         assert!(!INDEX_HTML.contains("fetch('/manifest.json"));
     }
