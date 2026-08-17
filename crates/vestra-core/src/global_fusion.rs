@@ -21,6 +21,10 @@ pub struct FrameGlobalFusionSettings {
     pub maximum_held_out_median_log_error: f32,
     /// Reject sparse tracks whose final global-BA reprojection error is worse.
     pub maximum_track_reprojection_error_px: f64,
+    /// A frame-global product needs broad trajectory coverage. Frames that
+    /// fail the held-out scale gate are omitted, never interpolated, but a
+    /// product with only isolated good fragments must not be published.
+    pub minimum_fused_frame_fraction: f32,
     /// Build a second, explicit TSDF surface rather than raw rebased surfels.
     pub tsdf: Option<TsdfSettings>,
 }
@@ -31,6 +35,7 @@ impl Default for FrameGlobalFusionSettings {
             minimum_scale_samples: 12,
             maximum_held_out_median_log_error: 0.20,
             maximum_track_reprojection_error_px: 2.5,
+            minimum_fused_frame_fraction: 0.85,
             tsdf: Some(TsdfSettings::default()),
         }
     }
@@ -68,6 +73,14 @@ pub enum FrameGlobalFusionError {
     },
     #[error("frame-global settings are invalid")]
     InvalidSettings,
+    #[error(
+        "only {actual}/{total} frames passed frame-global gates; need at least {minimum_fraction:.0}% coverage"
+    )]
+    InsufficientFrameCoverage {
+        actual: usize,
+        total: usize,
+        minimum_fraction: f32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,11 +149,8 @@ pub fn fuse_scene_bundle_frame_global(
             },
         )?;
         if held_out > settings.maximum_held_out_median_log_error {
-            return Err(FrameGlobalFusionError::DepthScaleQuality {
-                frame_index,
-                actual: held_out,
-                maximum: settings.maximum_held_out_median_log_error,
-            });
+            omitted_frames += 1;
+            continue;
         }
         let Some((pose, camera)) = global_pose_and_camera(frame_index, &solution, evidence) else {
             omitted_frames += 1;
@@ -174,6 +184,18 @@ pub fn fuse_scene_bundle_frame_global(
                 });
             }
         }
+    }
+    let total_candidate_frames = (fused_frames + omitted_frames).max(1);
+    if !has_required_coverage(
+        fused_frames,
+        total_candidate_frames,
+        settings.minimum_fused_frame_fraction,
+    ) {
+        return Err(FrameGlobalFusionError::InsufficientFrameCoverage {
+            actual: fused_frames,
+            total: total_candidate_frames,
+            minimum_fraction: settings.minimum_fused_frame_fraction,
+        });
     }
     let (points, voxel_size) = if let Some(tsdf) = settings.tsdf {
         let points = fuse_normal_space_tsdf(&observations, &cameras, tsdf)
@@ -227,10 +249,16 @@ fn validate_settings(settings: FrameGlobalFusionSettings) -> Result<(), FrameGlo
         || settings.maximum_held_out_median_log_error < 0.0
         || !settings.maximum_track_reprojection_error_px.is_finite()
         || settings.maximum_track_reprojection_error_px <= 0.0
+        || !settings.minimum_fused_frame_fraction.is_finite()
+        || !(0.0..=1.0).contains(&settings.minimum_fused_frame_fraction)
     {
         return Err(FrameGlobalFusionError::InvalidSettings);
     }
     Ok(())
+}
+
+fn has_required_coverage(fused_frames: usize, total_frames: usize, minimum_fraction: f32) -> bool {
+    fused_frames as f32 / total_frames.max(1) as f32 >= minimum_fraction
 }
 
 fn canonical_views(
@@ -611,5 +639,12 @@ mod tests {
             raster_pixel([811.107142857, 541.107142857], &camera, &raster),
             Some([252, 168])
         );
+    }
+
+    #[test]
+    fn frame_global_coverage_rejects_isolated_good_fragments() {
+        assert!(has_required_coverage(200, 230, 0.85));
+        assert!(!has_required_coverage(195, 230, 0.85));
+        assert!(!has_required_coverage(0, 0, 0.85));
     }
 }
