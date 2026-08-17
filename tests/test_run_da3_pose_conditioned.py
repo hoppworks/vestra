@@ -33,7 +33,7 @@ class PoseConditionedRunnerTest(unittest.TestCase):
         frames = []
         for index in range(5):
             name = f"frame-{index:06d}.ppm"
-            payload = f"frame-{index}".encode()
+            payload = b"P6\n2 2\n255\n" + bytes([index, 0, 0]) * 4
             (decoded / name).write_bytes(payload)
             frames.append({"frame_index": index, "file_name": name, "sha256": digest(payload)})
         raster_fingerprint = "r" * 64
@@ -70,6 +70,9 @@ class PoseConditionedRunnerTest(unittest.TestCase):
             self.assertEqual(manifest["schema"], "vestra.da3-pose-conditioned/v1")
             self.assertEqual(manifest["pixel_stride"], 3)
             self.assertEqual([batch["frames"] for batch in manifest["batches"]], [[0, 1, 2], [2, 3, 4]])
+            # The 504×336 pose camera is rescaled into the decoded 2×2 PPM
+            # evidence before any GPU inference receives it.
+            self.assertAlmostEqual(SIDECAR.read_inputs(scene, pose_hash)[1][0].intrinsics[0], 300 * 2 / 504)
 
     def test_validate_only_rejects_raster_tampering_before_model_work(self):
         with tempfile.TemporaryDirectory() as directory:

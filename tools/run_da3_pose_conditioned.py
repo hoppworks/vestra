@@ -37,6 +37,35 @@ def fail(message: str) -> None:
     raise ValueError(message)
 
 
+def ppm_dimensions(path: Path) -> tuple[int, int]:
+    """Parses only the bounded P6 header needed to calibrate a raster."""
+    with path.open("rb") as source:
+        header = source.read(4_096)
+    fields: list[bytes] = []
+    offset = 0
+    while offset < len(header) and len(fields) < 4:
+        while offset < len(header) and header[offset] in b" \t\r\n":
+            offset += 1
+        if offset < len(header) and header[offset] == ord("#"):
+            while offset < len(header) and header[offset] not in b"\r\n":
+                offset += 1
+            continue
+        start = offset
+        while offset < len(header) and header[offset] not in b" \t\r\n":
+            offset += 1
+        if start != offset:
+            fields.append(header[start:offset])
+    if len(fields) != 4 or fields[0] != b"P6" or fields[3] != b"255":
+        fail(f"decoded raster is not a supported P6 RGB24 PPM: {path.name}")
+    try:
+        width, height = int(fields[1]), int(fields[2])
+    except ValueError as error:
+        raise ValueError(f"decoded raster has invalid dimensions: {path.name}") from error
+    if width <= 0 or height <= 0:
+        fail(f"decoded raster has non-positive dimensions: {path.name}")
+    return width, height
+
+
 @dataclass(frozen=True)
 class Frame:
     index: int
@@ -85,6 +114,10 @@ def read_inputs(scene: Path, pose_hash: str) -> tuple[str, list[Frame]]:
             fail(f"decoded raster is missing before GPU inference: {file_name}")
         if sha256_file(image) != expected_sha:
             fail(f"decoded raster hash mismatch before GPU inference: {file_name}")
+        image_width, image_height = ppm_dimensions(image)
+        camera_width, camera_height = int(camera.get("width", 0)), int(camera.get("height", 0))
+        if camera_width <= 0 or camera_height <= 0:
+            fail(f"invalid COLMAP camera dimensions for frame {index}")
         params = camera.get("parameters", [])
         if camera.get("model") not in {"SIMPLE_PINHOLE", "SIMPLE_RADIAL", "PINHOLE"} or len(params) < 3:
             fail(f"unsupported COLMAP camera model for frame {index}: {camera.get('model')!r}")
@@ -95,6 +128,13 @@ def read_inputs(scene: Path, pose_hash: str) -> tuple[str, list[Frame]]:
         else:
             focal, cx, cy = map(float, params[:3])
             fx = fy = focal
+        # COLMAP was run on the preserved 1620×1080 crop, while DA3 consumes
+        # Vestra's immutable 504×336 raster. W2C stays in the same cropped
+        # camera coordinate system; only K changes image units.
+        fx *= image_width / camera_width
+        cx *= image_width / camera_width
+        fy *= image_height / camera_height
+        cy *= image_height / camera_height
         if not all(math.isfinite(value) for value in (fx, fy, cx, cy)) or fx <= 0 or fy <= 0:
             fail(f"invalid COLMAP intrinsics for frame {index}")
         w2c = tuple(map(float, pose_frame["world_to_camera"]))
