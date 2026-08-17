@@ -162,6 +162,11 @@ enum Command {
         minimum_confidence: f32,
         #[arg(long, default_value_t = 8)]
         pixel_stride: usize,
+        /// Publish a normal-space TSDF surfel derivative in addition to the
+        /// immutable measured evidence. This improves surface continuity but
+        /// never changes the recorded camera/depth observations.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::SetTrue)]
+        tsdf: bool,
         /// Capture and fuse the dense PR #2-relative geometry profile. This
         /// is the default for new browser jobs; it preserves the evidence
         /// needed for closed-loop ICP and deferred pose-graph fusion.
@@ -438,6 +443,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             overlap,
             minimum_confidence,
             pixel_stride,
+            tsdf,
             cpp_pr2_relative,
         } => {
             let executable = std::env::current_exe()?;
@@ -454,6 +460,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 overlap,
                 minimum_confidence,
                 pixel_stride,
+                tsdf,
                 cpp_pr2_relative,
             })?;
         }

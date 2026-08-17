@@ -54,6 +54,9 @@ pub struct IntakeConfig {
     pub overlap: usize,
     pub minimum_confidence: f32,
     pub pixel_stride: usize,
+    /// Produce an additional normal-space TSDF surfel derivative. Raw
+    /// measured observations remain immutable and independently viewable.
+    pub tsdf: bool,
     /// Opt-in dense capture preserving the PR #2 emission evidence profile.
     pub cpp_pr2_relative: bool,
 }
@@ -167,6 +170,8 @@ struct IntakeSettings {
     overlap: usize,
     minimum_confidence: f32,
     pixel_stride: usize,
+    #[serde(default)]
+    tsdf: bool,
     #[serde(default)]
     cpp_pr2_relative: bool,
 }
@@ -410,6 +415,7 @@ impl From<&IntakeConfig> for IntakeSettings {
             overlap: config.overlap,
             minimum_confidence: config.minimum_confidence,
             pixel_stride: config.pixel_stride,
+            tsdf: config.tsdf,
             cpp_pr2_relative: config.cpp_pr2_relative,
         }
     }
@@ -545,6 +551,9 @@ fn spawn_reconstruction(
         .stderr(Stdio::from(log_file));
     if job.settings.cpp_pr2_relative {
         command.arg("--cpp-pr2-relative");
+    }
+    if job.settings.tsdf {
+        command.arg("--tsdf");
     }
     if resume {
         command.arg("--resume");
@@ -1310,6 +1319,7 @@ mod tests {
                 overlap: 0,
                 minimum_confidence: 1.0,
                 pixel_stride: 1,
+                tsdf: false,
                 cpp_pr2_relative: false,
             },
             child: None,
@@ -1441,6 +1451,7 @@ mod tests {
             overlap: 3,
             minimum_confidence: 0.5,
             pixel_stride: 6,
+            tsdf: true,
             cpp_pr2_relative: true,
         };
         let job = IntakeJob {
@@ -1467,6 +1478,7 @@ mod tests {
             overlap: 0,
             minimum_confidence: 1.0,
             pixel_stride: 1,
+            tsdf: false,
             cpp_pr2_relative: false,
         };
         let recovered = recover_latest_job(&config).unwrap().unwrap();
@@ -1474,6 +1486,7 @@ mod tests {
         assert_eq!(recovered.outcome, IntakeOutcome::Interrupted);
         assert_eq!(recovered.settings.frames, settings.frames);
         assert_eq!(recovered.settings.pixel_stride, settings.pixel_stride);
+        assert_eq!(recovered.settings.tsdf, settings.tsdf);
         assert_eq!(
             recovered.settings.cpp_pr2_relative,
             settings.cpp_pr2_relative
