@@ -1740,13 +1740,10 @@ mod tests {
         assert!(INDEX_HTML.contains("gl_FragColor=vec4(v,o)"));
         assert!(INDEX_HTML.contains("VestraCameraControls.viewMatrix(eye,orientation)"));
         assert!(!INDEX_HTML.contains("e=center.map"));
-        assert!(INDEX_HTML.contains("architectureProduct"));
-        assert!(INDEX_HTML.contains("adding verified wall, floor and ceiling support"));
-        assert!(INDEX_HTML.contains("overlay?1.35:1"));
-        assert!(INDEX_HTML.contains("batch.overlay ? .62 : 1"));
-        assert!(INDEX_HTML.contains("architecture_mesh_hash"));
-        assert!(INDEX_HTML.contains("uploadArchitectureMesh"));
-        assert!(INDEX_HTML.contains("gl.drawElements(gl.TRIANGLES"));
+        // Architectural mesh assets may be published for inspection/export,
+        // but they are intentionally not auto-layered over the coloured world
+        // until the plane-quality gate is robust for this capture.
+        assert!(!INDEX_HTML.contains("await loadLayer(architectureUrls"));
     }
 
     #[test]
