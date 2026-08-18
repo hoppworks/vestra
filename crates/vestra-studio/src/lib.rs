@@ -904,7 +904,24 @@ fn manifest_for_product(
     mut manifest: SceneManifest,
     product_id: Option<&str>,
 ) -> Result<SceneManifest, Box<dyn std::error::Error>> {
-    let id = product_id.or(manifest.selected_world_product.as_deref());
+    // Studio has one intentional 3D-world view, not a hidden model picker.
+    // Prefer the dense geometric MVS surfel product whenever it is present;
+    // architectural-plane derivatives remain export/evidence artifacts and
+    // must not replace the user's coloured capture-derived world.
+    let preferred = manifest
+        .world_products
+        .iter()
+        .find(|product| product.id == "colmap-mvs-geometric")
+        .or_else(|| {
+            manifest
+                .world_products
+                .iter()
+                .find(|product| product.surface_mode == "surfel")
+        })
+        .map(|product| product.id.as_str());
+    let id = product_id
+        .or(preferred)
+        .or(manifest.selected_world_product.as_deref());
     let Some(id) = id else {
         return Ok(manifest);
     };
