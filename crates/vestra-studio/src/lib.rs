@@ -1737,8 +1737,11 @@ mod tests {
         assert!(INDEX_HTML.contains("gl_PointSize=clamp"));
         assert!(INDEX_HTML.contains("gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT)"));
         assert!(INDEX_HTML.contains("gl_FragColor=vec4(v,1.)"));
-        assert!(INDEX_HTML.contains("const {x,y,z}=cameraBasis(),e=eye"));
+        assert!(INDEX_HTML.contains("VestraCameraControls.viewMatrix(eye,orientation)"));
         assert!(!INDEX_HTML.contains("e=center.map"));
+        assert!(INDEX_HTML.contains("architectureProduct"));
+        assert!(INDEX_HTML.contains("adding verified planar support"));
+        assert!(INDEX_HTML.contains("batch.overlay ? .32 : 1"));
     }
 
     #[test]

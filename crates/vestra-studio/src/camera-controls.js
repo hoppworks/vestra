@@ -17,6 +17,12 @@
   }
   // backward points target → camera, so forward is -backward.
   function cameraBasis(orientation) { const backward = normalize(rotate(orientation, [0, 0, 1])), rotatedUp = normalize(rotate(orientation, [0, 1, 0])), right = normalize(cross(rotatedUp, backward)), up = normalize(cross(backward, right)); return { right, up, backward, forward: backward.map(value => -value) }; }
+  // Column-major WebGL view matrix for a first-person camera. The eye is a
+  // position, never an orbit target: changing orientation cannot translate it.
+  function viewMatrix(eye, orientation) {
+    const { right, up, backward } = cameraBasis(orientation);
+    return [right[0], up[0], backward[0], 0, right[1], up[1], backward[1], 0, right[2], up[2], backward[2], 0, -right.reduce((sum, value, axis) => sum + value * eye[axis], 0), -up.reduce((sum, value, axis) => sum + value * eye[axis], 0), -backward.reduce((sum, value, axis) => sum + value * eye[axis], 0), 1];
+  }
   // Builds a camera orientation from an orthonormal world-space basis.
   function orientationFromBasis(right, up, backward) {
     const r = normalize(right), u = normalize(up), b = normalize(backward);
@@ -34,5 +40,5 @@
   // presentation uses +X right, +Y up, -Z forward. This proper 180° X rotation
   // keeps positions, normals, and camera rays coherent.
   function cameraToViewer(vector) { return [vector[0], -vector[1], -vector[2]]; }
-  root.VestraCameraControls = { axisAngle, cameraBasis, cameraToViewer, commandForKey, lookOrientation, move, normalizeQuaternion, orbit, orientationFromBasis, quaternionMultiply, rotate };
+  root.VestraCameraControls = { axisAngle, cameraBasis, cameraToViewer, commandForKey, lookOrientation, move, normalizeQuaternion, orbit, orientationFromBasis, quaternionMultiply, rotate, viewMatrix };
 }(typeof window === 'undefined' ? globalThis : window));
