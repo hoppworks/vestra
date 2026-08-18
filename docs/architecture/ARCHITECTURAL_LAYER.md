@@ -12,11 +12,6 @@ solution: on `IMG_2323` it splits visually continuous surfaces into several
 nearby planes.  It must not become the default product or be presented as a
 finished room model.
 
-The first supported product is deliberately narrower: **floor and wall
-surfaces only**.  The current attic capture has beams and an irregular roof,
-so ceiling and roof labels are explicitly excluded rather than forced into a
-misleading planar mesh.
-
 ## Accepted design
 
 The production path combines two independent evidence sources:
@@ -31,8 +26,8 @@ classify geometry; they cannot extend a wall through an unobserved region.
 
 ## Output rules
 
-- Floors and walls are planar regions assembled only from spatially connected,
-  observed support.  Ceiling and roof labels are excluded in this release.
+- Floors, vertical walls, flat ceilings, and roof slopes are planar regions
+  assembled only from spatially connected, observed support.
 - Furniture stays in the Reality product and is excluded from Architecture.
 - A door or opening is a hole in a supported wall polygon, never a painted
   rectangle.  A traversal through the candidate opening is provisional
@@ -61,16 +56,6 @@ and do not own geometry.
    depth discontinuity agree.  Traversal is recorded as additional evidence.
 4. Reality and Architecture remain distinct selectable products; an
    Architecture preview can never replace the source world silently.
-
-## Current extraction order
-
-`vestra extract-architecture --semantic-volume <masks.vsem>` first projects a
-bounded, spatially distributed sample of the global surfel world into every
-registered camera.  It requires two agreeing high-confidence floor or wall
-labels, rejects ceiling/roof outright, and vetoes candidates with repeated
-door/opening evidence.  Only then are floor and wall candidates fitted in
-separate RANSAC passes (one floor plane, up to the requested wall-plane
-budget).  Directly supported cells become triangles; no hole is bridged.
 
 ## Model boundary
 

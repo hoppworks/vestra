@@ -1740,12 +1740,10 @@ mod tests {
         assert!(INDEX_HTML.contains("gl_FragColor=vec4(v,o)"));
         assert!(INDEX_HTML.contains("VestraCameraControls.viewMatrix(eye,orientation)"));
         assert!(!INDEX_HTML.contains("e=center.map"));
-        // Generic RANSAC fragments are never auto-layered. Only a product that
-        // has survived the floor/wall multi-view semantic gate can contribute
-        // its mesh to the coloured world.
+        // Architectural mesh assets may be published for inspection/export,
+        // but they are intentionally not auto-layered over the coloured world
+        // until the plane-quality gate is robust for this capture.
         assert!(!INDEX_HTML.contains("await loadLayer(architectureUrls"));
-        assert!(INDEX_HTML.contains("architectural-floor-wall-support"));
-        assert!(INDEX_HTML.contains("uploadArchitectureMesh"));
     }
 
     #[test]
