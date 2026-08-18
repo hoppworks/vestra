@@ -1812,6 +1812,8 @@ mod tests {
         assert!(INDEX_HTML.contains("id=\"replay-points\""));
         assert!(INDEX_HTML.contains("src=\"input-video\""));
         assert!(INDEX_HTML.contains("fetch('replay/frames/"));
+        assert!(INDEX_HTML.contains("depthReplayProduct='da3-pose-conditioned-colmap-surfel'"));
+        assert!(INDEX_HTML.contains("depth/frames/'+frame+'.bmp?product="));
         assert!(INDEX_HTML.contains("function updateReplay()"));
         assert!(INDEX_HTML.contains("original capture · 3:2 crop"));
         assert!(INDEX_HTML.contains("depth map · matched camera"));
