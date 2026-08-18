@@ -28,7 +28,8 @@ pub use architecture::{
     ArchitecturalPlane, ArchitectureClass, ArchitectureEvidenceError, ArchitectureExtraction,
     ArchitectureMesh, ArchitectureMeshVertex, ArchitectureSemanticEvidence,
     ArchitectureSemanticFrame, ArchitectureSemanticVolume, ArchitectureSettings,
-    architecture_mesh_from_support_points, extract_architectural_planes,
+    VerifiedArchitectureSelection, architecture_mesh_from_support_points,
+    extract_architectural_planes, select_verified_floor_and_walls,
 };
 pub use cpp_pr2_oracle::{
     CppPr2CapiStreamOutput, CppPr2Fixture, CppPr2Frame, CppPr2MultiViewOutput, CppPr2MultiViewView,

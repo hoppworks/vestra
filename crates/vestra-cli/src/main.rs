@@ -266,6 +266,18 @@ enum Command {
         /// Limit the number of distinct architectural planes displayed.
         #[arg(long, default_value_t = 12)]
         maximum_planes: usize,
+        /// Optional VSEM1 sidecar from `tools/run_architecture_semantics.py`.
+        /// When supplied, only multi-view-agreed floor and wall cells become
+        /// the published product; ceiling and roof labels are excluded.
+        #[arg(long)]
+        semantic_volume: Option<PathBuf>,
+        /// Minimum semantic confidence in every agreeing view.
+        #[arg(long, default_value_t = 0.65)]
+        minimum_semantic_confidence: f32,
+        /// Independent registered views that must agree before a floor/wall
+        /// cell is allowed into the surface mesh.
+        #[arg(long, default_value_t = 2)]
+        minimum_semantic_views: usize,
     },
     /// Attach the exact decoded-raster contract to a legacy scene before
     /// importing a global pose provider. This never re-runs DA3 inference.
@@ -1833,8 +1845,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             source_product,
             maximum_source_points,
             maximum_planes,
+            semantic_volume,
+            minimum_semantic_confidence,
+            minimum_semantic_views,
         } => {
-            if maximum_source_points == 0 || maximum_planes == 0 {
+            if maximum_source_points == 0
+                || maximum_planes == 0
+                || !minimum_semantic_confidence.is_finite()
+                || !(0.0..=1.0).contains(&minimum_semantic_confidence)
+                || minimum_semantic_views == 0
+            {
                 return Err("architecture extraction limits must be positive".into());
             }
             let bundle = SceneBundle::open(scene)?;
@@ -1846,31 +1866,127 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .cloned()
                 .ok_or("requested source world product has not been published")?;
             let source_cloud = bundle.read_fused_scene(&source.fused_chunk_hash)?;
-            let extraction = vestra_core::extract_architectural_planes(
-                &source_cloud.points,
-                ArchitectureSettings {
-                    maximum_source_points,
-                    maximum_planes,
-                    ..ArchitectureSettings::default()
-                },
-            );
-            if extraction.planes.is_empty() || extraction.points.is_empty() {
-                return Err("no sufficiently supported architectural planes were found; retain the source surfel world".into());
-            }
-            let product_id = format!("{}-architecture", source.id);
+            let extraction_settings = ArchitectureSettings {
+                maximum_source_points,
+                maximum_planes,
+                ..ArchitectureSettings::default()
+            };
+            let (points, planes, surface_mode, pose_authority, semantic_summary) =
+                if let Some(volume_path) = semantic_volume {
+                    let pose_hash = source.pose_solution_hash.as_deref().ok_or(
+                        "semantic architecture extraction requires a pose-backed source product",
+                    )?;
+                    let semantic = vestra_core::ArchitectureSemanticVolume::read(volume_path)?;
+                    let raster = bundle.read_raster_manifest()?;
+                    let solution = bundle.read_pose_solution(pose_hash)?;
+                    // Select the semantic evidence before RANSAC.  Fitting a
+                    // single plane model across floor, walls and roof is what
+                    // made the first prototype look fragmented.  Each class
+                    // now gets its own geometry fit; ceiling/roof never even
+                    // reaches the candidate set.
+                    let source_stride = source_cloud
+                        .points
+                        .len()
+                        .div_ceil(maximum_source_points);
+                    let semantic_samples = source_cloud
+                        .points
+                        .iter()
+                        .step_by(source_stride.max(1))
+                        .take(maximum_source_points)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let selection = vestra_core::select_verified_floor_and_walls(
+                        &semantic_samples,
+                        &semantic,
+                        &solution,
+                        &raster,
+                        minimum_semantic_confidence,
+                        minimum_semantic_views,
+                    );
+                    let rejected_points = selection.rejected_points;
+                    let minimum_agreeing_views = selection.minimum_agreeing_views;
+                    let floor_candidates = selection.floor_points.len();
+                    let wall_candidates = selection.wall_points.len();
+                    let floor = vestra_core::extract_architectural_planes(
+                        &selection.floor_points,
+                        ArchitectureSettings {
+                            maximum_planes: 1,
+                            ..extraction_settings
+                        },
+                    );
+                    let walls = vestra_core::extract_architectural_planes(
+                        &selection.wall_points,
+                        ArchitectureSettings {
+                            maximum_planes: maximum_planes.saturating_sub(1).max(1),
+                            ..extraction_settings
+                        },
+                    );
+                    let mut points = floor.points;
+                    for point in &mut points {
+                        point.color_srgb = [164, 142, 108];
+                    }
+                    let floor_points = points.len();
+                    let mut wall_points = walls.points;
+                    for point in &mut wall_points {
+                        point.color_srgb = [122, 143, 157];
+                    }
+                    let wall_cells = wall_points.len();
+                    points.extend(wall_points);
+                    if points.is_empty() {
+                        return Err("no floor or wall cells met the multi-view semantic evidence gate".into());
+                    }
+                    let mut planes = floor.planes;
+                    planes.extend(walls.planes);
+                    (
+                        points,
+                        planes,
+                        "architectural-floor-wall-support",
+                        format!("{}+semantic-floor-wall", source.pose_authority),
+                        Some(serde_json::json!({
+                            "floor_candidates": floor_candidates,
+                            "wall_candidates": wall_candidates,
+                            "floor_cells": floor_points,
+                            "wall_cells": wall_cells,
+                            "rejected_candidates": rejected_points,
+                            "minimum_confidence": minimum_semantic_confidence,
+                            "minimum_agreeing_views": minimum_agreeing_views,
+                            "roof_or_ceiling_policy": "excluded",
+                        })),
+                    )
+                } else {
+                    let extraction = vestra_core::extract_architectural_planes(
+                        &source_cloud.points,
+                        extraction_settings,
+                    );
+                    if extraction.planes.is_empty() || extraction.points.is_empty() {
+                        return Err("no sufficiently supported architectural planes were found; retain the source surfel world".into());
+                    }
+                    (
+                        extraction.points,
+                        extraction.planes,
+                        "architectural-plane-support",
+                        format!("{}+supported-planes", source.pose_authority),
+                        None,
+                    )
+                };
+            let product_id = if semantic_summary.is_some() {
+                format!("{}-floor-wall", source.id)
+            } else {
+                format!("{}-architecture", source.id)
+            };
             let architecture_cloud = FusedSceneChunk {
                 alignments: Vec::new(),
                 pose_graph_edges: Vec::new(),
                 pose_graph: None,
                 window_poses: Vec::new(),
                 voxel_size: 0.0,
-                points: extraction.points,
+                points,
             };
             let chunk_hash = bundle.write_fused_scene_as(
                 &architecture_cloud,
                 &product_id,
-                &format!("{}+supported-planes", source.pose_authority),
-                "architectural-plane-support",
+                &pose_authority,
+                surface_mode,
                 source.pose_solution_hash.clone(),
             )?;
             let mesh = vestra_core::architecture_mesh_from_support_points(&architecture_cloud.points);
@@ -1885,11 +2001,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "source_product": source.id,
                     "product": product_id,
                     "fused_chunk": chunk_hash,
-                    "planes": extraction.planes,
+                    "planes": planes,
                     "surface_points": architecture_cloud.points.len(),
                     "mesh_vertices": mesh.vertices.len(),
                     "mesh_triangles": mesh.indices.len() / 3,
                     "mesh_chunk": mesh_hash,
+                    "semantic_selection": semantic_summary,
                     "policy": "supported-planar-cells-only; openings-remain-unsupported",
                 })
             );

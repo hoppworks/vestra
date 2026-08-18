@@ -15,6 +15,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::FusedPoint;
+use crate::{ColmapCameraModel, PoseSolution, RasterManifest};
 
 /// Semantic categories that can select architectural geometry.  The integer
 /// representation is deliberately stable because masks are compact evidence
@@ -343,6 +344,114 @@ pub struct ArchitectureMeshVertex {
     pub color_srgb: [u8; 3],
 }
 
+/// A floor/wall-only selection made by reprojecting supported global plane
+/// cells into the registered semantic rasters. Ceiling and roof classes are
+/// deliberately absent: sloped beams and incomplete ceiling capture are not
+/// safe architectural surfaces for the current product.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerifiedArchitectureSelection {
+    pub floor_points: Vec<FusedPoint>,
+    pub wall_points: Vec<FusedPoint>,
+    pub rejected_points: usize,
+    pub minimum_agreeing_views: usize,
+}
+
+/// Selects directly supported planar cells as either floor or wall only when
+/// registered cameras agree with the semantic evidence. This does not fill a
+/// single cell; it merely filters cells emitted by the geometric extractor.
+#[must_use]
+pub fn select_verified_floor_and_walls(
+    support_points: &[FusedPoint],
+    semantic: &ArchitectureSemanticVolume,
+    solution: &PoseSolution,
+    raster: &RasterManifest,
+    minimum_confidence: f32,
+    minimum_agreeing_views: usize,
+) -> VerifiedArchitectureSelection {
+    if !minimum_confidence.is_finite()
+        || !(0.0..=1.0).contains(&minimum_confidence)
+        || minimum_agreeing_views == 0
+        || semantic.dimensions() != (raster.output_width, raster.output_height)
+    {
+        return VerifiedArchitectureSelection {
+            floor_points: Vec::new(),
+            wall_points: Vec::new(),
+            rejected_points: support_points.len(),
+            minimum_agreeing_views,
+        };
+    }
+    let Some(trajectory) = solution.global_trajectory.as_ref() else {
+        return VerifiedArchitectureSelection {
+            floor_points: Vec::new(),
+            wall_points: Vec::new(),
+            rejected_points: support_points.len(),
+            minimum_agreeing_views,
+        };
+    };
+    let views = solution
+        .frames
+        .iter()
+        .filter(|frame| frame.registered)
+        .filter_map(|frame| {
+            let camera_id = trajectory.frame_camera_ids.get(&frame.frame_index)?;
+            let camera = trajectory
+                .camera_models
+                .iter()
+                .find(|camera| camera.camera_id == *camera_id)?;
+            Some((frame.frame_index, frame.world_to_camera, camera))
+        })
+        .collect::<Vec<_>>();
+    let mut floor_points = Vec::new();
+    let mut wall_points = Vec::new();
+    let mut rejected_points = 0;
+    for point in support_points {
+        let mut floor_votes = 0_usize;
+        let mut wall_votes = 0_usize;
+        let mut opening_votes = 0_usize;
+        for (frame_index, pose, camera) in &views {
+            let Some((x, y)) = project_to_semantic_raster(point.position, *pose, camera, raster)
+            else {
+                continue;
+            };
+            let Some((class, confidence)) = semantic.sample(*frame_index, x, y) else {
+                continue;
+            };
+            if confidence < minimum_confidence {
+                continue;
+            }
+            match class {
+                ArchitectureClass::Floor => floor_votes += 1,
+                ArchitectureClass::Wall => wall_votes += 1,
+                ArchitectureClass::DoorOrOpening | ArchitectureClass::Window => opening_votes += 1,
+                _ => {}
+            }
+        }
+        // An opening can only veto a surface when it has independent support;
+        // a single confused pixel does not erase a whole observed cell.
+        if opening_votes >= minimum_agreeing_views
+            || floor_votes.max(wall_votes) < minimum_agreeing_views
+        {
+            rejected_points += 1;
+        } else if floor_votes > wall_votes {
+            let mut floor = point.clone();
+            floor.color_srgb = [164, 142, 108];
+            floor_points.push(floor);
+        } else if wall_votes > floor_votes {
+            let mut wall = point.clone();
+            wall.color_srgb = [122, 143, 157];
+            wall_points.push(wall);
+        } else {
+            rejected_points += 1;
+        }
+    }
+    VerifiedArchitectureSelection {
+        floor_points,
+        wall_points,
+        rejected_points,
+        minimum_agreeing_views,
+    }
+}
+
 /// Extracts dominant planar support and turns only occupied planar cells into
 /// neutral, radius-aware surfels. It is deterministic for a fixed point order.
 #[must_use]
@@ -555,8 +664,6 @@ fn emit_supported_plane_cells(
     #[derive(Clone, Copy)]
     struct Cell {
         count: usize,
-        u: f64,
-        v: f64,
         color: [f64; 3],
         confidence: f64,
         first_frame: i32,
@@ -571,15 +678,11 @@ fn emit_supported_plane_cells(
         );
         let cell = cells.entry(key).or_insert(Cell {
             count: 0,
-            u: 0.0,
-            v: 0.0,
             color: [0.0; 3],
             confidence: 0.0,
             first_frame: point.first_observing_frame,
         });
         cell.count += 1;
-        cell.u += f64::from(up);
-        cell.v += f64::from(vp);
         for axis in 0..3 {
             cell.color[axis] += f64::from(point.color_srgb[axis]);
         }
@@ -590,12 +693,15 @@ fn emit_supported_plane_cells(
         };
     }
     cells
-        .into_values()
-        .filter(|cell| cell.count >= minimum_cell_support)
-        .map(|cell| {
+        .into_iter()
+        .filter(|(_, cell)| cell.count >= minimum_cell_support)
+        .map(|(key, cell)| {
             let count = cell.count as f64;
-            let average_u = (cell.u / count) as f32;
-            let average_v = (cell.v / count) as f32;
+            // Grid-aligned centres make adjacent verified cells share their
+            // boundaries exactly in the later triangle mesh. The source
+            // samples still decide whether a cell exists at all.
+            let average_u = (key.0 as f32 + 0.5) * cell_edge;
+            let average_v = (key.1 as f32 + 0.5) * cell_edge;
             // n * offset is the closest point on the plane to the origin.
             let position = add(
                 scale(normal, offset),
@@ -620,6 +726,41 @@ fn emit_supported_plane_cells(
             }
         })
         .collect()
+}
+
+fn project_to_semantic_raster(
+    position: [f32; 3],
+    pose: [f64; 12],
+    camera: &ColmapCameraModel,
+    raster: &RasterManifest,
+) -> Option<(usize, usize)> {
+    let [focal, cx, cy, radial] = *<&[f64; 4]>::try_from(camera.parameters.as_slice()).ok()?;
+    if camera.model != "SIMPLE_RADIAL" || camera.width == 0 || camera.height == 0 {
+        return None;
+    }
+    let point = position.map(f64::from);
+    let camera_point = [
+        pose[0] * point[0] + pose[1] * point[1] + pose[2] * point[2] + pose[3],
+        pose[4] * point[0] + pose[5] * point[1] + pose[6] * point[2] + pose[7],
+        pose[8] * point[0] + pose[9] * point[1] + pose[10] * point[2] + pose[11],
+    ];
+    if !camera_point[2].is_finite() || camera_point[2] <= 0.0 {
+        return None;
+    }
+    let x = camera_point[0] / camera_point[2];
+    let y = camera_point[1] / camera_point[2];
+    let radial_scale = 1.0 + radial * (x * x + y * y);
+    let image_x = focal * x * radial_scale + cx;
+    let image_y = focal * y * radial_scale + cy;
+    let x = ((image_x + 0.5) * raster.output_width as f64 / camera.width as f64 - 0.5).round();
+    let y = ((image_y + 0.5) * raster.output_height as f64 / camera.height as f64 - 0.5).round();
+    (x.is_finite()
+        && y.is_finite()
+        && x >= 0.0
+        && y >= 0.0
+        && x < raster.output_width as f64
+        && y < raster.output_height as f64)
+        .then_some((x as usize, y as usize))
 }
 
 fn fit_plane(points: &[[f32; 3]]) -> Option<([f32; 3], f32)> {
@@ -870,6 +1011,94 @@ mod tests {
             let max = *triangle.iter().max().unwrap();
             max - min < 4
         }));
+    }
+
+    #[test]
+    fn semantic_selection_requires_two_floor_or_wall_views_and_rejects_openings() {
+        let semantic = ArchitectureSemanticVolume {
+            frame_indices: vec![0, 1, 2, 3],
+            width: 2,
+            height: 2,
+            classes: vec![
+                ArchitectureClass::Floor as u8,
+                ArchitectureClass::Floor as u8,
+                ArchitectureClass::Floor as u8,
+                ArchitectureClass::Floor as u8,
+                ArchitectureClass::Floor as u8,
+                ArchitectureClass::Floor as u8,
+                ArchitectureClass::Floor as u8,
+                ArchitectureClass::Floor as u8,
+                ArchitectureClass::DoorOrOpening as u8,
+                ArchitectureClass::DoorOrOpening as u8,
+                ArchitectureClass::DoorOrOpening as u8,
+                ArchitectureClass::DoorOrOpening as u8,
+                ArchitectureClass::DoorOrOpening as u8,
+                ArchitectureClass::DoorOrOpening as u8,
+                ArchitectureClass::DoorOrOpening as u8,
+                ArchitectureClass::DoorOrOpening as u8,
+            ],
+            confidences: vec![255; 16],
+        };
+        let camera = ColmapCameraModel {
+            camera_id: 1,
+            model: "SIMPLE_RADIAL".to_owned(),
+            width: 2,
+            height: 2,
+            parameters: vec![1.0, 0.0, 0.0, 0.0],
+        };
+        let solution = PoseSolution {
+            schema: "vestra.pose-solution/v1".to_owned(),
+            provider: crate::PoseProvider {
+                kind: "colmap".to_owned(),
+                version: "test".to_owned(),
+                settings_fingerprint: "test".to_owned(),
+            },
+            raster_fingerprint: "test".to_owned(),
+            coordinate_convention: "COLMAP world; W2C row-major 3x4 f64".to_owned(),
+            frames: (0..4)
+                .map(|frame_index| crate::PoseFrame {
+                    frame_index,
+                    image_name: format!("frame-{frame_index:06}.ppm"),
+                    registered: true,
+                    world_to_camera: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                })
+                .collect(),
+            diagnostics: crate::PoseDiagnostics::default(),
+            global_trajectory: Some(crate::GlobalTrajectoryEvidence {
+                camera_models: vec![camera],
+                frame_camera_ids: [(0, 1), (1, 1), (2, 1), (3, 1)].into_iter().collect(),
+                tracks: Vec::new(),
+            }),
+        };
+        let raster = RasterManifest {
+            schema: "vestra.raster/v1".to_owned(),
+            source_sha256: "test".to_owned(),
+            duration_seconds: 1.0,
+            source_width: 2,
+            source_height: 2,
+            crop: crate::RasterCrop {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+            output_width: 2,
+            output_height: 2,
+            frames: Vec::new(),
+            raster_fingerprint: "test".to_owned(),
+        };
+        let selected = select_verified_floor_and_walls(
+            &[point([0.0, 0.0, 1.0])],
+            &semantic,
+            &solution,
+            &raster,
+            0.65,
+            2,
+        );
+        // Two floor observations are enough, but the third independent door
+        // observation vetoes publication of that candidate cell.
+        assert!(selected.floor_points.is_empty());
+        assert_eq!(selected.rejected_points, 1);
     }
 
     #[test]
