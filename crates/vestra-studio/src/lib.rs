@@ -83,7 +83,13 @@ pub fn serve(scene_root: impl Into<PathBuf>, port: u16) -> Result<(), StudioErro
     }
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     for stream in listener.incoming().flatten() {
-        let _ = handle(stream, &scene_root);
+        // A surfel chunk can be much larger than the manifest. Serving it on
+        // the accept loop would make one slow WebGL upload freeze the entire
+        // Studio, including the replay button and its depth assets.
+        let root = scene_root.clone();
+        thread::spawn(move || {
+            let _ = handle(stream, &root);
+        });
     }
     Ok(())
 }
