@@ -27,6 +27,13 @@ for (const vector of Object.values(controls.cameraBasis(orientation))) assert.ok
 const lookingRight = lookOrientation(Math.PI / 2, 0);
 close(move([0,0,0], lookingRight, 10, 'forward'), [-.6,0,0]);
 close(move([0,0,0], lookingRight, 10, 'left'), [0,0,.6]);
+// First-person navigation rotates only the orientation. The eye position is
+// deliberately independent of yaw/pitch, preventing an orbit around a point
+// behind the camera.
+const eye = [7, -2, 11];
+const rotated = lookOrientation(-2.7, .8);
+close(eye, [7, -2, 11]);
+assert.notDeepEqual(controls.cameraBasis(identity).forward, controls.cameraBasis(rotated).forward);
 const almostVertical = lookOrientation(17 * Math.PI, Math.PI);
 assert.ok(Math.abs(Math.hypot(...almostVertical) - 1) < 1e-12, 'look controller remains normalized after unlimited yaw');
 assert.ok(Math.abs(controls.cameraBasis(almostVertical).forward[1]) < 1, 'pitch clamp prevents an upside-down camera singularity');
