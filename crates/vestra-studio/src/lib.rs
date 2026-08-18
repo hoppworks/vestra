@@ -1703,15 +1703,12 @@ mod tests {
         assert!(INDEX_HTML.contains("const MAX_VISUAL_CHUNKS=24"));
         assert!(INDEX_HTML.contains("function selectVisualChunkUrls(urls,binary)"));
         assert!(INDEX_HTML.contains("await loadLayer(visualUrls,Boolean(binary),hasFused)"));
-        assert!(INDEX_HTML.contains("selectVisualChunkUrls(fusedUrls,fusedBinary)"));
+        assert!(INDEX_HTML.contains("const visualUrls=preview?urls:selectVisualChunkUrls(urls,Boolean(binary))"));
         assert!(INDEX_HTML.contains("fused_preview_point_binary_chunk_hashes"));
         assert!(INDEX_HTML.contains("attribute float a"));
         assert!(INDEX_HTML.contains("bind(batch.a)"));
         assert!(INDEX_HTML.contains("a:make(radii,'a',1)"));
         assert!(INDEX_HTML.contains("attribute.size||3"));
-        assert!(INDEX_HTML.contains("id=\"products\""));
-        assert!(INDEX_HTML.contains("function bindProductSelector"));
-        assert!(INDEX_HTML.contains("selectedProduct.pose_authority"));
         assert!(INDEX_HTML.contains("fetch('manifest.json'+productSuffix"));
         assert!(!INDEX_HTML.contains("fetch('/manifest.json"));
     }
@@ -1726,11 +1723,17 @@ mod tests {
     }
 
     #[test]
-    fn studio_does_not_offer_legacy_measurements_for_an_independent_world() {
-        assert!(INDEX_HTML.contains("independentWorld"));
-        assert!(INDEX_HTML.contains("selectedProduct.pose_authority!=='local-pr2-relative'"));
-        assert!(INDEX_HTML.contains("independentWorld&&sourceFrames.length===0"));
-        assert!(INDEX_HTML.contains("if(independentWorld&&!productDepthFrames)document.querySelector('#replay-toggle').style.display='none'"));
+    fn studio_presents_only_the_world_and_depth_replay_modes() {
+        assert!(INDEX_HTML.contains("id=\"replay-toggle\">open video + depth"));
+        assert!(INDEX_HTML.contains("id=\"replay-close\">open 3D world"));
+        assert!(INDEX_HTML.contains("id=\"input-video\" src=\"input-video\" controls muted"));
+        assert!(!INDEX_HTML.contains("id=\"products\""));
+        assert!(!INDEX_HTML.contains("id=\"layers\""));
+        assert!(!INDEX_HTML.contains("id=\"replay-parallax\""));
+        assert!(!INDEX_HTML.contains("canvas.onpointerdown"));
+        assert!(!INDEX_HTML.contains("canvas.addEventListener('wheel'"));
+        assert!(INDEX_HTML.contains("arrow keys move · W A S D look · R reset"));
+        assert!(INDEX_HTML.contains("command.startsWith('look')"));
         assert!(INDEX_HTML.contains("official DA3 depth map · matched COLMAP camera"));
     }
 
@@ -1747,16 +1750,10 @@ mod tests {
         assert!(INDEX_HTML.contains("fetch('replay/frames/"));
         assert!(INDEX_HTML.contains("function updateReplay()"));
         assert!(INDEX_HTML.contains("original capture · 3:2 crop"));
-        assert!(INDEX_HTML.contains("dense depth map · matched camera"));
-        assert!(INDEX_HTML.contains("id=\"replay-depth\""));
-        assert!(INDEX_HTML.contains("id=\"replay-parallax\""));
+        assert!(INDEX_HTML.contains("depth map · matched camera"));
         assert!(INDEX_HTML.contains("function drawReplayDepthMap("));
-        assert!(INDEX_HTML.contains("function drawReplayParallax("));
-        assert!(INDEX_HTML.contains("function setReplayMode("));
-        assert!(INDEX_HTML.contains("dense depth map · matched camera"));
         assert!(INDEX_HTML.contains("depth samples · "));
-        assert!(INDEX_HTML.contains("dense depth map"));
-        assert!(INDEX_HTML.contains("point parallax"));
+        assert!(INDEX_HTML.contains("depth map"));
         assert!(INDEX_HTML.contains("object-fit:cover"));
         assert!(INDEX_HTML.contains("replay-landscape"));
         assert!(INDEX_HTML.contains("function arrangeReplay()"));
