@@ -1628,6 +1628,7 @@ fn safe_chunk_path(path: &str) -> bool {
     let hash = name
         .strip_prefix("fused-")
         .or_else(|| name.strip_prefix("points-"))
+        .or_else(|| name.strip_prefix("architecture-mesh-"))
         .unwrap_or(name);
     hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -1736,13 +1737,16 @@ mod tests {
         assert!(INDEX_HTML.contains("const MAX_SURFEL_PIXELS=12"));
         assert!(INDEX_HTML.contains("gl_PointSize=clamp"));
         assert!(INDEX_HTML.contains("gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT)"));
-        assert!(INDEX_HTML.contains("gl_FragColor=vec4(v,1.)"));
+        assert!(INDEX_HTML.contains("gl_FragColor=vec4(v,o)"));
         assert!(INDEX_HTML.contains("VestraCameraControls.viewMatrix(eye,orientation)"));
         assert!(!INDEX_HTML.contains("e=center.map"));
         assert!(INDEX_HTML.contains("architectureProduct"));
         assert!(INDEX_HTML.contains("adding verified wall, floor and ceiling support"));
         assert!(INDEX_HTML.contains("overlay?1.35:1"));
         assert!(INDEX_HTML.contains("batch.overlay ? .62 : 1"));
+        assert!(INDEX_HTML.contains("architecture_mesh_hash"));
+        assert!(INDEX_HTML.contains("uploadArchitectureMesh"));
+        assert!(INDEX_HTML.contains("gl.drawElements(gl.TRIANGLES"));
     }
 
     #[test]

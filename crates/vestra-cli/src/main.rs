@@ -1873,6 +1873,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "architectural-plane-support",
                 source.pose_solution_hash.clone(),
             )?;
+            let mesh = vestra_core::architecture_mesh_from_support_points(&architecture_cloud.points);
+            let mesh_hash = bundle.set_world_product_architecture_mesh(&product_id, &mesh)?;
             bundle.set_world_product_source_frames(&product_id, &source.source_frame_indices)?;
             bundle.set_world_product_depth_frame_count(&product_id, source.depth_frame_count)?;
             println!(
@@ -1885,6 +1887,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "fused_chunk": chunk_hash,
                     "planes": extraction.planes,
                     "surface_points": architecture_cloud.points.len(),
+                    "mesh_vertices": mesh.vertices.len(),
+                    "mesh_triangles": mesh.indices.len() / 3,
+                    "mesh_chunk": mesh_hash,
                     "policy": "supported-planar-cells-only; openings-remain-unsupported",
                 })
             );

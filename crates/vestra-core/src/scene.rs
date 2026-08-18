@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    CameraCalibration, FrameWindow, FusedPoint, FusedSceneChunk, MeasuredPoint, PoseSolution,
-    RasterManifest, ScaleStatus,
+    ArchitectureMesh, CameraCalibration, FrameWindow, FusedPoint, FusedSceneChunk, MeasuredPoint,
+    PoseSolution, RasterManifest, ScaleStatus,
 };
 
 const MANIFEST_FILE: &str = "manifest.json";
@@ -106,6 +106,11 @@ pub struct WorldProduct {
     pub fused_chunk_hash: String,
     pub point_binary_chunk_hashes: Vec<String>,
     pub preview_point_binary_chunk_hashes: Vec<String>,
+    /// Optional supported-only triangle surface. This is separate from the
+    /// coloured surfel evidence so Studio can overlay planar walls, floors and
+    /// ceilings without replacing the measured world.
+    #[serde(default)]
+    pub architecture_mesh_hash: Option<String>,
     pub summary: FusedSceneSummary,
     #[serde(default)]
     pub pose_solution_hash: Option<String>,
@@ -434,6 +439,7 @@ impl SceneBundle {
             preview_point_binary_chunk_hashes: manifest
                 .fused_preview_point_binary_chunk_hashes
                 .clone(),
+            architecture_mesh_hash: None,
             summary,
             pose_solution_hash,
             source_frame_indices: Vec::new(),
@@ -478,6 +484,49 @@ impl SceneBundle {
             })?;
         product.source_frame_indices = frames;
         self.write_manifest(&manifest)
+    }
+
+    /// Persists a compact, content-addressed supported-only mesh and attaches
+    /// it to an already-published architectural product.  The product remains
+    /// valid without a mesh, keeping old scene bundles backward compatible.
+    pub fn set_world_product_architecture_mesh(
+        &self,
+        id: &str,
+        mesh: &ArchitectureMesh,
+    ) -> Result<String, SceneBundleError> {
+        if mesh.vertices.is_empty() || mesh.indices.is_empty() || mesh.indices.len() % 3 != 0 {
+            return Err(SceneBundleError::InvalidArtifact(
+                "architecture mesh must contain complete triangles".to_owned(),
+            ));
+        }
+        let vertex_count = u32::try_from(mesh.vertices.len()).map_err(|_| {
+            SceneBundleError::InvalidArtifact("architecture mesh exceeds u32 vertices".to_owned())
+        })?;
+        if mesh.indices.iter().any(|index| *index >= vertex_count) {
+            return Err(SceneBundleError::InvalidArtifact(
+                "architecture mesh index exceeds vertex count".to_owned(),
+            ));
+        }
+        let payload = serde_json::to_vec(mesh)?;
+        let hash = sha256_hex(&payload);
+        let path = self
+            .root
+            .join(CHUNKS_DIRECTORY)
+            .join(format!("architecture-mesh-{hash}.json"));
+        if !path.exists() {
+            atomic_write(&path, &payload)?;
+        }
+        let mut manifest = self.manifest()?;
+        let product = manifest
+            .world_products
+            .iter_mut()
+            .find(|product| product.id == id)
+            .ok_or_else(|| {
+                SceneBundleError::InvalidArtifact(format!("unknown world product {id:?}"))
+            })?;
+        product.architecture_mesh_hash = Some(hash.clone());
+        self.write_manifest(&manifest)?;
+        Ok(hash)
     }
 
     /// Marks the verified depth-raster assets attached to a derived product.

@@ -326,6 +326,23 @@ pub struct ArchitectureExtraction {
     pub points: Vec<FusedPoint>,
 }
 
+/// A conservative, render-ready surface layer derived solely from the
+/// supported cells of [`ArchitectureExtraction`].  It deliberately does not
+/// join cells across an unsupported gap: a doorway or window remains a hole
+/// in the triangle set rather than becoming a plausible-looking invention.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArchitectureMesh {
+    pub vertices: Vec<ArchitectureMeshVertex>,
+    pub indices: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ArchitectureMeshVertex {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub color_srgb: [u8; 3],
+}
+
 /// Extracts dominant planar support and turns only occupied planar cells into
 /// neutral, radius-aware surfels. It is deterministic for a fixed point order.
 #[must_use]
@@ -422,6 +439,61 @@ pub fn extract_architectural_planes(
         planes,
         points: output,
     }
+}
+
+/// Turns the existing evidence-backed support cells into planar quad tiles.
+///
+/// The support-cell radius is `0.78 * cell_edge`; reconstructing the cell
+/// edge from that stable extractor contract makes adjacent cells meet while
+/// retaining every unsupported cell as a true mesh hole.  Tiles are kept
+/// separate instead of greedily bridging neighbours so that a small semantic
+/// or geometric gap can never be silently closed.
+#[must_use]
+pub fn architecture_mesh_from_support_points(points: &[FusedPoint]) -> ArchitectureMesh {
+    let mut vertices = Vec::with_capacity(points.len().saturating_mul(4));
+    let mut indices = Vec::with_capacity(points.len().saturating_mul(6));
+    for point in points {
+        if !valid_point(point) || !point.radius.is_finite() || point.radius <= 0.0 {
+            continue;
+        }
+        let Some(normal) = normalize(point.normal) else {
+            continue;
+        };
+        let (u, v) = plane_basis(normal);
+        // `emit_supported_plane_cells` stores radius = 0.78 * cell_edge.
+        let half_edge = point.radius / 1.56;
+        if !half_edge.is_finite() || half_edge <= 0.0 {
+            continue;
+        }
+        let corners = [
+            add(
+                point.position,
+                add(scale(u, -half_edge), scale(v, -half_edge)),
+            ),
+            add(
+                point.position,
+                add(scale(u, half_edge), scale(v, -half_edge)),
+            ),
+            add(
+                point.position,
+                add(scale(u, half_edge), scale(v, half_edge)),
+            ),
+            add(
+                point.position,
+                add(scale(u, -half_edge), scale(v, half_edge)),
+            ),
+        ];
+        let Ok(base) = u32::try_from(vertices.len()) else {
+            break;
+        };
+        vertices.extend(corners.into_iter().map(|position| ArchitectureMeshVertex {
+            position,
+            normal,
+            color_srgb: point.color_srgb,
+        }));
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    ArchitectureMesh { vertices, indices }
 }
 
 fn ransac_plane_seed(
@@ -780,6 +852,24 @@ mod tests {
                     || point.position[0] > 1.25
                     || point.position[1] > 0.85)
         );
+    }
+
+    #[test]
+    fn supported_cells_become_triangles_without_closing_a_missing_cell() {
+        let mut support = vec![point([0.0, 0.0, 0.0]), point([0.1, 0.0, 0.0])];
+        for cell in &mut support {
+            cell.radius = 0.078;
+        }
+        let mesh = architecture_mesh_from_support_points(&support);
+        assert_eq!(mesh.vertices.len(), 8);
+        assert_eq!(mesh.indices.len(), 12);
+        // Two independent support cells produce exactly two quads. There is no
+        // bridge triangle over the absent neighbour that could become a door.
+        assert!(mesh.indices.chunks_exact(3).all(|triangle| {
+            let min = *triangle.iter().min().unwrap();
+            let max = *triangle.iter().max().unwrap();
+            max - min < 4
+        }));
     }
 
     #[test]
