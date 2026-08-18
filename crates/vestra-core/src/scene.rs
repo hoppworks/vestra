@@ -966,6 +966,72 @@ mod tests {
     }
 
     #[test]
+    fn architecture_mesh_is_content_addressed_and_attached_only_to_its_product() {
+        let root = test_root();
+        let bundle = SceneBundle::create(&root, provenance()).unwrap();
+        let world = crate::FusedSceneChunk {
+            alignments: Vec::new(),
+            pose_graph_edges: Vec::new(),
+            pose_graph: None,
+            window_poses: Vec::new(),
+            voxel_size: 0.0,
+            points: vec![crate::FusedPoint {
+                position: [0.0, 0.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                color_srgb: [120, 130, 140],
+                confidence: 1.0,
+                radius: 0.1,
+                first_observing_frame: 0,
+                contributors: 1,
+            }],
+        };
+        bundle
+            .write_fused_scene_as(
+                &world,
+                "architecture",
+                "test",
+                "architectural-plane-support",
+                None,
+            )
+            .unwrap();
+        let mesh = crate::ArchitectureMesh {
+            vertices: vec![
+                crate::ArchitectureMeshVertex {
+                    position: [0.0, 0.0, 0.0],
+                    normal: [0.0, 0.0, 1.0],
+                    color_srgb: [1, 2, 3],
+                },
+                crate::ArchitectureMeshVertex {
+                    position: [1.0, 0.0, 0.0],
+                    normal: [0.0, 0.0, 1.0],
+                    color_srgb: [1, 2, 3],
+                },
+                crate::ArchitectureMeshVertex {
+                    position: [0.0, 1.0, 0.0],
+                    normal: [0.0, 0.0, 1.0],
+                    color_srgb: [1, 2, 3],
+                },
+            ],
+            indices: vec![0, 1, 2],
+        };
+        let hash = bundle
+            .set_world_product_architecture_mesh("architecture", &mesh)
+            .unwrap();
+        assert!(
+            root.join(CHUNKS_DIRECTORY)
+                .join(format!("architecture-mesh-{hash}.json"))
+                .is_file()
+        );
+        assert_eq!(
+            bundle.manifest().unwrap().world_products[0]
+                .architecture_mesh_hash
+                .as_deref(),
+            Some(hash.as_str())
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn fused_points_are_published_as_ordered_progressive_chunks() {
         let root = test_root();
         let bundle = SceneBundle::create(&root, provenance()).unwrap();
