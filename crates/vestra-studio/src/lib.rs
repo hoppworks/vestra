@@ -1740,8 +1740,9 @@ mod tests {
         assert!(INDEX_HTML.contains("VestraCameraControls.viewMatrix(eye,orientation)"));
         assert!(!INDEX_HTML.contains("e=center.map"));
         assert!(INDEX_HTML.contains("architectureProduct"));
-        assert!(INDEX_HTML.contains("adding verified planar support"));
-        assert!(INDEX_HTML.contains("batch.overlay ? .32 : 1"));
+        assert!(INDEX_HTML.contains("adding verified wall, floor and ceiling support"));
+        assert!(INDEX_HTML.contains("overlay?1.35:1"));
+        assert!(INDEX_HTML.contains("batch.overlay ? .62 : 1"));
     }
 
     #[test]
