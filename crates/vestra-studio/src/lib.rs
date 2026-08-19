@@ -1081,8 +1081,15 @@ fn frame_global_evidence(
         else {
             continue;
         };
-        let Some((origin, forward, corners, right, up, vertical_fov_radians, aspect_ratio)) =
-            colmap_camera_ray(frame.world_to_camera, camera)
+        let Some(ColmapCameraRay {
+            origin,
+            forward,
+            corners,
+            right,
+            up,
+            vertical_fov_radians,
+            aspect_ratio,
+        }) = colmap_camera_ray(frame.world_to_camera, camera)
         else {
             continue;
         };
@@ -1113,18 +1120,21 @@ fn frame_global_evidence(
     }))?)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ColmapCameraRay {
+    origin: [f32; 3],
+    forward: [f32; 3],
+    corners: [[f32; 3]; 4],
+    right: [f32; 3],
+    up: [f32; 3],
+    vertical_fov_radians: f32,
+    aspect_ratio: f32,
+}
+
 fn colmap_camera_ray(
     pose: [f64; 12],
     camera: &vestra_core::ColmapCameraModel,
-) -> Option<(
-    [f32; 3],
-    [f32; 3],
-    [[f32; 3]; 4],
-    [f32; 3],
-    [f32; 3],
-    f32,
-    f32,
-)> {
+) -> Option<ColmapCameraRay> {
     let [focal, cx, cy, radial] = *<&[f64; 4]>::try_from(camera.parameters.as_slice()).ok()?;
     if !(focal.is_finite() && focal > 0.0 && cx.is_finite() && cy.is_finite() && radial.is_finite())
     {
@@ -1186,15 +1196,15 @@ fn colmap_camera_ray(
         && vertical_fov_radians > 0.0
         && aspect_ratio.is_finite()
         && aspect_ratio > 0.0)
-        .then_some((
+        .then_some(ColmapCameraRay {
             origin,
             forward,
             corners,
             right,
             up,
-            vertical_fov_radians as f32,
-            aspect_ratio as f32,
-        ))
+            vertical_fov_radians: vertical_fov_radians as f32,
+            aspect_ratio: aspect_ratio as f32,
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -1316,10 +1326,8 @@ fn source_frame_index(request_path: &str) -> Option<usize> {
 }
 
 fn source_frame_path(root: &Path, frame_index: usize) -> PathBuf {
-    root.join("decoded").join(format!(
-        "frame-{:06}.ppm",
-        frame_index.checked_add(1).unwrap_or(usize::MAX)
-    ))
+    root.join("decoded")
+        .join(format!("frame-{:06}.ppm", frame_index.saturating_add(1)))
 }
 
 /// Returns the real, sparse depth samples for one reconstructed source frame.
@@ -1430,10 +1438,10 @@ fn product_depth_frame(
             .find(|candidate| Some(candidate.id.as_str()) == selected)
             .ok_or("depth request has no selected world product")?;
         if product.depth_frame_count == 0
-            || !product
+            || product
                 .source_frame_indices
                 .binary_search(&frame_index)
-                .is_ok()
+                .is_err()
         {
             return Err("selected product has no retained depth frame".into());
         }
@@ -1497,7 +1505,7 @@ fn encode_replay_points(points: &[MeasuredPoint], camera: CameraCalibration) -> 
 fn ppm_to_bmp(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let payload = fs::read(path)?;
     let mut offset = 0;
-    if ppm_token(&payload, &mut offset).as_deref() != Some(b"P6".as_slice()) {
+    if ppm_token(&payload, &mut offset) != Some(b"P6".as_slice()) {
         return Err("source frame is not binary RGB PPM".into());
     }
     let width = ppm_usize(&payload, &mut offset, "width")?;
@@ -2026,12 +2034,19 @@ mod tests {
             height: 1080,
             parameters: vec![810.0, 810.0, 540.0, 0.0],
         };
-        let (origin, forward, corners, right, up, vertical_fov_radians, aspect_ratio) =
-            colmap_camera_ray(
-                [1.0, 0.0, 0.0, -2.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, -3.0],
-                &camera,
-            )
-            .expect("valid calibrated COLMAP camera");
+        let ColmapCameraRay {
+            origin,
+            forward,
+            corners,
+            right,
+            up,
+            vertical_fov_radians,
+            aspect_ratio,
+        } = colmap_camera_ray(
+            [1.0, 0.0, 0.0, -2.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, -3.0],
+            &camera,
+        )
+        .expect("valid calibrated COLMAP camera");
         assert_eq!(origin, [2.0, -1.0, 3.0]);
         assert_eq!(right, [1.0, 0.0, 0.0]);
         assert_eq!(up, [0.0, -1.0, 0.0]);

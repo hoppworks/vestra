@@ -494,7 +494,10 @@ impl SceneBundle {
         id: &str,
         mesh: &ArchitectureMesh,
     ) -> Result<String, SceneBundleError> {
-        if mesh.vertices.is_empty() || mesh.indices.is_empty() || mesh.indices.len() % 3 != 0 {
+        if mesh.vertices.is_empty()
+            || mesh.indices.is_empty()
+            || !mesh.indices.len().is_multiple_of(3)
+        {
             return Err(SceneBundleError::InvalidArtifact(
                 "architecture mesh must contain complete triangles".to_owned(),
             ));

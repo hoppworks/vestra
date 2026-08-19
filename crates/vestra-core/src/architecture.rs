@@ -659,6 +659,10 @@ fn fit_plane(points: &[[f32; 3]]) -> Option<([f32; 3], f32)> {
     Some((normal, dot(normal, centre)))
 }
 
+// Index notation mirrors the fixed-size Jacobi rotation derivation. Rewriting
+// these loops as iterator chains obscures the row/column symmetry and makes
+// the numerical oracle harder to review.
+#[allow(clippy::needless_range_loop)]
 fn jacobi_eigen_3(mut matrix: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
     let mut vectors = [[0.0; 3]; 3];
     for axis in 0..3 {

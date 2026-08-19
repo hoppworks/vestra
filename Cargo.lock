@@ -1126,6 +1126,7 @@ dependencies = [
 [[package]]
 name = "vestra-engine"
 version = "0.1.0"
+source = "git+https://github.com/hoppworks/vestra-engine?rev=ec10ae38e8ceff3da4778fc2b47ad8f868dac311#ec10ae38e8ceff3da4778fc2b47ad8f868dac311"
 dependencies = [
  "rayon",
  "thiserror 1.0.69",
@@ -1137,6 +1138,7 @@ dependencies = [
 [[package]]
 name = "vestra-gguf"
 version = "0.1.0"
+source = "git+https://github.com/hoppworks/vestra-engine?rev=ec10ae38e8ceff3da4778fc2b47ad8f868dac311#ec10ae38e8ceff3da4778fc2b47ad8f868dac311"
 dependencies = [
  "half",
  "memmap2",
@@ -1146,6 +1148,7 @@ dependencies = [
 [[package]]
 name = "vestra-graph"
 version = "0.1.0"
+source = "git+https://github.com/hoppworks/vestra-engine?rev=ec10ae38e8ceff3da4778fc2b47ad8f868dac311#ec10ae38e8ceff3da4778fc2b47ad8f868dac311"
 dependencies = [
  "vestra-gguf",
  "vestra-kernels",
@@ -1154,6 +1157,7 @@ dependencies = [
 [[package]]
 name = "vestra-kernels"
 version = "0.1.0"
+source = "git+https://github.com/hoppworks/vestra-kernels?rev=1ad85305de14ea76ddd878af6dac80f19bdf2bc3#1ad85305de14ea76ddd878af6dac80f19bdf2bc3"
 dependencies = [
  "faer",
  "half",

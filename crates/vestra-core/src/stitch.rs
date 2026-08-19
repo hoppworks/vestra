@@ -5,6 +5,11 @@
 //! newly reconstructed window into the already accepted scene frame. Failed or
 //! geometrically degenerate estimates are explicit errors: this module never
 //! invents an alignment.
+//!
+//! The PR #2 compatibility routines adapt the pinned `depth-anything.cpp`
+//! streaming geometry contract at commit
+//! `f56e9be43a22c12ef575584d2fa57a6a5d5be7ae` (MIT). See
+//! `THIRD_PARTY_NOTICES.md` for the full notice.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -1468,6 +1473,9 @@ pub fn stitch_measured_windows_with_loop_closures(
     })
 }
 
+// This private boundary deliberately makes every published-evidence component
+// explicit; grouping them would hide which artifacts survive TSDF fusion.
+#[allow(clippy::too_many_arguments)]
 fn fuse_normal_space_tsdf_scene(
     local_windows: &[WindowMeasuredChunk],
     global_windows: &[WindowMeasuredChunk],

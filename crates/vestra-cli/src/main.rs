@@ -9,22 +9,22 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vestra_core::{
-    ArchitectureSettings,
-    capture_cpp_pr2_fixture, cpp_pr2_fixture_alignment_reports, cpp_pr2_fixture_trajectory,
+    ArchitectureSettings, BackprojectionSettings, CppPr2CapiStreamOutput, CppPr2Fixture,
+    CppPr2MultiViewOutput, CppPr2StreamOutput, FusedPoint, FusedSceneChunk,
+    GlobalPoseFusionSettings, RasterFrame, RasterManifest, ReconstructionSettings, SceneBundle,
+    SceneProvenance, StitchSettings, SurfaceFusion, TsdfObservation, TsdfSettings,
+    VideoExtractionSettings, WindowSettings, capture_cpp_pr2_fixture,
+    cpp_pr2_fixture_alignment_reports, cpp_pr2_fixture_trajectory,
     emit_cpp_pr2_loop_closed_reference_cloud, emit_cpp_pr2_reference_cloud,
     emit_cpp_pr2_tsdf_reference_cloud, export_camera_json, export_fused_glb, export_fused_ply,
     export_fused_splat, extract_video_frames, finalized_raster_manifest, fuse_normal_space_tsdf,
     fuse_scene_bundle_cpp_pr2_relative, fuse_scene_bundle_with_pose_solution,
     fuse_scene_bundle_with_settings, fused_topology, global_pose_window_reports,
     import_colmap_fused_ply, load_decoded_frame_cache, load_decoded_rgb24_cache, plan_windows,
-    reconstruct_frames, video_raster_metadata, BackprojectionSettings, CppPr2CapiStreamOutput,
-    CppPr2Fixture, CppPr2MultiViewOutput, CppPr2StreamOutput, FusedPoint, FusedSceneChunk,
-    GlobalPoseFusionSettings, RasterFrame, RasterManifest, ReconstructionSettings, SceneBundle,
-    SceneProvenance, StitchSettings, SurfaceFusion, TsdfObservation, TsdfSettings,
-    VideoExtractionSettings, WindowSettings,
+    reconstruct_frames, video_raster_metadata,
 };
 use vestra_engine::{Engine, QuantPref, ViewInput};
-use vestra_studio::{serve, serve_intake, IntakeConfig};
+use vestra_studio::{IntakeConfig, serve, serve_intake};
 
 const VESTRA_LOCK: &str = include_str!("../../../vestra.lock.toml");
 
@@ -585,10 +585,7 @@ fn validate_mvs_hybrid_evidence(sidecar: &Da3PoseConditionedArtifact) -> Result<
         .hybrid
         .as_ref()
         .ok_or("MVS-DA3 hybrid artifact has no MVS provenance")?;
-    let fused_ply = hybrid
-        .mvs_ply_sha256
-        .as_deref()
-        .is_some_and(is_sha256)
+    let fused_ply = hybrid.mvs_ply_sha256.as_deref().is_some_and(is_sha256)
         && hybrid.mvs_vertices.is_some_and(|count| count > 0);
     let patchmatch_maps = hybrid
         .mvs_depth_map_index_sha256
@@ -614,13 +611,17 @@ fn validate_mvs_hybrid_evidence(sidecar: &Da3PoseConditionedArtifact) -> Result<
             .expect("PatchMatch evidence was checked above");
         if expected_count != sidecar.frames.len()
             || hybrid.per_frame.len() != expected_count
-            || hybrid.per_frame.iter().zip(&sidecar.frames).any(|(map, frame)| {
-                map.frame_index != *frame
-                    || map.file != format!("frame-{:06}.ppm.geometric.bin", frame + 1)
-                    || !is_sha256(&map.sha256)
-                    || !map.mvs_coverage.is_finite()
-                    || !(0.0..=1.0).contains(&map.mvs_coverage)
-            })
+            || hybrid
+                .per_frame
+                .iter()
+                .zip(&sidecar.frames)
+                .any(|(map, frame)| {
+                    map.frame_index != *frame
+                        || map.file != format!("frame-{:06}.ppm.geometric.bin", frame + 1)
+                        || !is_sha256(&map.sha256)
+                        || !map.mvs_coverage.is_finite()
+                        || !(0.0..=1.0).contains(&map.mvs_coverage)
+                })
         {
             return Err("PatchMatch MVS evidence does not cover the DA3 frame set exactly");
         }
@@ -1579,20 +1580,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let calibrated = sidecar.schema == "vestra.da3-pose-conditioned-calibration/v2";
             let mvs_hybrid = sidecar.schema == "vestra.da3-mvs-hybrid/v1";
             let mvs_guided = mvs_hybrid
-                && sidecar
-                    .hybrid
-                    .as_ref()
-                    .is_some_and(|hybrid| {
-                        hybrid.pixel_policy == "mvs-zbuffer-plus-coarse-local-ratio/v1"
-                    });
+                && sidecar.hybrid.as_ref().is_some_and(|hybrid| {
+                    hybrid.pixel_policy == "mvs-zbuffer-plus-coarse-local-ratio/v1"
+                });
             let mvs_patchmatch = mvs_hybrid
-                && sidecar
-                    .hybrid
-                    .as_ref()
-                    .is_some_and(|hybrid| {
-                        hybrid.pixel_policy
-                            == "colmap-patchmatch-geometric-resample-else-da3/v1"
-                    });
+                && sidecar.hybrid.as_ref().is_some_and(|hybrid| {
+                    hybrid.pixel_policy == "colmap-patchmatch-geometric-resample-else-da3/v1"
+                });
             let verified_derivative = calibrated || mvs_hybrid;
             if (sidecar.schema != "vestra.da3-pose-conditioned/v1" && !verified_derivative)
                 || sidecar.raster_fingerprint != raster.raster_fingerprint
@@ -1602,7 +1596,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("DA3 artifact does not bind this raster, COLMAP pose solution, and external pose scale".into());
             }
             if verified_derivative && sidecar.decision.as_deref() != Some("accepted") {
-                return Err("verified DA3 derivative was not accepted by its evidence contract".into());
+                return Err(
+                    "verified DA3 derivative was not accepted by its evidence contract".into(),
+                );
             }
             if verified_derivative {
                 validate_calibrated_da3_contract(&sidecar)?;
@@ -1664,13 +1660,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|frame| frame.frame_index)
                 .collect::<Vec<_>>();
             if depth_indices != published_frames {
-                return Err("DA3 depth-preview frames differ from the published COLMAP frame subset".into());
+                return Err(
+                    "DA3 depth-preview frames differ from the published COLMAP frame subset".into(),
+                );
             }
             for frame in &sidecar.depth_frames.frames {
-                if Path::new(&frame.file).file_name().and_then(|name| name.to_str())
+                if Path::new(&frame.file)
+                    .file_name()
+                    .and_then(|name| name.to_str())
                     != Some(frame.file.as_str())
                     || frame.sha256.len() != 64
-                    || sha256_file(&artifact.join(&sidecar.depth_frames.directory).join(&frame.file))? != frame.sha256
+                    || sha256_file(
+                        &artifact
+                            .join(&sidecar.depth_frames.directory)
+                            .join(&frame.file),
+                    )? != frame.sha256
                 {
                     return Err("DA3 depth-preview asset is missing, unsafe, or does not match its recorded SHA-256".into());
                 }
@@ -1694,7 +1698,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             fs::create_dir_all(&depth_target)?;
             for frame in &sidecar.depth_frames.frames {
                 fs::copy(
-                    artifact.join(&sidecar.depth_frames.directory).join(&frame.file),
+                    artifact
+                        .join(&sidecar.depth_frames.directory)
+                        .join(&frame.file),
                     depth_target.join(&frame.file),
                 )?;
             }
@@ -1873,7 +1879,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "architectural-plane-support",
                 source.pose_solution_hash.clone(),
             )?;
-            let mesh = vestra_core::architecture_mesh_from_support_points(&architecture_cloud.points);
+            let mesh =
+                vestra_core::architecture_mesh_from_support_points(&architecture_cloud.points);
             let mesh_hash = bundle.set_world_product_architecture_mesh(&product_id, &mesh)?;
             bundle.set_world_product_source_frames(&product_id, &source.source_frame_indices)?;
             bundle.set_world_product_depth_frame_count(&product_id, source.depth_frame_count)?;
@@ -2391,7 +2398,7 @@ fn raster_manifest_for_decoded(
 
 #[allow(clippy::too_many_arguments)]
 fn settings_fingerprint(
-    video: &PathBuf,
+    video: &Path,
     candidate_fps: f64,
     hard_max_frames: usize,
     width: usize,
@@ -2414,9 +2421,11 @@ fn settings_fingerprint(
 
 fn fusion_settings(tsdf: bool) -> StitchSettings {
     StitchSettings {
-        surface_fusion: tsdf
-            .then_some(SurfaceFusion::NormalSpaceTsdf(TsdfSettings::default()))
-            .unwrap_or(SurfaceFusion::Voxel),
+        surface_fusion: if tsdf {
+            SurfaceFusion::NormalSpaceTsdf(TsdfSettings::default())
+        } else {
+            SurfaceFusion::Voxel
+        },
         ..StitchSettings::default()
     }
 }

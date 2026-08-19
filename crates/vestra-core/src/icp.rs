@@ -3,6 +3,10 @@
 //! This is intentionally independent from the older, bounded seam correction
 //! in `stitch`: PR #2 re-establishes nearest neighbours on every iteration and
 //! retains the scale of the preceding Sim(3) estimate.
+//!
+//! Adapted from `depth-anything.cpp` PR #2 at commit
+//! `f56e9be43a22c12ef575584d2fa57a6a5d5be7ae` (MIT). See the repository's
+//! `THIRD_PARTY_NOTICES.md` for the full notice.
 
 use std::{
     collections::HashMap,
@@ -450,6 +454,8 @@ fn jacobi_eigen_6(matrix: [[f64; 6]; 6]) -> ([f64; 6], [[f64; 6]; 6]) {
     jacobi_eigen(matrix)
 }
 
+// Fixed-size index notation keeps the symmetric updates visibly paired.
+#[allow(clippy::needless_range_loop)]
 fn jacobi_eigen<const N: usize>(mut matrix: [[f64; N]; N]) -> ([f64; N], [[f64; N]; N]) {
     let mut vectors =
         std::array::from_fn(|row| std::array::from_fn(|column| f64::from(row == column)));

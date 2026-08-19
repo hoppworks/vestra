@@ -6,7 +6,7 @@ members = ["crates/vestra-core", "crates/vestra-cli", "crates/vestra-studio"]
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-rust-version = "1.85"
+rust-version = "1.93"
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -16,10 +16,4 @@ serde_json = "1"
 rayon = "1.10"
 sha2 = "0.10"
 thiserror = "2"
-vestra-engine = { version = "0.1.0" }
-
-# Local development override. Release builds replace this with the exact Git
-# revision recorded in vestra.lock.toml.
-[patch.crates-io]
-vestra-engine = { path = "../vestra-engine/crates/da-engine" }
-vestra-kernels = { path = "../vestra-kernels" }
+vestra-engine = { git = "https://github.com/hoppworks/vestra-engine", rev = "ec10ae38e8ceff3da4778fc2b47ad8f868dac311" }

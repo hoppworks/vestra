@@ -154,9 +154,11 @@ pub fn import_colmap_fused_ply(path: impl AsRef<Path>) -> Result<FusedSceneChunk
             f32_at(record, nz).unwrap_or(0.0),
         ];
         let length = normal.iter().map(|value| value * value).sum::<f32>().sqrt();
-        let normal = (length.is_finite() && length > 0.0)
-            .then(|| normal.map(|value| value / length))
-            .unwrap_or([0.0; 3]);
+        let normal = if length.is_finite() && length > 0.0 {
+            normal.map(|value| value / length)
+        } else {
+            [0.0; 3]
+        };
         points.push(FusedPoint {
             position,
             normal,

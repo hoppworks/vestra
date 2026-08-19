@@ -243,18 +243,16 @@ pub fn fuse_scene_bundle_frame_global(
                 if let (Some(maximum_error), Some(depth_maps)) = (
                     settings.maximum_neighbor_depth_log_error,
                     depth_maps.as_deref(),
+                ) && !has_neighbor_depth_agreement(
+                    position,
+                    frame.frame_index,
+                    depth_maps,
+                    &raster,
+                    settings.neighbor_frame_radius,
+                    settings.minimum_neighbor_depth_matches,
+                    maximum_error,
                 ) {
-                    if !has_neighbor_depth_agreement(
-                        position,
-                        frame.frame_index,
-                        depth_maps,
-                        &raster,
-                        settings.neighbor_frame_radius,
-                        settings.minimum_neighbor_depth_matches,
-                        maximum_error,
-                    ) {
-                        continue;
-                    }
+                    continue;
                 }
                 observations.push(TsdfObservation {
                     position,
@@ -956,7 +954,7 @@ fn normalize(vector: [f32; 3]) -> Option<[f32; 3]> {
 fn median(values: &mut [f32]) -> f32 {
     values.sort_by(f32::total_cmp);
     let middle = values.len() / 2;
-    if values.len() % 2 == 0 {
+    if values.len().is_multiple_of(2) {
         (values[middle - 1] + values[middle]) * 0.5
     } else {
         values[middle]

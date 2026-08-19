@@ -5,6 +5,10 @@
 //! deliberately *not* the product backprojection path: it exists so the
 //! VPS/VPO differential suite can distinguish an upstream geometry mismatch
 //! from a later Sim(3), ICP, or pose-graph mismatch.
+//!
+//! Adapted from `depth-anything.cpp` PR #2 at commit
+//! `f56e9be43a22c12ef575584d2fa57a6a5d5be7ae` (MIT). See the repository's
+//! `THIRD_PARTY_NOTICES.md` for the full notice.
 
 use crate::{
     BackprojectionError, BackprojectionSettings, CameraCalibration, CameraCentreDirection,
@@ -36,6 +40,8 @@ pub(crate) fn inv3_cpp_pr2(matrix: [f32; 9]) -> Option<[f32; 9]> {
 }
 
 /// C++ `inv4`: partial-pivoting Gauss-Jordan in F64 with a final F32 round.
+// Keep the fixed matrix indexing aligned with the pinned C++ oracle.
+#[allow(clippy::needless_range_loop)]
 pub(crate) fn inv4_cpp_pr2(matrix: [f32; 16]) -> Option<[f32; 16]> {
     let mut augmented = [[0.0_f64; 8]; 4];
     for row in 0..4 {
@@ -151,9 +157,11 @@ pub(crate) fn backproject_positions_cpp_pr2_f64(
         for x in 0..width {
             let pixel = y * width + x;
             let depth = frame.depth[pixel];
+            let confidence = frame.confidence[pixel];
             if !depth.is_finite()
                 || depth <= 0.0
-                || !(frame.confidence[pixel] >= minimum_confidence)
+                || !confidence.is_finite()
+                || confidence < minimum_confidence
             {
                 continue;
             }

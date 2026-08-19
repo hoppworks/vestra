@@ -1,14 +1,14 @@
 schema = 1
-captured_at = "2026-08-13"
+captured_at = "2026-08-19"
 
 [engine]
 repository = "https://github.com/hoppworks/vestra-engine"
-revision = "e6c8d0fd566a37f8bc15d030d9ac99370e748df9"
+revision = "ec10ae38e8ceff3da4778fc2b47ad8f868dac311"
 local_path = "../vestra-engine"
 
 [kernels]
 repository = "https://github.com/hoppworks/vestra-kernels"
-revision = "85c9dc2982d898f73ec4aaaf56b76304271af068"
+revision = "1ad85305de14ea76ddd878af6dac80f19bdf2bc3"
 local_path = "../vestra-kernels"
 
 [cpp_oracle]

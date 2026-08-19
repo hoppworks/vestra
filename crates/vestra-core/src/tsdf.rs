@@ -4,6 +4,10 @@
 //! oriented toward the nearest camera, points splat a truncated signed-distance
 //! band, and extracted zero-crossing voxels are sorted frame-major for a stable
 //! progressive reveal.
+//!
+//! Adapted from `depth-anything.cpp` PR #2 at commit
+//! `f56e9be43a22c12ef575584d2fa57a6a5d5be7ae` (MIT). See the repository's
+//! `THIRD_PARTY_NOTICES.md` for the full notice.
 
 use std::{
     collections::HashMap,

@@ -1,6 +1,10 @@
 //! Double-precision Sim(3) and pose-graph arithmetic for the pinned PR #2
 //! oracle path. Persisted Vestra scene data stays F32; this module prevents
 //! premature rounding while reproducing the reference's CPU geometry solver.
+//!
+//! Adapted from `depth-anything.cpp` PR #2 at commit
+//! `f56e9be43a22c12ef575584d2fa57a6a5d5be7ae` (MIT). See the repository's
+//! `THIRD_PARTY_NOTICES.md` for the full notice.
 
 use crate::{
     PoseGraphEdge, PoseGraphError, PoseGraphReport, PoseGraphSettings, SimilarityTransform,

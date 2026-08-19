@@ -1,0 +1,25 @@
+{
+  "schema": "vestra.demo-source/v1",
+  "id": "tum-rgbd-freiburg1-room",
+  "title": "TUM RGB-D Benchmark — freiburg1_room",
+  "source_url": "https://webshare.cvg.cit.tum.de/g/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_room-rgb.avi",
+  "source_sha256": "904f2c932e82e1aa0acf0682800993803b5089b25e424421074ef4f27df7721a",
+  "source_bytes": 13765996,
+  "source_video": {
+    "codec": "mpeg4",
+    "width": 640,
+    "height": 480,
+    "frames_per_second": 30,
+    "duration_seconds": 45.4
+  },
+  "license": {
+    "spdx": "CC-BY-4.0",
+    "url": "https://creativecommons.org/licenses/by/4.0/"
+  },
+  "attribution_url": "https://cvg.cit.tum.de/data/datasets/rgbd-dataset",
+  "changes": [
+    "Transcoded from AVI to H.264 MP4",
+    "Audio and container metadata removed",
+    "Processed by Vestra to produce derived 3D scenes and visualizations"
+  ]
+}

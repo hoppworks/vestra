@@ -1,7 +1,9 @@
 /target/
-Cargo.lock
 .DS_Store
 *.vestra/
 .vestra-cache/
+.demo-assets/
+.cargo/config.toml
+/graphify-out/
 __pycache__/
 *.pyc

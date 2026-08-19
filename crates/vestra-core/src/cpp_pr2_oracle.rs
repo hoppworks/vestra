@@ -37,7 +37,8 @@ pub struct CppPr2StreamBranches {
 
 impl CppPr2StreamBranches {
     const fn bits(self) -> u32 {
-        (self.icp_refine as u32) * BRANCH_ICP_REFINE | (self.loop_close as u32) * BRANCH_LOOP_CLOSE
+        ((self.icp_refine as u32) * BRANCH_ICP_REFINE)
+            | ((self.loop_close as u32) * BRANCH_LOOP_CLOSE)
     }
 
     fn from_bits(bits: u32) -> Result<Self, CppPr2OracleError> {

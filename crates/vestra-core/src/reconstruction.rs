@@ -1,4 +1,10 @@
 //! The deterministic bridge from multi-view inference to durable measured chunks.
+//!
+//! The PR #2 compatibility path adapts the schedule and deferred-emission
+//! contract from `depth-anything.cpp` commit
+//! `f56e9be43a22c12ef575584d2fa57a6a5d5be7ae` (MIT). Vestra's product path,
+//! persistence, validation, and global-pose products are project-owned. See
+//! `THIRD_PARTY_NOTICES.md` for the full upstream notice.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -394,7 +400,7 @@ fn emit_windows_at_poses(
                     continue;
                 }
                 let position = pose.apply(point.position);
-                if let Some(_) = tsdf {
+                if tsdf.is_some() {
                     observations.push(crate::TsdfObservation {
                         position,
                         color_srgb: point.color_srgb,
@@ -1108,7 +1114,7 @@ fn cpp_pr2_loop_oracle_with_evidence(
     if keys.len() != windows.len() || paths.len() != windows.len() {
         return Err(ReconstructionError::OracleOutputShape);
     }
-    let sequential = cpp_pr2_sequential_window_poses(&windows)?;
+    let sequential = cpp_pr2_sequential_window_poses(windows)?;
     cpp_pr2_loop_oracle_from_sequential(windows, loop_close, keys, paths, sequential)
 }
 
