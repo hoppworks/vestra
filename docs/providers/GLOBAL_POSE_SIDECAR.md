@@ -51,9 +51,9 @@ than interpolate them.
 ## Import and gates
 
 ```sh
-vestra pose-import-json --scene world.vestra --solution provider.json
-vestra inspect-global-pose --scene world.vestra --pose-solution <hash>
-vestra fuse-global-pose --scene world.vestra --pose-solution <hash>
+vestra-lab pose-import-json --scene world.vestra --solution provider.json
+vestra-lab inspect-global-pose --scene world.vestra --pose-solution <hash>
+vestra-lab fuse-global-pose --scene world.vestra --pose-solution <hash>
 ```
 
 The historical command names retain compatibility with the first COLMAP spike;

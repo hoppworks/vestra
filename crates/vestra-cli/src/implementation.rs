@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use clap::{Parser, Subcommand};
+use clap::{Command as ClapCommand, CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vestra_core::{
@@ -27,6 +27,37 @@ use vestra_engine::{Engine, QuantPref, ViewInput};
 use vestra_studio::{IntakeConfig, serve, serve_intake};
 
 const VESTRA_LOCK: &str = include_str!("../../../vestra.lock.toml");
+const PRODUCT_COMMANDS: [&str; 6] = ["app", "reconstruct", "demo", "serve", "inspect", "export"];
+const LAB_COMMANDS: [&str; 28] = [
+    "plan",
+    "fuse",
+    "pose-import-colmap",
+    "pose-import-colmap-model",
+    "pose-import-json",
+    "fuse-colmap-global",
+    "fuse-global-pose",
+    "inspect-colmap-global",
+    "inspect-global-pose",
+    "inspect-colmap-frame-global",
+    "fuse-colmap-frame-global",
+    "import-colmap-mvs",
+    "import-da3-pose-conditioned",
+    "fuse-da3-pose-conditioned-tsdf",
+    "extract-architecture",
+    "raster-record",
+    "export-glb",
+    "export-splat",
+    "export-cameras",
+    "verify",
+    "oracle-fixture",
+    "oracle-model-bench",
+    "oracle-inspect",
+    "oracle-stitch",
+    "oracle-compare",
+    "oracle-compare-capi",
+    "oracle-compare-model",
+    "oracle-run",
+];
 
 #[derive(Debug, Parser)]
 #[command(name = "vestra", about = "Native video-to-world reconstruction")]
@@ -331,6 +362,14 @@ enum Command {
         #[arg(long, default_value_t = 4317)]
         port: u16,
     },
+    /// Open a precomputed `.vestra` scene in the local browser studio.
+    /// This never downloads a model or runs inference.
+    Demo {
+        #[arg(long)]
+        scene: PathBuf,
+        #[arg(long, default_value_t = 4317)]
+        port: u16,
+    },
     /// Start the localhost browser intake for selecting and reconstructing a video.
     App {
         #[arg(long)]
@@ -472,6 +511,82 @@ enum Command {
         #[arg(long)]
         tsdf: bool,
     },
+}
+
+fn command_surface(
+    binary_name: &'static str,
+    about: &'static str,
+    command_names: &[&str],
+) -> ClapCommand {
+    let complete = Cli::command();
+    let selected = command_names
+        .iter()
+        .enumerate()
+        .map(|(display_order, name)| {
+            complete
+                .find_subcommand(name)
+                .unwrap_or_else(|| panic!("missing command definition for {name}"))
+                .clone()
+                .display_order(display_order)
+        });
+    ClapCommand::new(binary_name)
+        .about(about)
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommands(selected)
+}
+
+fn product_command() -> ClapCommand {
+    command_surface(
+        "vestra",
+        "Local video-to-world reconstruction",
+        &PRODUCT_COMMANDS,
+    )
+}
+
+fn lab_command() -> ClapCommand {
+    command_surface(
+        "vestra-lab",
+        "Vestra engineering, provider, and validation tools",
+        &LAB_COMMANDS,
+    )
+}
+
+fn parse_command<I, T>(command: ClapCommand, arguments: I) -> Result<Command, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let mut matches = command.try_get_matches_from(arguments)?;
+    Ok(Cli::from_arg_matches_mut(&mut matches)?.command)
+}
+
+fn try_parse_product_from<I, T>(arguments: I) -> Result<Command, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    parse_command(product_command(), arguments)
+}
+
+fn try_parse_lab_from<I, T>(arguments: I) -> Result<Command, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    parse_command(lab_command(), arguments)
+}
+
+/// Run the curated end-user command surface.
+pub fn run_product() -> Result<(), Box<dyn std::error::Error>> {
+    let command = try_parse_product_from(std::env::args_os()).unwrap_or_else(|error| error.exit());
+    execute(command)
+}
+
+/// Run the engineering and validation command surface.
+pub fn run_lab() -> Result<(), Box<dyn std::error::Error>> {
+    let command = try_parse_lab_from(std::env::args_os()).unwrap_or_else(|error| error.exit());
+    execute(command)
 }
 
 /// Deliberately small import contract for the official Python DA3 sidecar.
@@ -680,9 +795,8 @@ struct Da3PoseConditionedDepthFrame {
     sha256: String,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
-    match cli.command {
+fn execute(command: Command) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
         Command::Plan {
             frames,
             chunk_size,
@@ -2003,6 +2117,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Vestra Studio is listening at http://127.0.0.1:{port}");
             serve(scene, port)?;
         }
+        Command::Demo { scene, port } => {
+            let _bundle = SceneBundle::open(&scene)?;
+            eprintln!("Vestra demo is listening at http://127.0.0.1:{port}");
+            serve(scene, port)?;
+        }
     }
     Ok(())
 }
@@ -2433,7 +2552,102 @@ fn fusion_settings(tsdf: bool) -> StitchSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::error::ErrorKind;
     use vestra_core::{AlignmentReport, FusedPoint, FusedSceneChunk};
+
+    #[test]
+    fn product_help_has_exact_curated_command_surface() {
+        let command = product_command();
+        let names = command
+            .get_subcommands()
+            .map(ClapCommand::get_name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, PRODUCT_COMMANDS.as_slice());
+        assert!(
+            command
+                .get_subcommands()
+                .all(|item| item.get_all_aliases().next().is_none())
+        );
+    }
+
+    #[test]
+    fn lab_help_has_exact_engineering_command_surface() {
+        let command = lab_command();
+        let names = command
+            .get_subcommands()
+            .map(ClapCommand::get_name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, LAB_COMMANDS.as_slice());
+        assert!(
+            command
+                .get_subcommands()
+                .all(|item| item.get_all_aliases().next().is_none())
+        );
+    }
+
+    #[test]
+    fn product_rejects_every_lab_command() {
+        for command in LAB_COMMANDS {
+            let error = try_parse_product_from(["vestra", command]).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::InvalidSubcommand, "{command}");
+        }
+    }
+
+    #[test]
+    fn lab_rejects_every_product_command() {
+        for command in PRODUCT_COMMANDS {
+            let error = try_parse_lab_from(["vestra-lab", command]).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::InvalidSubcommand, "{command}");
+        }
+    }
+
+    #[test]
+    fn curated_product_parser_reuses_reconstruction_arguments() {
+        let command = try_parse_product_from([
+            "vestra",
+            "reconstruct",
+            "--video",
+            "capture.mov",
+            "--model",
+            "model.gguf",
+            "--output",
+            "world.vestra",
+            "--resume",
+        ])
+        .unwrap();
+        let Command::Reconstruct {
+            video,
+            model,
+            output,
+            resume,
+            ..
+        } = command
+        else {
+            panic!("expected reconstruct command");
+        };
+        assert_eq!(video, PathBuf::from("capture.mov"));
+        assert_eq!(model, PathBuf::from("model.gguf"));
+        assert_eq!(output, PathBuf::from("world.vestra"));
+        assert!(resume);
+    }
+
+    #[test]
+    fn demo_accepts_only_a_precomputed_scene_and_port() {
+        let command = try_parse_product_from([
+            "vestra",
+            "demo",
+            "--scene",
+            "world.vestra",
+            "--port",
+            "9000",
+        ])
+        .unwrap();
+        let Command::Demo { scene, port } = command else {
+            panic!("expected demo command");
+        };
+        assert_eq!(scene, PathBuf::from("world.vestra"));
+        assert_eq!(port, 9000);
+    }
 
     #[test]
     fn new_browser_jobs_default_to_bounded_product_geometry() {

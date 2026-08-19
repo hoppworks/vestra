@@ -24,7 +24,7 @@ struct CameraJsonEntry {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
-    #[error("the scene has no fused world; run `vestra fuse` first")]
+    #[error("the scene has no fused world; run `vestra-lab fuse` first")]
     MissingFusedWorld,
     #[error("scene persistence failed: {0}")]
     Scene(#[from] SceneBundleError),

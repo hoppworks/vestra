@@ -16,4 +16,4 @@ serde_json = "1"
 rayon = "1.10"
 sha2 = "0.10"
 thiserror = "2"
-vestra-engine = { git = "https://github.com/hoppworks/vestra-engine", rev = "ec10ae38e8ceff3da4778fc2b47ad8f868dac311" }
+vestra-engine = { git = "https://github.com/hoppworks/vestra-engine", rev = "1d9613069fe4dcea7760a83c72635d0536c9af42" }

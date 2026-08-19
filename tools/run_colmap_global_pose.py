@@ -5,7 +5,9 @@ This is intentionally an experiment runner, not a publishing shortcut.  It
 consumes the immutable raster manifest already recorded in a ``.vestra``
 bundle, verifies every PPM byte before COLMAP sees it, adds both sequential and
 vocabulary-tree retrieval matches, runs a final global bundle adjustment, and
-writes the exact ``images.txt`` plus provenance for ``vestra pose-import-colmap``.
+writes a selected-only ``images.txt`` plus provenance for
+``vestra-lab pose-import-colmap``. The complete optimized model is retained beside
+it for dense MVS and audit/replay.
 
 The Rust importer and global-fusion gate remain the authority for accepting or
 rejecting the resulting pose solution.
@@ -21,11 +23,14 @@ import shutil
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
+from fractions import Fraction
+from math import ceil
 from pathlib import Path
 from typing import Iterable
 
 
 SCHEMA = "vestra.colmap-global-pose-run/v1"
+MAX_BRIDGE_IMAGES = 100_000
 
 
 @dataclass(frozen=True)
@@ -39,6 +44,7 @@ class Settings:
     vocabulary_tree_sha256: str
     pose_image_width: int | None
     source_video_sha256: str | None
+    bridge_fps: float | None = None
 
 
 def sha256_file(path: Path) -> str:
@@ -138,15 +144,107 @@ def stage_colmap_images(decoded: Path, names: list[str], output: Path) -> Path:
     return image_root
 
 
-def source_extraction_schedule(frames: list[dict]) -> tuple[float, int]:
-    """Returns `(uniform_rate, prefix_count)` without approximating timestamps.
+def bridge_image_name(selected_name: str, timestamp_millis: int, ordinal: int) -> str:
+    """Name a bridge image immediately after its preceding selected image.
+
+    Selected raster names are part of the durable contract and therefore are
+    never renamed.  A ``~bridge`` suffix sorts after ``frame-000001.ppm`` but
+    before ``frame-000002.ppm`` for the normal Vestra frame naming scheme,
+    while remaining an ordinary PPM filename for COLMAP.
+    """
+    path = Path(selected_name)
+    suffix = path.suffix or ".ppm"
+    stem = path.name[: -len(path.suffix)] if path.suffix else path.name
+    return f"{stem}~bridge-{timestamp_millis:012d}-{ordinal:06d}{suffix}"
+
+
+def temporal_bridge_schedule(
+    frames: list[dict], names: list[str], bridge_fps: float
+) -> list[dict]:
+    """Return exact integer-millisecond bridge timestamps between keyframes.
+
+    The schedule is deliberately bounded to gaps *between* selected frames;
+    it never adds a prefix or suffix of the source video.  Fraction arithmetic
+    makes the result deterministic for decimal FPS values and avoids a
+    floating-point accumulation drift.  Timestamps are rounded up to the
+    nearest source millisecond, and duplicate/endpoint timestamps are omitted.
+    """
+    if len(frames) != len(names):
+        raise ValueError("bridge schedule requires one name per raster frame")
+    if not isinstance(bridge_fps, (int, float)) or not float(bridge_fps) > 0:
+        raise ValueError("bridge-fps must be positive")
+    if not float(bridge_fps) < float("inf"):
+        raise ValueError("bridge-fps must be finite")
+    if float(bridge_fps) > 1000:
+        raise ValueError("bridge-fps cannot exceed 1000 for integer-millisecond timestamps")
+    if len(frames) < 2:
+        return []
+    timestamps = [frame.get("timestamp_millis") for frame in frames]
+    if any(not isinstance(value, int) or value < 0 for value in timestamps):
+        raise ValueError("raster timestamps must be non-negative integer milliseconds")
+    if any(right <= left for left, right in zip(timestamps, timestamps[1:])):
+        raise ValueError("raster timestamps must be strictly increasing")
+    interval = Fraction(1000, 1) / Fraction(str(float(bridge_fps)))
+    result: list[dict] = []
+    ordinal = 0
+    last_timestamp = -1
+    for left, right, selected_name in zip(timestamps, timestamps[1:], names):
+        candidate = Fraction(left, 1) + interval
+        while candidate < right:
+            timestamp = ceil(candidate)
+            # At very high rates several ideal samples can land in one source
+            # millisecond. Keep the schedule strictly interior and unique.
+            if timestamp <= left:
+                timestamp = left + 1
+            if timestamp >= right:
+                break
+            if timestamp <= last_timestamp:
+                candidate += interval
+                continue
+            if len(result) >= MAX_BRIDGE_IMAGES:
+                raise ValueError(f"bridge schedule exceeds {MAX_BRIDGE_IMAGES} images")
+            result.append(
+                {
+                    "timestamp_millis": timestamp,
+                    "file_name": bridge_image_name(selected_name, timestamp, ordinal),
+                    "kind": "bridge",
+                    "selected_before": selected_name,
+                }
+            )
+            ordinal += 1
+            last_timestamp = timestamp
+            candidate += interval
+    if [entry["timestamp_millis"] for entry in result] != sorted(
+        entry["timestamp_millis"] for entry in result
+    ):
+        raise AssertionError("bridge schedule lost chronological ordering")
+    return result
+
+
+def _ordered_image_entries(frames: list[dict], names: list[str], bridges: list[dict]) -> list[dict]:
+    if len(frames) != len(names):
+        raise ValueError("image ordering requires one name per raster frame")
+    entries = [
+        {"timestamp_millis": frame["timestamp_millis"], "file_name": name, "kind": "selected"}
+        for frame, name in zip(frames, names)
+    ]
+    entries.extend(bridges)
+    ordered = sorted(entries, key=lambda entry: (entry["timestamp_millis"], entry["kind"] != "selected"))
+    if [entry["file_name"] for entry in ordered] != sorted(entry["file_name"] for entry in ordered):
+        raise ValueError(
+            "selected raster filenames must sort chronologically for COLMAP sequential matching"
+        )
+    return ordered
+
+
+def source_extraction_schedule(frames: list[dict]) -> tuple[float, int] | None:
+    """Returns a fast uniform schedule, or ``None`` for exact per-frame decode.
 
     High-resolution pose evidence must describe the same source instants as the
-    immutable DA3 rasters. A generic `fps` filter is exact only when the
-    manifest timestamps are uniformly spaced. Vestra's quality selector may
-    retain one final partial cadence interval at end-of-video; that final frame
-    is decoded by its explicit timestamp after the regular prefix. Any other
-    irregular schedule is rejected instead of silently sampling neighbours.
+    immutable DA3 rasters. A generic ``fps`` filter is exact only when the
+    manifest timestamps are uniformly spaced. Vestra's quality selector is
+    intentionally irregular, so those manifests use one accurate decode per
+    recorded timestamp instead of approximating a new cadence.
     """
     if len(frames) < 2:
         raise ValueError("high-resolution pose extraction requires two or more raster frames")
@@ -155,18 +253,16 @@ def source_extraction_schedule(frames: list[dict]) -> tuple[float, int]:
         raise ValueError("raster timestamps must be non-negative integer milliseconds")
     if timestamps[0] != 0:
         raise ValueError("high-resolution pose extraction requires a zero timestamp first frame")
-    interval = timestamps[1] - timestamps[0]
-    if interval <= 0:
+    if any(right <= left for left, right in zip(timestamps, timestamps[1:])):
         raise ValueError("raster timestamps must be strictly increasing")
+    interval = timestamps[1] - timestamps[0]
     prefix_count = 2
     while prefix_count < len(timestamps) and timestamps[prefix_count] - timestamps[prefix_count - 1] == interval:
         prefix_count += 1
     if prefix_count < len(timestamps) - 1 or (
         prefix_count < len(timestamps) and timestamps[prefix_count] <= timestamps[prefix_count - 1]
     ):
-        raise ValueError(
-            "high-resolution pose extraction accepts only a uniform raster prefix and one final tail frame"
-        )
+        return None
     return 1000.0 / interval, prefix_count
 
 
@@ -175,6 +271,7 @@ def stage_source_resolution_images(
     raster: dict,
     names: list[str],
     output: Path,
+    bridge_fps: float | None = None,
 ) -> Path:
     """Decodes the source video at its locked crop, retaining pose detail.
 
@@ -201,21 +298,52 @@ def stage_source_resolution_images(
         raise ValueError("raster crop dimensions must be positive")
     if args.pose_image_width <= 0 or args.pose_image_width > crop["width"]:
         raise ValueError("pose-image-width must be positive and no wider than the locked source crop")
-    rate, regular_count = source_extraction_schedule(raster["frames"])
     image_root = output / "images"
     image_root.mkdir()
-    temporary_pattern = image_root / "selected-%06d.ppm"
     filter_parts = [
-        f"fps={rate:.12f}",
         f"crop={crop['width']}:{crop['height']}:{crop['x']}:{crop['y']}",
     ]
     if args.pose_image_width != crop["width"]:
         filter_parts.append(f"scale={args.pose_image_width}:-2:flags=lanczos")
     log = output / "colmap.log"
+    bridges = temporal_bridge_schedule(raster["frames"], names, bridge_fps) if bridge_fps else []
+    if bridges:
+        # A bridge run always uses exact timestamp seeks for both selected and
+        # bridge images. The selected names remain byte-for-byte contract
+        # names; only the bridge files are synthetic and clearly marked.
+        for entry in _ordered_image_entries(raster["frames"], names, bridges):
+            timestamp = entry["timestamp_millis"] / 1000.0
+            run(
+                [
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(video),
+                    "-ss", f"{timestamp:.3f}", "-vf", ",".join(filter_parts),
+                    "-frames:v", "1", str(image_root / entry["file_name"]),
+                ],
+                log,
+            )
+        return image_root
+
+    schedule = source_extraction_schedule(raster["frames"])
+    if schedule is None:
+        for frame, name in zip(raster["frames"], names):
+            timestamp = frame["timestamp_millis"] / 1000.0
+            run(
+                [
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(video),
+                    "-ss", f"{timestamp:.3f}", "-vf", ",".join(filter_parts),
+                    "-frames:v", "1", str(image_root / name),
+                ],
+                log,
+            )
+        return image_root
+
+    rate, regular_count = schedule
+    temporary_pattern = image_root / "selected-%06d.ppm"
     run(
         [
             "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(video),
-            "-vf", ",".join(filter_parts), "-frames:v", str(regular_count), str(temporary_pattern),
+            "-vf", ",".join([f"fps={rate:.12f}", *filter_parts]),
+            "-frames:v", str(regular_count), str(temporary_pattern),
         ],
         log,
     )
@@ -224,7 +352,7 @@ def stage_source_resolution_images(
         run(
             [
                 "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(video),
-                "-ss", f"{final_timestamp:.3f}", "-vf", ",".join(filter_parts[1:]),
+                "-ss", f"{final_timestamp:.3f}", "-vf", ",".join(filter_parts),
                 "-frames:v", "1", str(image_root / f"selected-{len(names):06d}.ppm"),
             ],
             log,
@@ -234,9 +362,158 @@ def stage_source_resolution_images(
         raise RuntimeError(
             f"source extraction emitted {len(decoded)} frames; expected exactly {len(names)}"
         )
-    for source, name in zip(decoded, names, strict=True):
+    for source, name in zip(decoded, names):
         source.rename(image_root / name)
     return image_root
+
+
+def _model_lines(text: str) -> tuple[list[str], list[str]]:
+    """Split a COLMAP text file into comments and meaningful data lines."""
+    comments = [line for line in text.splitlines() if line.lstrip().startswith("#")]
+    data = [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    return comments, data
+
+
+def _parse_image_records(images_text: str) -> list[dict]:
+    lines = images_text.splitlines()
+    records: list[dict] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        fields = line.split()
+        if len(fields) < 10:
+            raise ValueError("COLMAP images.txt has a malformed image pose line")
+        try:
+            image_id = int(fields[0])
+            camera_id = int(fields[8])
+        except ValueError as error:
+            raise ValueError("COLMAP images.txt has a non-integer image or camera ID") from error
+        if index >= len(lines):
+            raise ValueError("COLMAP images.txt is missing an observation line")
+        observation_line = lines[index]
+        index += 1
+        observation_fields = observation_line.split()
+        if len(observation_fields) % 3:
+            raise ValueError("COLMAP images.txt has malformed 2D observations")
+        observations = []
+        for offset in range(0, len(observation_fields), 3):
+            try:
+                point_id = int(observation_fields[offset + 2])
+            except ValueError as error:
+                raise ValueError("COLMAP images.txt has a non-integer POINT3D_ID") from error
+            observations.append(
+                (observation_fields[offset], observation_fields[offset + 1], point_id)
+            )
+        records.append(
+            {
+                "image_id": image_id,
+                "camera_id": camera_id,
+                "name": fields[9],
+                "pose_line": line,
+                "observations": observations,
+            }
+        )
+    return records
+
+
+def _filter_cameras_text(cameras_text: str, camera_ids: set[int]) -> str:
+    comments, data = _model_lines(cameras_text)
+    kept = []
+    for line in data:
+        fields = line.split()
+        if not fields:
+            continue
+        try:
+            camera_id = int(fields[0])
+        except ValueError as error:
+            raise ValueError("COLMAP cameras.txt has a non-integer CAMERA_ID") from error
+        if camera_id in camera_ids:
+            kept.append(line)
+    return "\n".join([*comments, *kept]) + "\n"
+
+
+def filter_colmap_text_model(
+    cameras_text: str,
+    images_text: str,
+    points3d_text: str,
+    selected_names: Iterable[str],
+) -> tuple[str, str, str]:
+    """Remove bridge images and their observations from a COLMAP text model.
+
+    Image observation indices are positional and are referenced by
+    ``points3D.txt`` tracks. Therefore dropped point references become ``-1``
+    in the selected image's observation line instead of deleting a triple and
+    shifting every subsequent ``POINT2D_IDX``. Point tracks are retained only
+    when their pair refers to a retained selected-image observation; bridge
+    pairs are removed. Cameras not used by a selected image are removed too.
+    """
+    selected = set(selected_names)
+    records = _parse_image_records(images_text)
+    selected_records = [record for record in records if record["name"] in selected]
+    selected_ids = {record["image_id"] for record in selected_records}
+    selected_by_id = {record["image_id"]: record for record in selected_records}
+    if len(selected_by_id) != len(selected_records):
+        raise ValueError("COLMAP images.txt contains duplicate selected image IDs")
+
+    point_rows: list[tuple[int, str, list[tuple[int, int]]]] = []
+    for line in points3d_text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        fields = line.split()
+        if len(fields) < 8 or (len(fields) - 8) % 2:
+            raise ValueError("COLMAP points3D.txt has a malformed point track")
+        try:
+            point_id = int(fields[0])
+            track = [
+                (int(fields[offset]), int(fields[offset + 1]))
+                for offset in range(8, len(fields), 2)
+            ]
+        except ValueError as error:
+            raise ValueError("COLMAP points3D.txt has a non-integer track pair") from error
+        point_rows.append((point_id, " ".join(fields[:8]), track))
+
+    observation_points = {
+        (record["image_id"], index): observation[2]
+        for record in selected_records
+        for index, observation in enumerate(record["observations"])
+        if observation[2] >= 0
+    }
+    kept_tracks: dict[int, set[tuple[int, int]]] = {}
+    for point_id, _header, track in point_rows:
+        valid = {
+            (image_id, point_index)
+            for image_id, point_index in track
+            if image_id in selected_ids
+            and observation_points.get((image_id, point_index)) == point_id
+        }
+        if valid:
+            kept_tracks[point_id] = valid
+    valid_pairs = {pair for pairs in kept_tracks.values() for pair in pairs}
+
+    selected_comments, _ = _model_lines(images_text)
+    selected_image_lines: list[str] = []
+    for record in selected_records:
+        observations = []
+        for index, (x, y, point_id) in enumerate(record["observations"]):
+            if point_id >= 0 and (record["image_id"], index) not in valid_pairs:
+                point_id = -1
+            observations.extend((x, y, str(point_id)))
+        selected_image_lines.extend((record["pose_line"], " ".join(observations)))
+
+    selected_point_comments, _ = _model_lines(points3d_text)
+    selected_point_lines: list[str] = []
+    for point_id, header, track in point_rows:
+        retained = [pair for pair in track if pair in kept_tracks.get(point_id, set())]
+        if retained:
+            selected_point_lines.append(" ".join((header, *(str(value) for pair in retained for value in pair))))
+
+    cameras = _filter_cameras_text(cameras_text, {record["camera_id"] for record in selected_records})
+    images_output = "\n".join([*selected_comments, *selected_image_lines]) + "\n"
+    points_output = "\n".join([*selected_point_comments, *selected_point_lines]) + "\n"
+    return cameras, images_output, points_output
 
 
 def largest_model(models_root: Path) -> Path:
@@ -275,6 +552,13 @@ def parse_args() -> argparse.Namespace:
         "--pose-image-width", type=int,
         help="locked-crop width for --source-video evidence; must not upscale",
     )
+    parser.add_argument(
+        "--bridge-fps", type=float,
+        help=(
+            "exact timestamp samples per second inserted only between selected "
+            "rasters; requires --source-video and keeps the selected raster contract"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -284,6 +568,10 @@ def main() -> int:
         raise ValueError("threads, sequential overlap, and retrieval images must be positive")
     if (args.source_video is None) != (args.pose_image_width is None):
         raise ValueError("--source-video and --pose-image-width must be supplied together")
+    if args.bridge_fps is not None and args.bridge_fps <= 0:
+        raise ValueError("bridge-fps must be positive")
+    if args.bridge_fps is not None and args.source_video is None:
+        raise ValueError("--bridge-fps requires --source-video and --pose-image-width")
     scene = args.scene.resolve()
     output = args.output.resolve()
     tree = args.vocabulary_tree.resolve()
@@ -293,18 +581,25 @@ def main() -> int:
         raise FileNotFoundError("scene manifest or vocabulary tree is missing")
     raster, raster_path = read_raster_manifest(scene)
     frame_names = verify_rasters(scene, raster)
+    bridge_schedule = (
+        temporal_bridge_schedule(raster["frames"], frame_names, args.bridge_fps)
+        if args.bridge_fps is not None
+        else []
+    )
     output.mkdir(parents=True)
     images = (
-        stage_source_resolution_images(args, raster, frame_names, output)
+        stage_source_resolution_images(args, raster, frame_names, output, args.bridge_fps)
         if args.source_video is not None
         else stage_colmap_images(scene / "decoded", frame_names, output)
     )
     database = output / "database.db"
     sparse = output / "sparse"
     text = output / "sparse-text"
+    selected_text = output / "selected-text"
     sparse.mkdir()
     # COLMAP 4 model_converter also requires its destination to exist.
     text.mkdir()
+    selected_text.mkdir()
     log = output / "colmap.log"
     settings = Settings(
         colmap=args.colmap,
@@ -316,6 +611,7 @@ def main() -> int:
         vocabulary_tree_sha256=sha256_file(tree),
         pose_image_width=args.pose_image_width,
         source_video_sha256=sha256_file(args.source_video) if args.source_video else None,
+        bridge_fps=args.bridge_fps,
     )
     common_feature = colmap_command(args, [
         "feature_extractor", "--database_path", str(database), "--image_path", str(images),
@@ -358,28 +654,63 @@ def main() -> int:
         "model_converter", "--input_path", str(ba), "--output_path", str(text),
         "--output_type", "TXT",
     ]), log)
-    images_txt = text / "images.txt"
-    # COLMAP text models store exactly two physical lines per image: the pose
-    # line and its 2D observations (which may be blank). Preserve blanks so
-    # observation coordinates are never mistaken for extra cameras.
-    model_lines = [
-        line for line in images_txt.read_text(encoding="utf-8").splitlines()
-        if not line.startswith("#")
-    ]
-    registered = sum(1 for line in model_lines[::2] if len(line.split()) >= 10)
+    full_cameras_txt = text / "cameras.txt"
+    full_images_txt = text / "images.txt"
+    full_points_txt = text / "points3D.txt"
+    selected_cameras, selected_images, selected_points = filter_colmap_text_model(
+        full_cameras_txt.read_text(encoding="utf-8"),
+        full_images_txt.read_text(encoding="utf-8"),
+        full_points_txt.read_text(encoding="utf-8"),
+        frame_names,
+    )
+    (selected_text / "cameras.txt").write_text(selected_cameras, encoding="utf-8")
+    (selected_text / "images.txt").write_text(selected_images, encoding="utf-8")
+    (selected_text / "points3D.txt").write_text(selected_points, encoding="utf-8")
+    selected_name_set = set(frame_names)
+    full_records = _parse_image_records(full_images_txt.read_text(encoding="utf-8"))
+    registered = sum(1 for record in full_records if record["name"] in selected_name_set)
+    all_input_names = [*frame_names, *(entry["file_name"] for entry in bridge_schedule)]
     provenance = {
         "schema": SCHEMA,
         "scene": str(scene),
         "raster_manifest": str(raster_path),
         "raster_fingerprint": raster["raster_fingerprint"],
         "input_frames": len(raster["frames"]),
+        "selected_frames": len(frame_names),
+        "bridge_frames": len(bridge_schedule),
+        "input_images": len(all_input_names),
+        "selected_images": len(frame_names),
+        "bridge_images": len(bridge_schedule),
+        "registered_images": registered,
+        "input_image_names": all_input_names,
+        "selected_image_names": frame_names,
+        "bridge_image_names": [entry["file_name"] for entry in bridge_schedule],
+        "counts": {
+            "input": len(all_input_names),
+            "selected": len(frame_names),
+            "bridge": len(bridge_schedule),
+            "registered": registered,
+        },
         "image_root": str(images),
         "registered_frames": registered,
+        "bridge": {
+            "enabled": args.bridge_fps is not None,
+            "fps": args.bridge_fps,
+            "count": len(bridge_schedule),
+            "images": bridge_schedule,
+        },
         "settings": asdict(settings),
         "settings_fingerprint": hashlib.sha256(
             json.dumps(asdict(settings), sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest(),
-        "images_txt": str(images_txt),
+        # `images_txt` is intentionally the selected-only model consumed by
+        # pose-import-colmap. The complete model remains available for dense
+        # MVS and audit/replay.
+        "images_txt": str(selected_text / "images.txt"),
+        "selected_model_text": str(selected_text),
+        "full_model_text": str(text),
+        "full_model": str(ba),
+        "full_images_txt": str(full_images_txt),
     }
     (output / "run.json").write_text(json.dumps(provenance, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(provenance, indent=2))

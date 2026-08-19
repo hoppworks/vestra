@@ -104,3 +104,17 @@ Changes made by the Vestra project:
 
 No endorsement by the original authors or Technical University of Munich is
 implied.
+
+## COLMAP
+
+The public demo's optional globally registered dense-MVS control is generated
+with COLMAP 4.2.0.dev0 from the official container image pinned by digest in
+the demo validation record. Vestra does not redistribute the container or
+COLMAP binaries.
+
+- Source: <https://github.com/colmap/colmap>
+- License: BSD 3-Clause
+
+The resulting scene remains labelled as a COLMAP MVS derivative. COLMAP does
+not supply Vestra's scene format, provenance gates, product selection, local
+service, or renderer.

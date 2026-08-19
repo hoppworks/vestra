@@ -3,7 +3,7 @@
 
 This is intentionally a sidecar, not a second reconstruction pipeline.  It
 accepts Vestra's immutable raster manifest and writes the provider-neutral
-``vestra.pose-solution/v1`` JSON consumed by ``vestra pose-import-json``.
+``vestra.pose-solution/v1`` JSON consumed by ``vestra-lab pose-import-json``.
 Non-keyframe pose filling is deliberately not used: a derived world must fail
 its coverage gate rather than silently interpolate cameras it did not track.
 """

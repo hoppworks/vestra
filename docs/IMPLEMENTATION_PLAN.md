@@ -1,97 +1,115 @@
 # Vestra implementation plan
 
-The plan is parity-first. A stage does not advance because it looks plausible
-in the viewer; it advances when its isolated C++ oracle, Rust tests, and scene
-quality measurements pass.
+This plan separates accepted foundations from work that still needs evidence.
+The default path remains local, relative-scale, and CPU F32; research branches
+must not widen the product promise without their own gates.
 
-## Slice 1 — Multi-view inference parity (complete for the locked F32 contract)
+## 1. Repository and model contract — complete
 
-Completed:
+- Keep `vestra`, `vestra-engine`, and `vestra-kernels` independently
+  versioned.
+- Pin compatible revisions in the Vestra workspace.
+- Complete the ordered multi-view local/global transformer contract and camera
+  token semantics.
+- Preserve numerical parity against the pinned PR #2 F32 oracle for the
+  accepted S=2, S=3, and S=12 model cases.
 
-- independent repository boundaries and pinned revisions
-- real ordered multi-view local/global transformer execution
-- per-view reference/source camera token injection
-- repeated per-view RoPE boundaries during flattened global attention
-- per-view depth, confidence, pose, and intrinsics output API
-- bitwise `S=1` equivalence and synthetic cross-view coupling tests
-- saddle-balanced reference scoring and reference-first permutation contract
+Evidence: [ADR 0001](adr/0001-repository-boundaries.md),
+[multi-view validation](validation/MULTIVIEW_S2_2026-08-13.md), and
+[multi-view benchmark](benchmarks/2026-08-14-pr2-multiview-model/final-30-per-arm/RESULTS.md).
 
-Accepted gate:
+## 2. Local capture and relative reconstruction — baseline complete
 
-- automatic `S>=3` reference selection is part of the locked engine path
-- the temporary C++ oracle dump command was used only to establish parity and
-  is not a product dependency
-- canonical RGB24 C++ oracle comparisons passed at `S=2`, `S=3`, and `S=12`
-  for depth/confidence and camera outputs; see `docs/validation/`
+- Decode a landscape video to RGB24 candidates at a fixed rate (currently
+  8 fps) under a high safety ceiling.
+- Select geometry keyframes from temporal baseline, luma novelty, sharpness,
+  and a maximum gap; retain first and final candidates.
+- Run the PR #2-style 12-frame / 3-frame-overlap local pipeline.
+- Persist calibrated depth evidence, confidence, relative camera transforms,
+  robust Sim(3) seams, and deterministic fusion.
+- Keep the scene explicitly relative-scale.
 
-## Slice 2 — Points and sliding windows (first usable implementation complete)
+The first real-video path, durable checkpoints, and local relative-world
+evidence exist. The remaining product-quality work is not to restore a fixed
+total-frame contract; it is to validate adaptive selection on representative
+captures and tune only against measured geometry quality.
 
-- calibrated back-projection with confidence, color, and radius
-- immutable per-window scene chunks
-- exact 12/3 window schedule and progressive frame ownership
-- robust relative Sim(3) on dense shared-pixel overlap correspondences,
-  including rank-one rejection and quality gates
-- deterministic confidence-weighted voxel surfel fusion, with immutable raw
-  evidence and an atomically published fused layer
-- controlled MP4 → Studio Workhorse smoke evidence
-- first-observer ownership: an overlapping source frame contributes to seam
-  alignment in every retained raw window but votes exactly once into fusion
+Evidence: [ADR 0002](adr/0002-relative-scale-v1.md),
+[ADR 0005](adr/0005-candidate-rate-and-geometry-keyframes.md), and
+[real-video validation](validation/REAL_VIDEO_IMG_2269_2026-08-13.md).
 
-Remaining:
+## 3. Durable scene and TSDF layers — implemented; product hardening ongoing
 
-- three more representative captured-room regression fixtures, including a
-  deliberate revisit that validates an accepted loop edge
-- scene-level quality gates for connectedness, drift, surface retention, and
-  ghost thickness
+- Store measured and derived layers as immutable, content-addressed chunks.
+- Publish manifests atomically and preserve raw evidence during re-fusion.
+- Support deterministic surfel/voxel fusion and normal-space TSDF derivatives.
+- Export open PLY, GLB, `.splat`, and camera-evidence artifacts.
+- Keep exact TSDF oracle parity as a correctness gate.
 
-## Slice 3 — Reconstruction cleanup (core pose work complete)
+Remaining work is a broader regression corpus for capture-dependent quality:
+connectedness, drift, surface retention, ghost thickness, and a deliberate
+revisit. TSDF is implemented; it is not a substitute for those scene-level
+gates.
 
-- one bounded point-to-plane refinement over direct overlap matches, using
-  fused surfel normals (complete)
-- automatic revisit proposal, geometric loop measurement, relative Sim3
-  pose-graph optimization, and deferred final fusion (complete)
-- surfel normals, voxel fusion, conservative sampling, and confidence reveal
-  ordering (complete)
+Evidence: [TSDF oracle](validation/TSDF_ORACLE_2026-08-14.md) and
+[closed-loop oracle](validation/CLOSED_LOOP_ORACLE_2026-08-14.md).
 
-Remaining:
+## 4. Product CLI and Studio — product/lab split complete
 
-- spatial-hash ICP only where a profile and fixture demonstrate that bounded
-  seam refinement is insufficient
-- conservative TSDF de-ghosting, backed by a regression corpus and an
-  explicit measured-versus-fused provenance boundary
-- scene-level quality gates for connectedness, drift, surface retention, and
-  ghost thickness
+- Keep `vestra` focused on app, reconstruct, demo, serve, inspect, and export.
+- Keep `vestra-lab` explicit for oracle, benchmark, pose, MVS, and
+  architecture experiments.
+- Keep the two binaries mutually exclusive with parser-level regression tests.
+- Use one durable job contract for CLI and browser intake.
+- Finish real F32 browser validation for cancellation, restart, resume, and
+  final provenance on a room video.
 
-## Slice 4 — Scene, service, and studio (first local product path complete)
+The local Studio path and resumable job state exist. The real browser flow on
+the locked Workhorse remains an operational validation item, not a simulated
+test claim.
 
-- content-addressed `.vestra` measured/fused JSON chunks and atomic manifest
-- local CLI (`reconstruct`, `fuse`, `export`, `serve`) and browser Studio
-- interactive WebGL point-world inspection with fused-layer preference
-- ASCII PLY export containing relative positions, RGB, confidence, radius,
-  and contributor count
-- content-addressed binary 40-byte surfel chunks with progressive GPU upload
-- GLB points, compact `.splat`, and composable camera JSON export
+Evidence: [end-to-end smoke](validation/END_TO_END_SMOKE_2026-08-13.md) and
+[resumable jobs](validation/RESUMABLE_STUDIO_JOBS_2026-08-13.md).
 
-Remaining:
+## 5. Global pose and dense MVS — research branch
 
-- WebGL2/WebGPU cinematic modes and a reproducible flythrough export
-- Workhorse validation of browser cancellation and restart/resume against a
-  real F32 room-video run; see
-  `docs/validation/RESUMABLE_STUDIO_JOBS_2026-08-13.md`
+- Keep the local product selected when global evidence is incomplete.
+- Import provider solutions only through the exact raster/pose sidecar
+  contract.
+- Require registration coverage and a passing per-window residual gate before
+  global fusion.
+- Evaluate a pinned COLMAP global pose and dense-MVS control as separate,
+  provider-labelled products.
+- Improve retrieval, correspondence, and global bundle adjustment before
+  considering a production global world.
 
-## Slice 5 — CUDA and product performance
+The current COLMAP, DROID-SLAM, hybrid, and VGGT provider attempts are useful
+diagnostics but do not satisfy the publication gate for the difficult
+`IMG_2323` capture. Dense MVS and DA3-guided derivatives remain additive
+controls, not the default world.
 
-- Engine-owned native RTX 5080 backend; the current Engine is CPU-bound and
-  has no GPU fallback or claim (see `docs/adr/0004-cuda-backend-boundary.md`)
-- native CUDA inference kernels in Vestra Kernels
-- GPU geometry phases where profiling justifies them
-- progressive time-to-first-world optimization
-- full randomized C++/Vestra CPU and GPU benchmark matrix
+Evidence: [global pose sidecar](providers/GLOBAL_POSE_SIDECAR.md),
+[provider evaluation](validation/GLOBAL_POSE_PROVIDERS_IMG_2323_2026-08-17.md),
+and [MVS hybrid](validation/DA3_MVS_HYBRID_IMG_2323_2026-08-17.md).
 
-The first real video validation is recorded in
-`docs/validation/REAL_VIDEO_IMG_2269_2026-08-13.md`. It validates durable
-evidence and relative-world fusion, not metric accuracy, semantic meshing, or
-the end-to-end performance target.
+## 6. GPU and measured performance — pending production path
 
-Metric scale and true multi-frame Gaussian reconstruction remain explicitly
-outside v1.
+- Preserve the CPU F32 parity path as the reference implementation.
+- Use the Ryzen 9 9950X / RTX 5080 / 96 GiB Workhorse for reproducible studies.
+- Profile before moving geometry or inference phases to GPU.
+- Establish numerical parity and a complete protocol before any CUDA
+  throughput claim.
+- Report model, geometry, and end-to-end measurements separately.
+
+The canonical current results are 171.141 ms versus 238.789 ms for the
+single-image CPU F32 path (N=20), 8494.734 ms versus 8588.277 ms for the
+multi-view model path (N=30), and 831.797 ms versus 867.421 ms for the
+model-free geometry-plus-TSDF fixture (N=10). These claims are narrowly
+scoped and must never be summed into an end-to-end speedup.
+
+## 7. Deferred product goals
+
+Metric scale, semantic architecture, generated/unseen geometry, a production
+GPU backend, cinematic rendering, and a universally coherent global room
+model remain deferred. Each requires an explicit evidence contract and a
+separate acceptance record before entering the product CLI.

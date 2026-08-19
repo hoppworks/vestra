@@ -546,31 +546,7 @@ fn spawn_reconstruction(
         .map_err(|error| format!("could not create job log: {error}"))?;
     let mut command = Command::new(&config.executable);
     command
-        .args([
-            "reconstruct",
-            "--video",
-            job.video.to_string_lossy().as_ref(),
-            "--model",
-            config.model.to_string_lossy().as_ref(),
-            "--output",
-            job.scene.to_string_lossy().as_ref(),
-            "--candidate-fps",
-            &job.settings.candidate_fps.to_string(),
-            "--hard-max-frames",
-            &job.settings.hard_max_frames.to_string(),
-            "--width",
-            &job.settings.width.to_string(),
-            "--height",
-            &job.settings.height.to_string(),
-            "--chunk-size",
-            &job.settings.chunk_size.to_string(),
-            "--overlap",
-            &job.settings.overlap.to_string(),
-            "--minimum-confidence",
-            &job.settings.minimum_confidence.to_string(),
-            "--pixel-stride",
-            &job.settings.pixel_stride.to_string(),
-        ])
+        .args(reconstruction_argv(config, job, resume))
         .stdin(Stdio::null())
         .stdout(Stdio::from(
             log_file
@@ -578,15 +554,6 @@ fn spawn_reconstruction(
                 .map_err(|error| format!("could not clone job log: {error}"))?,
         ))
         .stderr(Stdio::from(log_file));
-    if job.settings.cpp_pr2_relative {
-        command.arg("--cpp-pr2-relative");
-    }
-    if job.settings.tsdf {
-        command.arg("--tsdf");
-    }
-    if resume {
-        command.arg("--resume");
-    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -595,6 +562,44 @@ fn spawn_reconstruction(
     command
         .spawn()
         .map_err(|error| format!("could not start reconstruction: {error}"))
+}
+
+fn reconstruction_argv(config: &IntakeConfig, job: &IntakeJob, resume: bool) -> Vec<String> {
+    let mut arguments = vec![
+        "reconstruct".into(),
+        "--video".into(),
+        job.video.to_string_lossy().into_owned(),
+        "--model".into(),
+        config.model.to_string_lossy().into_owned(),
+        "--output".into(),
+        job.scene.to_string_lossy().into_owned(),
+        "--candidate-fps".into(),
+        job.settings.candidate_fps.to_string(),
+        "--hard-max-frames".into(),
+        job.settings.hard_max_frames.to_string(),
+        "--width".into(),
+        job.settings.width.to_string(),
+        "--height".into(),
+        job.settings.height.to_string(),
+        "--chunk-size".into(),
+        job.settings.chunk_size.to_string(),
+        "--overlap".into(),
+        job.settings.overlap.to_string(),
+        "--minimum-confidence".into(),
+        job.settings.minimum_confidence.to_string(),
+        "--pixel-stride".into(),
+        job.settings.pixel_stride.to_string(),
+    ];
+    if job.settings.cpp_pr2_relative {
+        arguments.push("--cpp-pr2-relative".into());
+    }
+    if job.settings.tsdf {
+        arguments.push("--tsdf".into());
+    }
+    if resume {
+        arguments.push("--resume".into());
+    }
+    arguments
 }
 
 fn cancel_intake_job(state: &Arc<Mutex<IntakeState>>) -> Result<Vec<u8>, String> {
@@ -1717,6 +1722,79 @@ mod tests {
         let mut running = job;
         running.outcome = IntakeOutcome::Running;
         assert!(job_is_in_progress(&running));
+    }
+
+    #[test]
+    fn intake_subprocess_argv_always_targets_product_reconstruct() {
+        let root = PathBuf::from("vestra-jobs/job-000001");
+        let config = IntakeConfig {
+            executable: PathBuf::from("vestra"),
+            model: PathBuf::from("model.gguf"),
+            jobs_root: PathBuf::from("vestra-jobs"),
+            port: 4317,
+            candidate_fps: 8.0,
+            hard_max_frames: 1800,
+            width: 504,
+            height: 336,
+            chunk_size: 12,
+            overlap: 3,
+            minimum_confidence: 1.0,
+            pixel_stride: 2,
+            tsdf: true,
+            cpp_pr2_relative: false,
+        };
+        let job = IntakeJob {
+            id: 1,
+            root: root.clone(),
+            video: root.join("capture.mov"),
+            scene: root.join("world.vestra"),
+            log: root.join("reconstruct.log"),
+            settings: IntakeSettings {
+                candidate_fps: 8.0,
+                hard_max_frames: 1800,
+                width: 504,
+                height: 336,
+                chunk_size: 12,
+                overlap: 3,
+                minimum_confidence: 1.0,
+                pixel_stride: 2,
+                tsdf: true,
+                cpp_pr2_relative: true,
+            },
+            child: None,
+            outcome: IntakeOutcome::Running,
+        };
+        assert_eq!(
+            reconstruction_argv(&config, &job, true),
+            vec![
+                "reconstruct",
+                "--video",
+                "vestra-jobs/job-000001/capture.mov",
+                "--model",
+                "model.gguf",
+                "--output",
+                "vestra-jobs/job-000001/world.vestra",
+                "--candidate-fps",
+                "8",
+                "--hard-max-frames",
+                "1800",
+                "--width",
+                "504",
+                "--height",
+                "336",
+                "--chunk-size",
+                "12",
+                "--overlap",
+                "3",
+                "--minimum-confidence",
+                "1",
+                "--pixel-stride",
+                "2",
+                "--cpp-pr2-relative",
+                "--tsdf",
+                "--resume",
+            ]
+        );
     }
 
     #[test]

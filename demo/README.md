@@ -21,5 +21,15 @@ assets rather than Git objects. Their release checksum file is the final
 distribution authority. The source metadata in `source.json` and attribution
 in the repository notice remain versioned with the code.
 
+Once the precomputed release scene is present, open it without model download
+or inference:
+
+```bash
+cargo run --release --locked -p vestra-cli -- demo --scene /path/to/freiburg1_room.vestra
+```
+
+`demo` only validates and serves that existing bundle on localhost. Scene
+preparation and reconstruction remain separate, explicit workflows.
+
 TUM ground-truth poses are an evaluation oracle only. Vestra does not consume
 them while reconstructing the public demo.

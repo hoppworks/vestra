@@ -15,9 +15,12 @@ sparse model.
 - The scene's selected rasters, not arbitrary frames from the original video.
 
 The runner verifies every raster SHA-256 against the bundle before feature
-extraction. It then uses CPU SIFT, sequential matching and vocabulary-tree
-retrieval, maps the resulting graph and performs a final global bundle
-adjustment. It refuses to overwrite a previous run directory.
+extraction. When source-resolution evidence is requested, a uniform manifest
+uses one efficient cadence decode while quality-selected irregular keyframes
+are decoded individually at their exact recorded timestamps. It then uses CPU
+SIFT, sequential matching and vocabulary-tree retrieval, maps the resulting
+graph and performs a final global bundle adjustment. It refuses to overwrite
+a previous run directory.
 
 ```sh
 python3 tools/run_colmap_global_pose.py \
@@ -36,7 +39,7 @@ directories at their original paths and runs without network access.
 all retained. Import only the final global-BA output:
 
 ```sh
-vestra pose-import-colmap \
+vestra-lab pose-import-colmap \
   --scene /path/to/world.vestra \
   --images-txt /path/to/colmap-retrieval-run/sparse-text/images.txt \
   --provider-version <pinned-colmap-version> \
@@ -45,7 +48,7 @@ vestra pose-import-colmap \
 
 ## Pre-committed acceptance gates
 
-A downstream `vestra fuse-global-pose` is allowed only if the imported
+A downstream `vestra-lab fuse-global-pose` is allowed only if the imported
 trajectory meets all of the following:
 
 1. one connected primary model;

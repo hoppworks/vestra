@@ -3,10 +3,19 @@ name = "vestra-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+default-run = "vestra"
+autobins = false
+
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "vestra"
-path = "src/main.rs"
+path = "src/bin/vestra.rs"
+
+[[bin]]
+name = "vestra-lab"
+path = "src/bin/vestra-lab.rs"
 
 [dependencies]
 clap.workspace = true

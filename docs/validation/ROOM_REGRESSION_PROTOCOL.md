@@ -23,7 +23,7 @@ private videos to the repository.
 ## Evidence command
 
 ```bash
-vestra verify \
+vestra-lab verify \
   --scene room.vestra \
   --profile docs/quality-profiles/room-relative-v1.json \
   > room.verification.json
