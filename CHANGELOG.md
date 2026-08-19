@@ -6,6 +6,8 @@ tagged.
 
 ## Unreleased
 
+## 0.1.0 - 2026-08-20
+
 ### Added
 
 - Reproducible release toolchain and verification gate.

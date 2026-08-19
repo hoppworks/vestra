@@ -27,6 +27,8 @@ The implementation roadmap is the planning view, not an acceptance record:
   scene durability, and optional global branches.
 - [Current project status](PROJECT_STATUS.md) — curated milestone state,
   benchmark claims, and known limits.
+- [v0.1.0 release notes](releases/v0.1.0.md) — public artifact scope,
+  reproducible demo entry point, and explicit boundaries.
 
 ## Design contracts
 
@@ -41,6 +43,7 @@ The implementation roadmap is the planning view, not an acceptance record:
 
 ### Reconstruction and durability
 
+- [Public `freiburg1_room` demo validation](validation/PUBLIC_DEMO_FREIBURG1_ROOM_2026-08-20.md)
 - [Real-video relative-world validation](validation/REAL_VIDEO_IMG_2269_2026-08-13.md)
 - [End-to-end local-world smoke](validation/END_TO_END_SMOKE_2026-08-13.md)
 - [Resumable Studio jobs](validation/RESUMABLE_STUDIO_JOBS_2026-08-13.md)

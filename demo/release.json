@@ -1,0 +1,96 @@
+{
+  "schema": "vestra.demo-release/v1",
+  "id": "tum-rgbd-freiburg1-room-2026-08-20",
+  "release_tag": "v0.1.0",
+  "validation_date": "2026-08-20",
+  "ground_truth_poses_used": false,
+  "source": {
+    "id": "tum-rgbd-freiburg1-room",
+    "title": "TUM RGB-D Benchmark — freiburg1_room",
+    "source_url": "https://webshare.cvg.cit.tum.de/g/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_room-rgb.avi",
+    "avi_sha256": "904f2c932e82e1aa0acf0682800993803b5089b25e424421074ef4f27df7721a",
+    "avi_bytes": 13765996,
+    "license_spdx": "CC-BY-4.0",
+    "attribution_url": "https://cvg.cit.tum.de/data/datasets/rgbd-dataset"
+  },
+  "prepared_input": {
+    "filename": "vestra-demo-input.mp4",
+    "codec": "h264",
+    "width": 640,
+    "height": 480,
+    "frames_per_second": 30,
+    "duration_seconds": 45.4,
+    "sha256": "0447ecc3033fa8ef125820f4c53a48b3ba0ec11ebbd3dae310d38769a6063f9f",
+    "bytes": 24218662,
+    "cropped": false,
+    "rescaled": false,
+    "audio_removed": true,
+    "container_metadata_removed": true
+  },
+  "hardware": {
+    "cpu": "AMD Ryzen 9 9950X",
+    "gpu": "NVIDIA RTX 5080",
+    "memory_gib": 96
+  },
+  "local_reconstruction": {
+    "vestra_revision": "4b0630e9606d816fe38a65b6e2d74fd10a6c825d",
+    "engine_revision": "ec10ae38e8ceff3da4778fc2b47ad8f868dac311",
+    "kernels_revision": "1ad85305de14ea76ddd878af6dac80f19bdf2bc3",
+    "candidate_rate_fps": 8,
+    "candidate_frames": 363,
+    "geometry_frames": 77,
+    "measured_windows": 9,
+    "measured_points": 4275936,
+    "local_tsdf_points": 40980
+  },
+  "release_product": {
+    "vestra_revision": "d626d9b0c255cc1d7c0397276554622f325c9478"
+  },
+  "global_pose": {
+    "provider": "COLMAP",
+    "provider_version": "4.2.0.dev0",
+    "vestra_provider_tooling_revision": "d626d9b0c255cc1d7c0397276554622f325c9478",
+    "container_image_digest": "sha256:b809882552887b6471094dcadd2f2eb01656b010663564c43a5e7f04c0a08f2f",
+    "bundle_adjustment_cameras": 150,
+    "selected_cameras": 55,
+    "pose_solution_hash": "3891cbb96dc89e75280feacd8c813fe1ef0a44e42dcc66f2af77208175d7b14b"
+  },
+  "dense_mvs": {
+    "provider": "COLMAP",
+    "classification": "colmap-derived",
+    "points": 355581,
+    "ply_sha256": "be34da0370ba102543e18bf2f0d42b6c44d5371e6acb088474decc99279af969",
+    "ply_bytes": 9600921
+  },
+  "release_assets": {
+    "checksum_filename": "SHA256SUMS",
+    "scene_archive": {
+      "filename": "vestra-demo-freiburg1-room-v0.1.0.tar.zst",
+      "extracted_scene": "vestra-demo.vestra",
+      "sha256": "01400b0596456eda44e52561b33d139f75af043efc460682e48768876b3f2f12",
+      "bytes": 380358870
+    },
+    "recorded_media": [
+      {
+        "filename": "capture-depth-replay.mp4",
+        "sha256": "c86cbf037478d929996bac299e0d8dd2e9bb9223ce464713a171d6f4bf7bfe66",
+        "bytes": 1911875
+      },
+      {
+        "filename": "global-world-orbit.mp4",
+        "sha256": "dd0b7ab160dd24f21e2652756d700e6bf22cf267e71de973273568105021d4b6",
+        "bytes": 1436711
+      },
+      {
+        "filename": "capture-depth-poster.png",
+        "sha256": "6d798907f5f7ecbb2673b3fd4649eef53f0aa9d0b82e893ddcf2e7ccbbc55a66",
+        "bytes": 557373
+      },
+      {
+        "filename": "global-world-poster.png",
+        "sha256": "d6fb72ab51ecf51cf87c830ed8b13bab851dface8f0b3a3120e0762cb3bd1a7d",
+        "bytes": 505483
+      }
+    ]
+  }
+}

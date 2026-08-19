@@ -32,13 +32,21 @@ real handheld indoor loop, reconstructed without consuming its ground-truth
 trajectory. The original video, derived scene, checksums, and attribution are
 distributed as release assets rather than committed binaries.
 
-After downloading and extracting the latest `vestra-demo-freiburg1-room`
-scene from [Releases](https://github.com/hoppworks/vestra/releases), open it
-without a model download or inference run:
+After downloading and extracting the
+`vestra-demo-freiburg1-room-v0.1.0.tar.zst` archive from
+[Releases](https://github.com/hoppworks/vestra/releases), open it without a
+model download or inference run:
+
+```bash
+./scripts/run-public-demo.sh
+```
+
+The helper downloads, verifies, and extracts the archive before starting the
+local server. To serve an already extracted copy directly:
 
 ```bash
 cargo run --release --locked -p vestra-cli -- \
-  demo --scene /path/to/freiburg1_room.vestra
+  demo --scene /path/to/vestra-demo.vestra
 ```
 
 Then open `http://127.0.0.1:4317`. The demo command only validates and serves
