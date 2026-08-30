@@ -33,17 +33,11 @@ trajectory. The reproducible release bundle contains only person-free scene
 products and the accompanying provenance, checksums, and attribution; it does
 not redistribute the source RGB footage or decoded source frames.
 
-After downloading and extracting the
-`vestra-demo-freiburg1-room-v0.1.0.tar.zst` archive from
-[Releases](https://github.com/hoppworks/vestra/releases), open it without a
-model download or inference run:
-
-```bash
-./scripts/run-public-demo.sh
-```
-
-The helper downloads, verifies, and extracts the archive before starting the
-local server. To serve an already extracted copy directly:
+The former v0.1.0 binary bundle was withdrawn because it contained source
+capture material that does not meet Vestra's public-release policy. The code
+release and provenance records remain available; the next binary demo bundle
+will contain person-free derived products only. To serve a locally created
+scene directly:
 
 ```bash
 cargo run --release --locked -p vestra-cli -- \

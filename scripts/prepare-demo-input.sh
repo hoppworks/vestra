@@ -3,12 +3,12 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 asset_dir="$repo_root/.demo-assets"
-mode="release"
+mode="--rebuild-from-source"
 if [[ "${1:-}" == "--rebuild-from-source" ]]; then
   mode="$1"
 elif [[ -n "${1:-}" ]]; then
   asset_dir="$1"
-  mode="${2:-release}"
+  mode="${2:---rebuild-from-source}"
 fi
 release_url="https://github.com/hoppworks/vestra/releases/download/v0.1.0/vestra-demo-input.mp4"
 source_url="https://webshare.cvg.cit.tum.de/g/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_room-rgb.avi"
@@ -29,20 +29,9 @@ sha256_file() {
 mkdir -p "$asset_dir"
 
 if [[ "$mode" == "release" ]]; then
-  if [[ ! -f "$output_path" ]]; then
-    curl --fail --location --retry 3 --output "$output_path.part" "$release_url"
-    mv "$output_path.part" "$output_path"
-  fi
-
-  actual_output_sha256="$(sha256_file "$output_path")"
-  if [[ "$actual_output_sha256" != "$output_sha256" ]]; then
-    echo "demo input SHA-256 mismatch: expected $output_sha256, got $actual_output_sha256" >&2
-    exit 1
-  fi
-
-  echo "Prepared exact release input $output_path"
-  echo "SHA-256 $actual_output_sha256"
-  exit 0
+  echo "The v0.1.0 release input was withdrawn from public distribution." >&2
+  echo "Use --rebuild-from-source to obtain the fixture from its publisher." >&2
+  exit 2
 fi
 
 if [[ "$mode" != "--rebuild-from-source" ]]; then
@@ -73,4 +62,4 @@ ffmpeg -hide_banner -loglevel error -y \
 
 echo "Rebuilt $rebuilt_path from the verified source AVI"
 echo "SHA-256 $(sha256_file "$rebuilt_path")"
-echo "Encoder versions can change bytes; use release mode for the canonical input." >&2
+echo "Encoder versions can change bytes; this output is not a release artifact." >&2

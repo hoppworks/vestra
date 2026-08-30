@@ -10,13 +10,8 @@ Run the preparation script from the repository root:
 ./scripts/prepare-demo-input.sh
 ```
 
-By default the script downloads the exact v0.1.0 H.264 MP4 release asset and
-refuses it unless its SHA-256 matches `release.json`. This keeps the canonical
-640×480 input byte-identical. Vestra's normal intake pipeline then records and
-applies its deterministic 3:2 model crop; the release scene manifest is the
-authority for that inference geometry.
-
-An optional source audit downloads and verifies the original AVI before making
+The former v0.1.0 H.264 input was withdrawn from public distribution. A source
+audit downloads and verifies the original AVI from its publisher before making
 a non-canonical local transcode:
 
 ```bash
@@ -24,7 +19,7 @@ a non-canonical local transcode:
 ```
 
 FFmpeg/libx264 versions can change the rebuilt MP4 bytes. The `.rebuilt.mp4`
-output is therefore not a substitute for the verified release input.
+output is therefore not a substitute for a future verified release input.
 
 The finished `.vestra` scene, screenshots, and person-free hero video are
 release assets rather than Git objects. Source RGB footage and decoded source
@@ -41,13 +36,6 @@ public-product revision, reconstruction counts, global-pose identity, and
 COLMAP dense-MVS derivative. Attach `ATTRIBUTION.md` to any redistributed demo
 asset. The release manifest is provenance metadata; it does not replace any
 asset digest in the distributed checksum file.
-
-Download, verify, extract, and open the precomputed release scene without model
-download or inference:
-
-```bash
-./scripts/run-public-demo.sh
-```
 
 To serve an already extracted scene directly:
 
