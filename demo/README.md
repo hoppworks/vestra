@@ -26,8 +26,10 @@ a non-canonical local transcode:
 FFmpeg/libx264 versions can change the rebuilt MP4 bytes. The `.rebuilt.mp4`
 output is therefore not a substitute for the verified release input.
 
-The input, finished `.vestra` scene, screenshots, and hero video are release
-assets rather than Git objects. Their release checksum file is the final
+The finished `.vestra` scene, screenshots, and person-free hero video are
+release assets rather than Git objects. Source RGB footage and decoded source
+frames are intentionally excluded from public release bundles. Their release
+checksum file is the final
 distribution authority for each artifact it lists. The source metadata in
 `source.json`, standalone `ATTRIBUTION.md`, and attribution in the repository
 notice remain versioned with the code.

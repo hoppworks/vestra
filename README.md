@@ -29,8 +29,9 @@ gated rather than hidden behind the renderer.
 
 The release demo uses the CC-BY-4.0 TUM RGB-D `freiburg1_room` sequence: a
 real handheld indoor loop, reconstructed without consuming its ground-truth
-trajectory. The original video, derived scene, checksums, and attribution are
-distributed as release assets rather than committed binaries.
+trajectory. The reproducible release bundle contains only person-free scene
+products and the accompanying provenance, checksums, and attribution; it does
+not redistribute the source RGB footage or decoded source frames.
 
 After downloading and extracting the
 `vestra-demo-freiburg1-room-v0.1.0.tar.zst` archive from
