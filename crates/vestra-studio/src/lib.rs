@@ -1885,8 +1885,58 @@ mod tests {
         assert!(!INDEX_HTML.contains("canvas.onpointerdown"));
         assert!(!INDEX_HTML.contains("canvas.addEventListener('wheel'"));
         assert!(INDEX_HTML.contains("arrow keys move · W A S D look · R reset"));
-        assert!(INDEX_HTML.contains("command.startsWith('look')"));
         assert!(INDEX_HTML.contains("official DA3 depth map · matched COLMAP camera"));
+    }
+
+    /// The keyboard path is the one part of Studio a user drives continuously,
+    /// so its logic lives in the independently tested `camera-controls.js`
+    /// controller; the page must only route events into it. The cases below
+    /// pin the routing decisions that the node suite cannot see.
+    #[test]
+    fn studio_keyboard_navigation_is_wired_through_the_tested_controller() {
+        assert!(CAMERA_CONTROLS_JS.contains("function createKeyboardController()"));
+        assert!(
+            CAMERA_CONTROLS_JS
+                .contains("function stepFirstPerson(state, commands, seconds, rates)")
+        );
+        assert!(
+            INDEX_HTML.contains("const keyboard=VestraCameraControls.createKeyboardController();")
+        );
+        // Physical keys are tracked by the controller; the page never keeps its
+        // own set of commands that auto-repeat or Shift could desynchronise.
+        assert!(!INDEX_HTML.contains("heldMovement"));
+        assert!(!INDEX_HTML.contains("function turn("));
+        assert!(!INDEX_HTML.contains("commandForKey(event.key)"));
+        assert!(INDEX_HTML.contains("const pressed=keyboard.press(event);"));
+        assert!(INDEX_HTML.contains("addEventListener('keyup',event=>keyboard.release(event));"));
+        // Continuous motion is time based and only applied while the world owns
+        // the keyboard; a fresh press adds exactly one frame-sized impulse.
+        assert!(
+            INDEX_HTML.contains("if(worldActive())applyNavigation(keyboard.commands(),elapsed);")
+        );
+        assert!(INDEX_HTML.contains("VestraCameraControls.stepFirstPerson({eye,yaw,pitch},commands,seconds,{move:extent*MOVE_RATE_PER_EXTENT,turn:TURN_RATE})"));
+        assert!(INDEX_HTML.contains("if(!worldActive())return;event.preventDefault();if(pressed.fresh)applyNavigation([pressed.command],TAP_SECONDS);return}"));
+        assert!(INDEX_HTML.contains("function worldActive(){return replay.hidden}"));
+        // Every keyboard-context change drops held keys so a keyup the page never
+        // saw cannot leave the camera drifting; reset restores the pose only.
+        assert!(INDEX_HTML.contains("addEventListener('blur',()=>keyboard.clear());"));
+        assert!(INDEX_HTML.contains("document.addEventListener('visibilitychange',()=>{if(document.hidden)keyboard.clear()});"));
+        assert!(INDEX_HTML.contains("inputVideo.muted=true;keyboard.clear();if(open)"));
+        assert!(INDEX_HTML.contains("if(event.key==='Escape'){keyboard.clear();"));
+        assert!(
+            INDEX_HTML
+                .contains("function resetView(){matchedCamera=null;yaw=HOME_YAW;pitch=HOME_PITCH;")
+        );
+        // The home view looks slightly down at the world from above.
+        assert!(INDEX_HTML.contains("const HOME_YAW=.65,HOME_PITCH=-.2,TURN_RATE=1.3,MOVE_RATE_PER_EXTENT=.7,TAP_SECONDS=1/60,"));
+        // A calibrated pose adopted from evidence keeps consistent look angles.
+        assert!(
+            INDEX_HTML
+                .contains("({yaw,pitch}=VestraCameraControls.lookAnglesFromForward(forward));")
+        );
+        // The drawing buffer is only reallocated on real size changes.
+        assert!(INDEX_HTML.contains("if(canvas.width!==width||canvas.height!==height){canvas.width=width;canvas.height=height}"));
+        assert!(INDEX_HTML.contains("canvas.dataset.cameraForward="));
     }
 
     #[test]
