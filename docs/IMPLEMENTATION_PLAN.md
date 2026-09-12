@@ -101,8 +101,9 @@ and [MVS hybrid](validation/DA3_MVS_HYBRID_IMG_2323_2026-08-17.md).
   throughput claim.
 - Report model, geometry, and end-to-end measurements separately.
 
-The canonical current results are 171.141 ms versus 238.789 ms for the
-single-image CPU F32 path (N=20), 8494.734 ms versus 8588.277 ms for the
+The canonical current results are 158.126 ms versus 197.036 ms for the
+single-image CPU F32 path (N=10, 2026-09-11, opt-in workhorse configuration,
+see Vestra Engine), 8494.734 ms versus 8588.277 ms for the
 multi-view model path (N=30), and 831.797 ms versus 867.421 ms for the
 model-free geometry-plus-TSDF fixture (N=10). These claims are narrowly
 scoped and must never be summed into an end-to-end speedup.

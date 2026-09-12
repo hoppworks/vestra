@@ -116,7 +116,7 @@ RAM. The canonical claims are:
 
 | Workload | C++ reference | Vestra Rust | Samples | Scoped result |
 | --- | ---: | ---: | ---: | --- |
-| DA3-BASE single-image CPU F32 | 238.789 ms | 171.141 ms | 20 | 28.3% lower latency; 39.5% higher throughput |
+| DA3-BASE single-image CPU F32, public C++ `739992d`, 2026-09-11, opt-in workhorse configuration | 197.036 ms | 158.126 ms | 10 | 19.75% lower latency (24.61% higher throughput, same run); peak RSS 1038.1 vs 619.1 MiB |
 | PR #2 multi-view model CPU F32 | 8588.277 ms | 8494.734 ms | 30 | 1.089% lower wall time |
 | PR #2 geometry + TSDF, model-free | 867.421 ms | 831.797 ms | 10 | 4.11% lower wall time |
 
@@ -126,3 +126,7 @@ the geometry-plus-TSDF study is documented in
 [`docs/benchmarks/2026-08-14-pr2-geometry/RESULTS.md`](docs/benchmarks/2026-08-14-pr2-geometry/RESULTS.md).
 These are not stage speedups that can be added together. None is an
 end-to-end video, GPU, browser, or complete product-world performance claim.
+Earlier single-image studies are historical and are not combined with the
+current one: 4.95% lower latency (N=20, 2026-08-30, same C++ build, no extra
+switches) and 28.3% (N=20, 2026-08-13, older pinned C++ build). The product
+pins an older engine revision than the one measured on 2026-09-11.

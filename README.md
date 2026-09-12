@@ -126,25 +126,35 @@ validation gates, product labelling, scene import, provenance, and rendering.
 ## Performance evidence
 
 These are three different CPU studies on an AMD Ryzen 9 9950X with a 16-thread
-budget. The validation machine also has an NVIDIA RTX 5080 and 96 GiB RAM.
+budget. They share a machine, not a configuration; the results are not
+additive and none is an end-to-end video, browser, quantized-model, or GPU
+speed claim. The machine also has an NVIDIA RTX 5080 and 96 GiB RAM; the CPU
+numbers do not use the GPU.
 
 | Locked workload | C++ reference | Vestra Rust | N | Result |
 | --- | ---: | ---: | ---: | --- |
-| DA3-BASE single image, F32, 504x336 | 238.789 ms | 171.141 ms | 20 | 28.3% lower latency; 39.5% higher throughput |
+| DA3-BASE single image, F32, 504x336, public C++ `739992d`, 2026-09-11 | 197.036 ms | 158.126 ms | 10 | 19.75% lower latency (24.61% higher throughput is the same run); peak RSS 1038.1 vs 619.1 MiB |
 | PR #2 multi-view model, F32, 24 frames | 8588.277 ms | 8494.734 ms | 30 | 1.089% lower wall time |
 | PR #2 geometry + TSDF, model-free | 867.421 ms | 831.797 ms | 10 | 4.11% lower wall time |
 
-The stages, exclusions, source revisions, model/input hashes, raw samples, and
-confidence intervals are part of each study. The results are not additive and
-none is an end-to-end video, browser, quantized-model, or GPU speed claim. See
+The single-image number comes from the engine's qualified workhorse
+configuration (AOCL BLIS bridge plus documented opt-in kernel switches and an
+OpenMP policy), not from the default build, and from a newer engine revision
+than the one this product pins in `Cargo.toml`. Earlier single-image studies
+are historical and must not be combined with it: 2026-08-30, N=20, same C++
+build, no extra switches, 188.137 ms versus 197.939 ms (4.95% lower latency);
+2026-08-13, N=20, older pinned C++ build, 171.141 ms versus 238.789 ms (28.3%
+lower latency). The stages, exclusions, source revisions, model/input hashes,
+raw samples, and confidence intervals are part of each study. See
 [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) and the
-[`docs/benchmarks/`](docs/benchmarks/) evidence.
+[Vestra Engine 2026-09-11 remeasurement bundle](https://github.com/hoppworks/vestra-engine/tree/main/docs/benchmarks/2026-08-workhorse/2026-09-11-current-f32-rerun).
 
 ## Scene truth and reliability
 
 A `.vestra` scene is a local directory while processing and may be archived
-for transport. Immutable chunks are hashed and made durable before an atomic
-manifest replacement references them. Raw measurements are never overwritten
+for transport. Immutable chunks are hashed and atomically published (write,
+then rename) before the manifest references them; that is atomic against
+process abort, not fsync-durable against power loss. Raw measurements are never overwritten
 by fusion. Provenance binds the video, raster policy, model, engine, kernels,
 settings, pose provider, and derived products.
 
@@ -179,7 +189,8 @@ Rust 1.93.0 is pinned. The complete local gate is:
 
 It runs formatting, strict Clippy, Rust and Python tests, browser-control tests,
 documentation checks, and repository integrity checks against the locked
-dependency graph. CI runs the same source contract.
+dependency graph. Public GitHub Actions are not a published proof; run the gate
+locally.
 
 Start with the [documentation index](docs/README.md),
 [architecture](ARCHITECTURE.md), [vision](VISION.md), and
@@ -187,3 +198,6 @@ Start with the [documentation index](docs/README.md),
 are retained in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 Vestra is licensed under Apache-2.0.
+
+Part of Daniel Hopp's portfolio: https://daniel.hoppworks.de/work/vestra/ ·
+https://www.linkedin.com/in/hoppworks

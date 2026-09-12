@@ -68,9 +68,11 @@ The implementation roadmap is the planning view, not an acceptance record:
 ## Reading rule for performance claims
 
 The canonical numbers are separate studies: DA3-BASE single-image CPU F32 is
-171.141 ms versus 238.789 ms for N=20; the PR #2 multi-view model is
-8494.734 ms versus 8588.277 ms for N=30; and model-free geometry plus TSDF is
-831.797 ms versus 867.421 ms for N=10. The first is a companion model-path
-measurement; the latter two have the evidence files above. No stage result is
+158.126 ms versus 197.036 ms for N=10 (2026-09-11, public C++ `739992d`,
+opt-in workhorse configuration, peak RSS 1038.1 vs 619.1 MiB); the PR #2
+multi-view model is 8494.734 ms versus 8588.277 ms for N=30; and model-free
+geometry plus TSDF is 831.797 ms versus 867.421 ms for N=10. The first is a
+companion model-path measurement documented in the Vestra Engine repository;
+the latter two have the evidence files above. No stage result is
 an end-to-end video, GPU, or browser speed claim, and the percentages must not
 be added together.

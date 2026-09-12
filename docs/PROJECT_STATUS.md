@@ -40,7 +40,7 @@ of each study.
 
 | Workload | C++ reference (ms) | Vestra Rust (ms) | N | Result |
 | --- | ---: | ---: | ---: | --- |
-| DA3-BASE single-image model path | 238.789 | 171.141 | 20 | 28.3% lower latency; 39.5% higher throughput |
+| DA3-BASE single-image model path, public C++ `739992d`, 2026-09-11, opt-in workhorse configuration | 197.036 | 158.126 | 10 | 19.75% lower latency (24.61% higher throughput, same run); peak RSS 1038.1 vs 619.1 MiB |
 | PR #2 multi-view model path | 8588.277 | 8494.734 | 30 | 1.089% lower wall time |
 | PR #2 geometry + TSDF, model-free | 867.421 | 831.797 | 10 | 4.11% lower wall time |
 
@@ -51,6 +51,12 @@ The geometry-plus-TSDF protocol and raw artifacts are in
 number is a companion DA3-BASE study, not an end-to-end Vestra video result.
 These measurements are separate scopes: no stage speedup is additive, and
 none implies end-to-end, GPU, or browser throughput.
+Earlier single-image studies remain available for audit and are not the
+headline: 188.137 ms versus 197.939 ms (4.95%, N=20, 2026-08-30, same C++
+build, no extra switches) and 171.141 ms versus 238.789 ms (28.3%, N=20,
+2026-08-13, older pinned C++ build). The 2026-09-11 number was measured with
+the engine's opt-in workhorse configuration and a newer engine revision than
+the product pin.
 
 ## Research and known limits
 
