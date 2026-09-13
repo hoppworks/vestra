@@ -14,6 +14,6 @@ ctrlc = "3.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rayon = "1.10"
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror = "2"
 vestra-engine = { git = "https://github.com/hoppworks/vestra-engine", rev = "1d9613069fe4dcea7760a83c72635d0536c9af42" }
