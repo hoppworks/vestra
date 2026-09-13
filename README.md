@@ -199,5 +199,5 @@ are retained in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 Vestra is licensed under Apache-2.0.
 
-Part of Daniel Hopp's portfolio: https://daniel.hoppworks.de/work/vestra/ ·
+Part of Daniel Hopp's portfolio: https://hoppworks.de/work/vestra/ ·
 https://www.linkedin.com/in/hoppworks
